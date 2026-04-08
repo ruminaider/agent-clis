@@ -1,6 +1,6 @@
 # Notion CLI
 
-Full Notion workspace access from the terminal. Authenticates via Notion's MCP OAuth — just run `auth login`, approve in browser, done. No integration setup, no page sharing.
+Access your full Notion workspace from the terminal. Authenticates via Notion's MCP OAuth: run `auth login`, approve in browser, done. You create no integrations and share no pages.
 
 ## Install
 
@@ -49,14 +49,14 @@ notion-cli teams
 
 ## Output
 
-All commands output JSON. Pipe to `jq`:
+All commands return JSON. Pipe to `jq` for filtering:
 
 ```bash
 notion-cli search "roadmap" | jq '.results[].title'
 ```
 
-## How it works
+## How It Works
 
-Instead of using the Notion API directly (which requires creating integrations and sharing pages), this CLI authenticates through Notion's remote MCP server OAuth. This gives you the same full workspace access that MCP connectors in Claude/Cursor have — simple approve/deny, no page picker, no admin setup.
+The Notion API requires creating integrations and sharing individual pages. This CLI bypasses both steps by authenticating through Notion's remote MCP server OAuth. You get the same full workspace access that MCP connectors in Claude and Cursor provide: one approve/deny prompt, no page picker, no admin setup.
 
-The CLI then routes all operations through `mcp.notion.com`, which handles the Notion API calls server-side.
+All operations route through `mcp.notion.com`, which handles Notion API calls server-side.
