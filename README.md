@@ -16,11 +16,15 @@ MCP servers bloat your agent's context with dozens of tool descriptions and aren
 ## Install
 
 ```bash
-# Install everything
-bash install.sh
+# Via npm (recommended)
+npm i -g @ruminaider/notion-cli
 
-# Or install individual tools
-bash notion/install.sh
+# Or clone and install all tools
+git clone https://github.com/ruminaider/agent-clis.git
+bash agent-clis/install.sh
+
+# Or clone and install one tool
+bash agent-clis/notion/install.sh
 ```
 
 ## Why?

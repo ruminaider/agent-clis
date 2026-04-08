@@ -2,12 +2,10 @@
 set -euo pipefail
 
 # ─── Notion CLI Installer ─────────────────────────────────
+# Installs @ruminaider/notion-cli globally via npm.
 # Full workspace access via Notion's MCP OAuth.
 # No admin setup, no integration creation, no page sharing.
 # ──────────────────────────────────────────────────────────
-
-INSTALL_DIR="${NOTION_CLI_DIR:-$HOME/.agent-clis/notion}"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 info()  { echo "  → $*"; }
 ok()    { echo "  ✓ $*"; }
@@ -21,7 +19,7 @@ echo ""
 # ─── Check Node.js ────────────────────────────────────────
 
 if ! command -v node &>/dev/null; then
-  fail "Node.js is required. Install from https://nodejs.org"
+  fail "Node.js 18+ is required. Install from https://nodejs.org"
 fi
 
 NODE_VERSION=$(node -v | sed 's/v//' | cut -d. -f1)
@@ -30,45 +28,37 @@ if [ "$NODE_VERSION" -lt 18 ]; then
 fi
 ok "Node.js $(node -v)"
 
-# ─── Install ──────────────────────────────────────────────
+if ! command -v npm &>/dev/null; then
+  fail "npm is required"
+fi
+ok "npm $(npm -v)"
 
-if [ -d "$INSTALL_DIR" ]; then
-  info "Updating existing installation"
+# ─── Install via npm ──────────────────────────────────────
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+if [ -d "$SCRIPT_DIR/cli/bin" ] && [ -f "$SCRIPT_DIR/cli/package.json" ]; then
+  # Installing from local repo clone
+  info "Installing from local source..."
+  cd "$SCRIPT_DIR/cli"
+  npm install --silent 2>/dev/null
+  npm link --silent 2>/dev/null && ok "Linked as 'notion-cli'" || {
+    fail "npm link failed. Try: sudo npm link"
+  }
 else
-  info "Installing to $INSTALL_DIR"
+  # Installing from npm registry
+  info "Installing @ruminaider/notion-cli from npm..."
+  npm install -g @ruminaider/notion-cli 2>&1 | tail -1
+  ok "Installed from npm"
 fi
 
-mkdir -p "$INSTALL_DIR"
+# ─── Verify ───────────────────────────────────────────────
 
-# If running from repo, copy source files
-if [ -d "$SCRIPT_DIR/cli" ]; then
-  cp -r "$SCRIPT_DIR/cli/"* "$INSTALL_DIR/"
-  ok "Source files copied"
+if command -v notion-cli &>/dev/null; then
+  ok "notion-cli is ready"
 else
-  fail "Cannot find cli/ directory. Run from the repo root or use the standalone installer."
+  info "notion-cli installed but may need a shell restart"
 fi
-
-# Install dependencies
-info "Installing dependencies..."
-cd "$INSTALL_DIR"
-npm install --silent 2>/dev/null
-ok "Dependencies installed"
-
-# Link globally
-info "Linking notion-cli command..."
-npm link --silent 2>/dev/null && ok "Linked as 'notion-cli'" || {
-  SHELL_RC=""
-  [ -f "$HOME/.zshrc" ] && SHELL_RC="$HOME/.zshrc"
-  [ -z "$SHELL_RC" ] && [ -f "$HOME/.bashrc" ] && SHELL_RC="$HOME/.bashrc"
-
-  if [ -n "$SHELL_RC" ]; then
-    if ! grep -q "agent-clis/notion" "$SHELL_RC" 2>/dev/null; then
-      echo "export PATH=\"$INSTALL_DIR/bin:\$PATH\"" >> "$SHELL_RC"
-      info "Added to PATH in $SHELL_RC — restart shell or: source $SHELL_RC"
-    fi
-  fi
-  ok "Installed (may need to restart shell)"
-}
 
 echo ""
 echo "  ────────────────────"

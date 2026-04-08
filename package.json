@@ -1,0 +1,8 @@
+{
+  "name": "agent-clis",
+  "private": true,
+  "description": "Agent Tool Shed — CLI tools that replace MCP servers",
+  "workspaces": [
+    "notion/cli"
+  ]
+}

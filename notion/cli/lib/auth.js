@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomBytes, createHash } from "node:crypto";
 
-const CONFIG_DIR = join(homedir(), ".config", "notion-cli-tool");
+const CONFIG_DIR = join(homedir(), ".config", "notion-cli");
 const CREDENTIALS_FILE = join(CONFIG_DIR, "credentials.json");
 
 // Notion MCP OAuth endpoints (discovered from .well-known)

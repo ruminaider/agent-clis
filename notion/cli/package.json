@@ -1,12 +1,26 @@
 {
-  "name": "notion-cli-tool",
-  "version": "2.0.0",
+  "name": "@ruminaider/notion-cli",
+  "version": "1.0.0",
   "description": "Notion CLI with full workspace access — no setup required",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ruminaider/agent-clis",
+    "directory": "notion/cli"
+  },
+  "keywords": ["notion", "cli", "mcp", "agent", "pi-package"],
   "bin": {
     "notion-cli": "./bin/notion.js"
   },
+  "files": [
+    "bin/",
+    "lib/"
+  ],
   "dependencies": {
     "open": "^10.0.0"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

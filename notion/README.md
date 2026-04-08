@@ -5,6 +5,10 @@ Full Notion workspace access from the terminal. Authenticates via Notion's MCP O
 ## Install
 
 ```bash
+# Via npm
+npm i -g @ruminaider/notion-cli
+
+# Or from repo clone
 bash install.sh
 ```
 
