@@ -6,12 +6,18 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ruminaider/agent-clis",
+    "url": "git+https://github.com/ruminaider/agent-clis.git",
     "directory": "notion/cli"
   },
-  "keywords": ["notion", "cli", "mcp", "agent", "pi-package"],
+  "keywords": [
+    "notion",
+    "cli",
+    "mcp",
+    "agent",
+    "pi-package"
+  ],
   "bin": {
-    "notion-cli": "./bin/notion.js"
+    "notion-cli": "bin/notion.js"
   },
   "files": [
     "bin/",
