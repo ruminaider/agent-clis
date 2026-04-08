@@ -1,0 +1,12 @@
+{
+  "name": "notion-cli-tool",
+  "version": "2.0.0",
+  "description": "Notion CLI with full workspace access — no setup required",
+  "type": "module",
+  "bin": {
+    "notion-cli": "./bin/notion.js"
+  },
+  "dependencies": {
+    "open": "^10.0.0"
+  }
+}
