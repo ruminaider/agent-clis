@@ -1,6 +1,6 @@
 {
   "name": "@ruminaider/notion-cli",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Notion CLI with full workspace access via OAuth. No integration setup, no page sharing, no admin needed. Just 'auth login' and go.",
   "type": "module",
   "license": "MIT",
