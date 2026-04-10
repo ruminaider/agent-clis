@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { login, loadCredentials, clearCredentials } from "../lib/auth.js";
+import { login, loadCredentials, clearCredentials, refreshToken } from "../lib/auth.js";
 import * as api from "../lib/api.js";
 import { listTools } from "../lib/mcp.js";
 
@@ -78,7 +78,20 @@ async function main() {
 
 async function cmdAuth() {
   switch (subcommand) {
+    case undefined:
     case "login": {
+      // Try refresh first if we have credentials
+      const existing = await loadCredentials();
+      if (existing?.refresh_token) {
+        try {
+          const refreshed = await refreshToken(existing);
+          const mins = Math.round((refreshed.expires_at - Date.now()) / 60000);
+          console.log(`✓ Authenticated (token refreshed, expires in ${mins} minutes)`);
+          break;
+        } catch {
+          console.log("Token refresh failed, opening browser for re-authorization...\n");
+        }
+      }
       const port = parseInt(getFlag("--port") || "9876");
       const result = await login(port);
       console.log(`\n✓ Authenticated with Notion`);
@@ -111,7 +124,7 @@ async function cmdAuth() {
       break;
     }
     default:
-      console.log(`Usage: notion-cli auth <login|logout|status>\n\n  login [--port <port>]   Authenticate via Notion (opens browser)\n  logout                  Clear credentials\n  status                  Show auth status`);
+      console.log(`Usage: notion-cli auth [login|logout|status]\n\n  login [--port <port>]   Authenticate (refreshes token, or opens browser if needed)\n  logout                  Clear credentials\n  status                  Show auth status`);
   }
 }
 
@@ -291,7 +304,7 @@ function printHelp() {
 Usage: notion-cli <command> [options]
 
 Auth:
-  auth login [--port <port>]   Authenticate via Notion (opens browser)
+  auth [login]                 Authenticate (refreshes token, or opens browser)
   auth logout                  Clear credentials
   auth status                  Show auth status
 

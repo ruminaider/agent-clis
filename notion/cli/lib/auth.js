@@ -85,7 +85,7 @@ function generatePKCE() {
 
 // ─── Token Refresh ────────────────────────────────────────
 
-async function refreshToken(creds) {
+export async function refreshToken(creds) {
   const body = new URLSearchParams({
     grant_type: "refresh_token",
     refresh_token: creds.refresh_token,
