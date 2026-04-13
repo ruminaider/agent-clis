@@ -3,13 +3,13 @@ import { callTool } from "./mcp.js";
 // ─── Search ──────────────────────────────────────────────
 
 export async function search(query, options = {}) {
-  const args = { query };
-  if (options.type === "internal" || options.type === "external") {
-    args.search_type = options.type;
+  const args = { query, filters: {} };
+  if (options.type === "user") {
+    args.query_type = "user";
   } else {
-    args.search_type = "internal";
+    args.query_type = "internal";
   }
-  if (options.limit) args.limit = options.limit;
+  if (options.limit) args.page_size = options.limit;
   return callTool("notion-search", args);
 }
 
@@ -20,30 +20,44 @@ export async function getPage(id) {
 }
 
 export async function createPage(parentId, title, content) {
-  const args = {
-    pages: [{
-      parent_id: parentId,
-      title,
-    }],
-  };
-  if (content) {
-    args.pages[0].content_markdown = content;
-  }
-  return callTool("notion-create-pages", args);
+  const page = { properties: { title } };
+  if (content) page.content = content;
+  return callTool("notion-create-pages", {
+    parent: { type: "page_id", page_id: parentId },
+    pages: [page],
+  });
 }
 
-export async function updatePage(pageId, properties) {
-  const args = { page_id: pageId };
-  if (properties.title) args.title = properties.title;
-  if (properties.content) args.content_markdown = properties.content;
-  if (properties.properties) args.properties = properties.properties;
-  return callTool("notion-update-page", args);
+export async function updatePage(pageId, options) {
+  let result;
+
+  // Update title or database properties
+  if (options.title || options.properties) {
+    const properties = options.properties || {};
+    if (options.title) properties.title = options.title;
+    result = await callTool("notion-update-page", {
+      page_id: pageId,
+      command: "update_properties",
+      properties,
+    });
+  }
+
+  // Replace all page content
+  if (options.content) {
+    result = await callTool("notion-update-page", {
+      page_id: pageId,
+      command: "replace_content",
+      new_str: options.content,
+    });
+  }
+
+  return result;
 }
 
 export async function movePages(pageIds, newParentId) {
   return callTool("notion-move-pages", {
-    page_ids: pageIds,
-    new_parent_id: newParentId,
+    page_or_database_ids: pageIds,
+    new_parent: { type: "page_id", page_id: newParentId },
   });
 }
 
@@ -53,34 +67,34 @@ export async function duplicatePage(pageId) {
 
 // ─── Databases ───────────────────────────────────────────
 
-export async function createDatabase(parentId, ddl) {
-  return callTool("notion-create-database", {
-    parent_id: parentId,
-    ddl,
-  });
+export async function createDatabase(parentId, schema, title) {
+  const args = {
+    parent: { type: "page_id", page_id: parentId },
+    schema,
+  };
+  if (title) args.title = title;
+  return callTool("notion-create-database", args);
 }
 
-export async function updateDataSource(dataSourceId, ddl) {
-  return callTool("notion-update-data-source", {
-    data_source_id: dataSourceId,
-    ddl,
-  });
+export async function updateDataSource(dataSourceId, statements, options = {}) {
+  const args = { data_source_id: dataSourceId, statements };
+  if (options.title) args.title = options.title;
+  return callTool("notion-update-data-source", args);
 }
 
 // ─── Views ───────────────────────────────────────────────
 
-export async function createView(databaseId, viewConfig) {
-  return callTool("notion-create-view", {
-    database_id: databaseId,
-    ...viewConfig,
-  });
+export async function createView(databaseId, dataSourceId, name, type, configure) {
+  const args = { database_id: databaseId, data_source_id: dataSourceId, name, type };
+  if (configure) args.configure = configure;
+  return callTool("notion-create-view", args);
 }
 
 export async function updateView(viewId, updates) {
-  return callTool("notion-update-view", {
-    view_id: viewId,
-    ...updates,
-  });
+  const args = { view_id: viewId };
+  if (updates.name) args.name = updates.name;
+  if (updates.configure) args.configure = updates.configure;
+  return callTool("notion-update-view", args);
 }
 
 // ─── Comments ────────────────────────────────────────────
@@ -90,7 +104,10 @@ export async function getComments(pageId) {
 }
 
 export async function addComment(pageId, text, options = {}) {
-  const args = { page_id: pageId, body: text };
+  const args = {
+    page_id: pageId,
+    rich_text: [{ type: "text", text: { content: text } }],
+  };
   if (options.discussion_id) args.discussion_id = options.discussion_id;
   return callTool("notion-create-comment", args);
 }

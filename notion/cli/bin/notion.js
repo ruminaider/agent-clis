@@ -216,31 +216,32 @@ async function cmdDb() {
   switch (subcommand) {
     case "create": {
       const parentId = getFlag("--parent");
-      const ddl = getFlag("--ddl");
-      if (!parentId || !ddl) {
-        console.error('Usage: notion-cli db create --parent <id> --ddl "CREATE TABLE ..."');
+      const schema = getFlag("--schema") || getFlag("--ddl");
+      const title = getFlag("--title");
+      if (!parentId || !schema) {
+        console.error('Usage: notion-cli db create --parent <id> --schema "CREATE TABLE ..." [--title <title>]');
         process.exit(1);
       }
-      const result = await api.createDatabase(parentId, ddl);
+      const result = await api.createDatabase(parentId, schema, title);
       output(result, format);
       break;
     }
     case "update": {
       const dsId = getArg(2);
-      const ddl = getFlag("--ddl");
-      if (!dsId || !ddl) {
-        console.error('Usage: notion-cli db update <data-source-id> --ddl "ALTER TABLE ..."');
+      const statements = getFlag("--schema") || getFlag("--ddl");
+      if (!dsId || !statements) {
+        console.error('Usage: notion-cli db update <data-source-id> --schema "ALTER TABLE ..."');
         process.exit(1);
       }
-      const result = await api.updateDataSource(dsId, ddl);
+      const result = await api.updateDataSource(dsId, statements);
       output(result, format);
       break;
     }
     default:
       console.log(`Usage: notion-cli db <create|update>
 
-  create --parent <id> --ddl "CREATE TABLE tasks (Name TEXT, Status SELECT('Todo','Done'))"
-  update <data-source-id> --ddl "ALTER TABLE ..."`);
+  create --parent <id> --schema "CREATE TABLE tasks (Name TEXT, Status SELECT('Todo','Done'))" [--title <title>]
+  update <data-source-id> --schema "ALTER TABLE ..."`);
   }
 }
 
