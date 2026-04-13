@@ -1,27 +1,27 @@
 ---
 name: notion
-description: Interact with Notion workspace via CLI. Search pages, read/create/edit pages, manage databases, comments, users, and teams. Use when the user needs to work with Notion content.
-compatibility: Requires Node.js. Run /notion-setup or 'notion-cli auth login' to authenticate.
+description: Interact with a Notion workspace via CLI. Search, read, create, and edit pages; manage databases, comments, users, and teams.
+compatibility: Requires Node.js. Run /notion-setup or `notion-cli auth` to authenticate.
 ---
 
 # Notion CLI
 
-Access your full Notion workspace from the terminal using `notion-cli`. Authenticates via Notion's MCP OAuth — just run `login`, authorize in browser, done. No integration setup, no page sharing, full workspace access.
+Access your full Notion workspace from the terminal with `notion-cli`. No integration setup, no page sharing required.
 
 ## Setup
 
 ```bash
-notion-cli auth login     # Opens browser → approve → done
+notion-cli auth           # Refresh credentials, then open browser if needed
 notion-cli auth status    # Check auth status
 ```
 
-Or use `/notion-setup` in pi.
+Credentials are stored at `~/.config/notion-cli/credentials.json`. You can also run `/notion-setup` in pi.
 
 ## Commands
 
 ### Search
 ```bash
-notion-cli search "query"                    # Search workspace (semantic)
+notion-cli search "query"                    # Semantic search across workspace
 ```
 
 ### Fetch page/database content
@@ -40,17 +40,19 @@ notion-cli page duplicate <page-id>
 
 ### Databases
 ```bash
-notion-cli db create --parent <id> --ddl "CREATE TABLE tasks (Name TEXT, Status SELECT('Todo','Done'))"
-notion-cli db update <data-source-id> --ddl "ALTER TABLE ..."
+notion-cli db create --parent <id> --title "Tasks" --schema "CREATE TABLE tasks (Name TEXT, Status SELECT('Todo','Done'))"
+notion-cli db update <data-source-id> --schema "ALTER TABLE ..."
 ```
+
+The `--schema` flag accepts SQL DDL syntax. `--ddl` still works as an alias.
 
 ### Comments
 ```bash
-notion-cli comment list <page-id>            # List comments/discussions
-notion-cli comment add <page-id> "text"      # Add comment
+notion-cli comment list <page-id>            # List comments and discussions
+notion-cli comment add <page-id> "text"      # Add a comment
 ```
 
-### Users & Teams
+### Users and Teams
 ```bash
 notion-cli users                             # List workspace users
 notion-cli teams                             # List workspace teams
@@ -63,7 +65,7 @@ notion-cli tools                             # List available MCP tools
 
 ## Output
 
-All commands output JSON. Pipe to `jq` for filtering:
+All commands return JSON. Pipe to `jq` for filtering:
 
 ```bash
 notion-cli search "roadmap" | jq '.results[].title'
@@ -72,9 +74,7 @@ notion-cli users | jq '.results[] | select(.type=="person") | .name'
 
 ## Gotchas
 
-- Token expires after ~60 minutes but auto-refreshes if a refresh token is available.
-- If you get auth errors, re-run `notion-cli auth login`.
-- Page IDs from URLs work with or without hyphens.
-- The `fetch` command accepts both Notion URLs and raw page IDs.
-- Database creation uses SQL DDL syntax (Notion MCP-specific).
-- Search is semantic — it searches content, not just titles.
+- Page IDs work with or without hyphens.
+- Search matches content, not just titles.
+- If you get auth errors, run `notion-cli auth` to re-authenticate.
+- `notion-cli auth status` shows token expiry and last refresh time.
