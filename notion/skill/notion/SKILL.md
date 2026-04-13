@@ -1,50 +1,37 @@
 ---
 name: notion
-description: Interact with a Notion workspace via CLI. Search, read, create, and edit pages; manage databases, comments, users, and teams.
-compatibility: Requires Node.js. Run /notion-setup or `notion-cli auth` to authenticate.
+description: Use when the user needs to read, create, edit, search, or manage Notion pages, databases, comments, users, or teams from the terminal. Also use when building automations or scripts that interact with a Notion workspace.
+compatibility: Requires Node.js. Run `notion-cli auth` to authenticate.
 ---
 
 # Notion CLI
 
-Access your full Notion workspace from the terminal with `notion-cli`. No integration setup, no page sharing required.
+Access your full Notion workspace from the terminal. No integration setup, no page sharing required. Run `notion-cli auth --help` for details.
 
-## Setup
+## Quick Reference
 
-```bash
-notion-cli auth           # Refresh credentials, then open browser if needed
-notion-cli auth status    # Check auth status
-```
+| Task | Command |
+|------|---------|
+| Search workspace | `notion-cli search "query"` |
+| Read a page | `notion-cli fetch <page-id-or-url>` |
+| Create a page | `notion-cli page create --parent <id> --title "Title" [--content "md"]` |
+| Update a page | `notion-cli page update <id> [--title "T"] [--content "md"]` |
+| Move a page | `notion-cli page move <id> --parent <new-parent-id>` |
+| Duplicate a page | `notion-cli page duplicate <id>` |
+| Create a database | `notion-cli db create --parent <id> --schema "CREATE TABLE ..." [--title "T"]` |
+| Update a database | `notion-cli db update <data-source-id> --schema "ALTER TABLE ..."` |
+| List comments | `notion-cli comment list <page-id>` |
+| Add a comment | `notion-cli comment add <page-id> "text"` |
+| List users | `notion-cli users` |
+| List teams | `notion-cli teams` |
 
-Credentials are stored at `~/.config/notion-cli/credentials.json`. You can also run `/notion-setup` in pi.
+All commands return JSON. Pipe to `jq` for filtering.
 
-## Commands
+## Content Formatting (Notion-flavored Markdown)
 
-### Search
-```bash
-notion-cli search "query"                    # Semantic search across workspace
-```
+The `--content` flag accepts Notion-flavored Markdown: standard Markdown plus XML extensions for Notion-specific blocks. `page update --content` replaces all existing content.
 
-### Fetch page/database content
-```bash
-notion-cli fetch <page-id>                   # Fetch by ID
-notion-cli fetch "https://notion.so/..."     # Fetch by URL
-```
-
-### Pages
-```bash
-notion-cli page create --parent <id> --title "Title" [--content "markdown"]
-notion-cli page update <page-id> [--title "New Title"] [--content "markdown"]
-notion-cli page move <page-id> --parent <new-parent-id>
-notion-cli page duplicate <page-id>
-```
-
-### Content formatting (Notion-flavored Markdown)
-
-The `--content` flag accepts Notion-flavored Markdown, a superset of standard Markdown with XML extensions for Notion-specific blocks. Use this to create rich, well-formatted pages.
-
-**Note:** `page update --content` replaces all existing page content.
-
-Standard Markdown works as expected (headings, bold, italic, lists, code blocks, blockquotes, images, links, tables via pipe syntax). The extensions below cover Notion-specific features:
+Standard Markdown works as expected (headings, bold, italic, lists, code blocks, blockquotes, images, links). The extensions below cover Notion-specific features:
 
 ```markdown
 ## Toggle heading {toggle="true"}
@@ -96,43 +83,12 @@ Colors: gray, brown, orange, yellow, green, blue, purple, pink, red (add `_bg` s
 
 Children (toggle content, callout body, list sub-items) must be indented with tabs.
 
-### Databases
-```bash
-notion-cli db create --parent <id> --title "Tasks" --schema "CREATE TABLE tasks (Name TEXT, Status SELECT('Todo','Done'))"
-notion-cli db update <data-source-id> --schema "ALTER TABLE ..."
-```
+## Common Mistakes
 
-The `--schema` flag accepts SQL DDL syntax. `--ddl` still works as an alias.
-
-### Comments
-```bash
-notion-cli comment list <page-id>            # List comments and discussions
-notion-cli comment add <page-id> "text"      # Add a comment
-```
-
-### Users and Teams
-```bash
-notion-cli users                             # List workspace users
-notion-cli teams                             # List workspace teams
-```
-
-### Debug
-```bash
-notion-cli tools                             # List available MCP tools
-```
-
-## Output
-
-All commands return JSON. Pipe to `jq` for filtering:
-
-```bash
-notion-cli search "roadmap" | jq '.results[].title'
-notion-cli users | jq '.results[] | select(.type=="person") | .name'
-```
-
-## Gotchas
-
+- Using `--ddl` instead of `--schema` for database commands. `--ddl` still works but `--schema` is preferred.
+- Forgetting that `page update --content` replaces all content, not appends.
+- Passing a database URL as `--parent` for page creation. Use the page ID of the parent page, not a database URL.
+- Not quoting markdown content that contains shell-special characters.
+- Search is semantic (content matching), not keyword-based on titles alone.
 - Page IDs work with or without hyphens.
-- Search matches content, not just titles.
-- If you get auth errors, run `notion-cli auth` to re-authenticate.
-- `notion-cli auth status` shows token expiry and last refresh time.
+- Auth errors: run `notion-cli auth` to re-authenticate.
