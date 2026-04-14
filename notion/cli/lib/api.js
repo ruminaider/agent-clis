@@ -31,7 +31,6 @@ export async function createPage(parentId, title, content) {
 export async function updatePage(pageId, options) {
   let result;
 
-  // Update title or database properties
   if (options.title || options.properties) {
     const properties = options.properties || {};
     if (options.title) properties.title = options.title;
@@ -42,16 +41,25 @@ export async function updatePage(pageId, options) {
     });
   }
 
-  // Replace all page content
-  if (options.content) {
+  if (options.content !== undefined) {
     result = await callTool("notion-update-page", {
       page_id: pageId,
       command: "replace_content",
       new_str: options.content,
+      ...(options.allowDeletingContent ? { allow_deleting_content: true } : {}),
     });
   }
 
   return result;
+}
+
+export async function editPageContent(pageId, contentUpdates, options = {}) {
+  return callTool("notion-update-page", {
+    page_id: pageId,
+    command: "update_content",
+    content_updates: contentUpdates,
+    ...(options.allowDeletingContent ? { allow_deleting_content: true } : {}),
+  });
 }
 
 export async function movePages(pageIds, newParentId) {

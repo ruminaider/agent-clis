@@ -60,7 +60,7 @@ async function registerClient(redirectUri) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      client_name: "notion-cli-tool",
+      client_name: "notion-cli",
       redirect_uris: [redirectUri],
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],

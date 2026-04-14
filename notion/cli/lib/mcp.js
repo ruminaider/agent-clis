@@ -84,7 +84,7 @@ async function ensureInitialized() {
   await mcpRequest("initialize", {
     protocolVersion: PROTOCOL_VERSION,
     capabilities: {},
-    clientInfo: { name: "notion-cli-tool", version: "1.0.0" },
+    clientInfo: { name: "notion-cli", version: "1.0.0" },
   });
 
   await mcpRequest("notifications/initialized", {}, true);

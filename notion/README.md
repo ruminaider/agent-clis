@@ -40,6 +40,9 @@ notion-cli fetch <page-id-or-url>
 
 # Create, edit, move, duplicate pages
 notion-cli page create --parent <id> --title "Title" --content "markdown content"
+notion-cli page edit <page-id> --find "Old text" --replace "New text"
+notion-cli page edit <page-id> --find-file before.md --replace-file after.md
+notion-cli page edit <page-id> --edits-file edits.json
 notion-cli page update <page-id> --title "New Title" --content "updated content"
 notion-cli page move <page-id> --parent <new-parent-id>
 notion-cli page duplicate <page-id>
@@ -59,6 +62,30 @@ notion-cli teams
 ```
 
 ## Output
+
+`page edit` performs exact-match search and replace against the current page body. It is safer for surgical text changes. `page edit --edits-file` accepts batch JSON edits, and `replace_all_matches` is set per update in that file. `page update --content` still replaces the entire page body, and `--allow-deleting-content` is required when a replacement deletes content, including an empty string.
+
+Choose the edit mode by scope:
+- `--find` and `--replace` for short exact replacements
+- `--find-file` and `--replace-file` for multiline sections
+- `--edits-file` for batch replacements in one call
+- `page update --content` only for full rewrites
+
+Example `edits.json`:
+
+```json
+[
+  {
+    "old_str": "## Old Section\nOld content here",
+    "new_str": "## Old Section\nNew content here"
+  },
+  {
+    "old_str": "Old term",
+    "new_str": "New term",
+    "replace_all_matches": true
+  }
+]
+```
 
 All commands return JSON. Pipe to `jq` for filtering:
 

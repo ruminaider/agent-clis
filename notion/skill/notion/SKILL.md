@@ -1,94 +1,49 @@
 ---
 name: notion
-description: Use when the user needs to read, create, edit, search, or manage Notion pages, databases, comments, users, or teams from the terminal. Also use when building automations or scripts that interact with a Notion workspace.
-compatibility: Requires Node.js. Run `notion-cli auth` to authenticate.
+description: Use when the user needs to search, read, create, update, move, duplicate, or comment on Notion pages or databases from the terminal, or needs Notion-flavored Markdown content. Do NOT use for Claude Code plugin or MCP setup.
+compatibility: Requires Node.js. Run `notion-cli auth` or `/notion-setup` in pi to authenticate.
 ---
 
 # Notion CLI
 
-Access your full Notion workspace from the terminal. No integration setup, no page sharing required. Run `notion-cli auth --help` for details.
+## Overview
+`notion-cli` gives terminal access to a full Notion workspace through Notion's remote MCP OAuth. Use it when Claude should act on Notion directly instead of asking for manual page sharing.
 
-## Quick Reference
+## Core Philosophy
+**Prefer the CLI, not the MCP plugin**, because the CLI already handles OAuth, tool wiring, and JSON output.
+**Treat `auth` as the default entrypoint.** `notion-cli auth` refreshes first, then opens the browser if needed.
+**Use `page edit` for surgical replacements.** It performs exact-match search and replace against existing page content.
+**Reserve `page update --content` for full rewrites.** It replaces the whole body.
+*Judgment:* If a task only says "update the page", prefer `page edit` when the user wants a targeted text change, and use `page update --content` only when a full rewrite is intended.
 
-| Task | Command |
-|------|---------|
-| Search workspace | `notion-cli search "query"` |
-| Read a page | `notion-cli fetch <page-id-or-url>` |
-| Create a page | `notion-cli page create --parent <id> --title "Title" [--content "md"]` |
-| Update a page | `notion-cli page update <id> [--title "T"] [--content "md"]` |
-| Move a page | `notion-cli page move <id> --parent <new-parent-id>` |
-| Duplicate a page | `notion-cli page duplicate <id>` |
-| Create a database | `notion-cli db create --parent <id> --schema "CREATE TABLE ..." [--title "T"]` |
-| Update a database | `notion-cli db update <data-source-id> --schema "ALTER TABLE ..."` |
-| List comments | `notion-cli comment list <page-id>` |
-| Add a comment | `notion-cli comment add <page-id> "text"` |
-| List users | `notion-cli users` |
-| List teams | `notion-cli teams` |
+## Domain Mechanics
+1. Authenticate with `notion-cli auth`, then check `notion-cli auth status` if needed. Credentials live at `~/.config/notion-cli/credentials.json`.
+2. Search and fetch with `notion-cli search` and `notion-cli fetch`. Search is semantic, and page IDs work with or without hyphens.
+3. Manage pages with `page create`, `page edit`, `page update`, `page move`, and `page duplicate`. Use `--find` and `--replace` for short exact replacements, `--find-file` and `--replace-file` for multiline sections, and `--edits-file` for batch changes. In batch JSON, set `replace_all_matches` per update, and use `--allow-deleting-content` when a replacement deletes content, including an empty string.
+4. Manage databases with `db create` and `db update`. Prefer `--schema`; `--ddl` still works as a fallback. `db create` can take an optional `--title`.
+5. Handle collaboration with `comment list`, `comment add`, `users`, `teams`, and `tools`.
+*Judgment:* When the user asks for Notion structure, use `fetch` before guessing parent pages or database shape.
 
-All commands return JSON. Pipe to `jq` for filtering.
-
-## Content Formatting (Notion-flavored Markdown)
-
-The `--content` flag accepts Notion-flavored Markdown: standard Markdown plus XML extensions for Notion-specific blocks. `page update --content` replaces all existing content.
-
-Standard Markdown works as expected (headings, bold, italic, lists, code blocks, blockquotes, images, links). The extensions below cover Notion-specific features:
-
-```markdown
-## Toggle heading {toggle="true"}
-	Indented children appear inside the toggle.
-
-<details>
-<summary>Toggle block title</summary>
-	Content inside the toggle (must be indented with tabs).
-</details>
-
-<callout icon="💡" color="blue_bg">
-	Important information here.
-	Callouts support multiple blocks as children.
-</callout>
-
-<columns>
-	<column>
-		Left column content
-	</column>
-	<column>
-		Right column content
-	</column>
-</columns>
-
-Text with {color="blue"} block color.
-<span color="red">Inline colored text</span>
-<span color="yellow_bg">Highlighted text</span>
-
-- [ ] Unchecked to-do
-- [x] Checked to-do
-
-$$
-E = mc^2
-$$
-
-<table header-row="true">
-	<tr>
-		<td>Header 1</td>
-		<td>Header 2</td>
-	</tr>
-	<tr>
-		<td>Cell A</td>
-		<td>Cell B</td>
-	</tr>
-</table>
-```
-
-Colors: gray, brown, orange, yellow, green, blue, purple, pink, red (add `_bg` suffix for background colors).
-
-Children (toggle content, callout body, list sub-items) must be indented with tabs.
+## Notion-flavored Markdown
+Use standard Markdown plus Notion-specific blocks for toggles, callouts, columns, colors, tasks, equations, and tables. Nested blocks must be tab-indented.
+*Judgment:* If the content needs Notion-specific blocks, produce Notion-flavored Markdown, not plain Markdown. Prefer `page edit` when only part of the body changes, and remember that `page update --content` replaces the full body.
 
 ## Common Mistakes
+Example batch file:
+```json
+[
+  {
+    "old_str": "## Old Section\nOld content here",
+    "new_str": "## Old Section\nNew content here"
+  }
+]
+```
 
-- Using `--ddl` instead of `--schema` for database commands. `--ddl` still works but `--schema` is preferred.
-- Forgetting that `page update --content` replaces all content, not appends.
-- Passing a database URL as `--parent` for page creation. Use the page ID of the parent page, not a database URL.
-- Not quoting markdown content that contains shell-special characters.
-- Search is semantic (content matching), not keyword-based on titles alone.
-- Page IDs work with or without hyphens.
-- Auth errors: run `notion-cli auth` to re-authenticate.
+- Using `--ddl` when `--schema` is preferred.
+- Assuming `page update --content` appends.
+- Using `page update --content` for a targeted edit when `page edit` would be safer.
+- Using `--all` with `--edits-file`, or forgetting that batch replacements use `replace_all_matches` inside the JSON file.
+- Treating search as title-only instead of semantic.
+- Passing database URLs where a parent page ID is required.
+- Forgetting that IDs work with or without hyphens.
+- Failing to pipe JSON to `jq` when filtering results.
