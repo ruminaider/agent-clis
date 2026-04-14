@@ -6,12 +6,21 @@ import * as api from "../lib/api.js";
 import { listTools } from "../lib/mcp.js";
 
 const args = process.argv.slice(2);
-const BOOLEAN_FLAGS = new Set(["--all", "--allow-deleting-content", "--help", "-h"]);
+const BOOLEAN_FLAGS = new Set([
+  "--all",
+  "--all-blocks",
+  "--allow-deleting-content",
+  "--force",
+  "--include-resolved",
+  "--help",
+  "-h",
+]);
 const VALUE_FLAGS = new Set([
   "-f",
   "--format",
   "--port",
   "--parent",
+  "--child",
   "--title",
   "--content",
   "--find",
@@ -21,6 +30,7 @@ const VALUE_FLAGS = new Set([
   "--edits-file",
   "--schema",
   "--ddl",
+  "--discussion-id",
 ]);
 const ALL_FLAGS = new Set([...BOOLEAN_FLAGS, ...VALUE_FLAGS]);
 
@@ -182,8 +192,63 @@ async function loadEditsFile(path) {
   return contentUpdates.map(normalizeContentUpdate);
 }
 
+function extractNotionId(value) {
+  const match = value.match(/[0-9a-fA-F]{32}|[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}/);
+  return match ? match[0].replace(/-/g, "").toLowerCase() : null;
+}
+
+function normalizeChildPageId(value) {
+  const notionId = extractNotionId(value);
+  if (!notionId) {
+    throw new Error("--child must be a Notion page ID or URL");
+  }
+  return notionId;
+}
+
+function getFetchedPageText(page) {
+  if (typeof page === "string") return page;
+  if (page && typeof page === "object" && typeof page.text === "string") return page.text;
+  throw new Error("Unexpected fetch response shape for page content");
+}
+
+function findChildPageTag(pageText, options = {}) {
+  const childPageTags = pageText
+    .split("\n")
+    .map((line) => {
+      const normalizedLine = line.trim();
+      const match = normalizedLine.match(/^<page url="([^"]+)">(.*)<\/page>$/);
+      if (!match) return null;
+      return {
+        full: line,
+        url: match[1],
+        title: match[2],
+      };
+    })
+    .filter(Boolean);
+
+  let matches;
+
+  if (options.child) {
+    const childId = normalizeChildPageId(options.child);
+    matches = childPageTags.filter((tag) => extractNotionId(tag.url) === childId);
+  } else if (options.title) {
+    matches = childPageTags.filter((tag) => tag.title === options.title);
+  } else {
+    throw new Error("page remove-child requires --child or --title");
+  }
+
+  if (matches.length === 0) {
+    throw new Error("No matching child page found in the parent page content");
+  }
+  if (matches.length > 1) {
+    throw new Error("Multiple matching child pages found. Use --child with an exact page ID or URL");
+  }
+
+  return matches[0].full;
+}
+
 function printPageHelp() {
-  console.log(`Usage: notion-cli page <create|edit|update|move|duplicate>
+  console.log(`Usage: notion-cli page <create|edit|update|move|duplicate|remove-child>
 
   create --parent <id> --title <title> [--content <markdown>]
   edit <page-id> --find <text> --replace <text> [--all] [--allow-deleting-content]
@@ -192,12 +257,15 @@ function printPageHelp() {
   update <page-id> [--title <title>] [--content <markdown>] [--allow-deleting-content]
   move <page-id> --parent <new-parent-id>
   duplicate <page-id>
+  remove-child <parent-page-id> (--child <child-page-id-or-url> | --title <exact-child-title>) --force
 
 Notes:
   - page edit performs exact-match search and replace using the current page content.
   - page edit --edits-file accepts a JSON array, or {"content_updates":[...]} for batch edits.
   - In batch mode, set replace_all_matches on each update. Use --all only with inline or file inputs.
-  - page update --content replaces the entire page body. Use --allow-deleting-content when the replacement deletes content, including empty strings.`);
+  - page update --content replaces the entire page body. Use --allow-deleting-content when the replacement deletes content, including empty strings.
+  - page remove-child removes an embedded child page reference from the parent page content using Notion's child-page deletion flow.
+  - page remove-child requires --force and shows the exact child-page tag it matched when confirmation is missing.`);
 }
 
 async function main() {
@@ -395,6 +463,27 @@ async function cmdPage() {
       output(await api.duplicatePage(pageId), format);
       break;
     }
+    case "remove-child": {
+      const parentPageId = getArg(2);
+      if (!parentPageId) {
+        console.error("Usage: notion-cli page remove-child <parent-page-id> (--child <child-page-id-or-url> | --title <exact-child-title>) --force");
+        process.exit(1);
+      }
+
+      const child = getFlag("--child");
+      const title = getFlag("--title");
+      if ((child && title) || (!child && !title)) {
+        throw new Error("page remove-child requires exactly one of --child or --title");
+      }
+
+      const fetchedPage = await api.getPage(parentPageId);
+      const childTag = findChildPageTag(getFetchedPageText(fetchedPage), { child, title });
+      if (!hasFlag("--force")) {
+        throw new Error(`page remove-child is destructive. Re-run with --force to remove this child page:\n${childTag}`);
+      }
+      output(await api.editPageContent(parentPageId, [{ old_str: childTag, new_str: "" }], { allowDeletingContent: true }), format);
+      break;
+    }
     default:
       printPageHelp();
   }
@@ -437,10 +526,14 @@ async function cmdComment() {
     case "list": {
       const pageId = getArg(2);
       if (!pageId) {
-        console.error("Usage: notion-cli comment list <page-id>");
+        console.error("Usage: notion-cli comment list <page-id> [--all-blocks] [--include-resolved] [--discussion-id <id>]");
         process.exit(1);
       }
-      output(await api.getComments(pageId), format);
+      output(await api.getComments(pageId, {
+        includeAllBlocks: hasFlag("--all-blocks"),
+        includeResolved: hasFlag("--include-resolved"),
+        discussionId: getFlag("--discussion-id"),
+      }), format);
       break;
     }
     case "add": {
@@ -454,7 +547,7 @@ async function cmdComment() {
       break;
     }
     default:
-      console.log(`Usage: notion-cli comment <list|add>\n\n  list <page-id>          List comments and discussions\n  add <page-id> <text>    Add a comment`);
+      console.log(`Usage: notion-cli comment <list|add>\n\n  list <page-id> [--all-blocks] [--include-resolved] [--discussion-id <id>]\n                          List comments and discussions, including child-block or resolved threads when requested\n  add <page-id> <text>    Add a comment`);
   }
 }
 
@@ -488,7 +581,8 @@ Auth:
 Commands:
   search <query>               Search workspace
   fetch <page-url-or-id>       Fetch page or database content
-  page create|edit|update|move|duplicate   Work with pages
+  page create|edit|update|move|duplicate|remove-child
+                              Work with pages
   db create|update             Work with databases
   comment list|add             Work with comments
   users                        List workspace users

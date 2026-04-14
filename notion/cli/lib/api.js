@@ -107,8 +107,12 @@ export async function updateView(viewId, updates) {
 
 // ─── Comments ────────────────────────────────────────────
 
-export async function getComments(pageId) {
-  return callTool("notion-get-comments", { page_id: pageId });
+export async function getComments(pageId, options = {}) {
+  const args = { page_id: pageId };
+  if (options.includeAllBlocks) args.include_all_blocks = true;
+  if (options.includeResolved) args.include_resolved = true;
+  if (options.discussionId) args.discussion_id = options.discussionId;
+  return callTool("notion-get-comments", args);
 }
 
 export async function addComment(pageId, text, options = {}) {

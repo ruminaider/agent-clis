@@ -38,7 +38,7 @@ notion-cli search "quarterly roadmap"
 # Read pages
 notion-cli fetch <page-id-or-url>
 
-# Create, edit, move, duplicate pages
+# Create, edit, move, duplicate, or remove embedded child pages
 notion-cli page create --parent <id> --title "Title" --content "markdown content"
 notion-cli page edit <page-id> --find "Old text" --replace "New text"
 notion-cli page edit <page-id> --find-file before.md --replace-file after.md
@@ -46,6 +46,8 @@ notion-cli page edit <page-id> --edits-file edits.json
 notion-cli page update <page-id> --title "New Title" --content "updated content"
 notion-cli page move <page-id> --parent <new-parent-id>
 notion-cli page duplicate <page-id>
+notion-cli page remove-child <parent-page-id> --child <child-page-id-or-url> --force
+notion-cli page remove-child <parent-page-id> --title "Exact Child Page Title" --force
 
 # Databases
 notion-cli db create --parent <id> --title "Tasks" --schema "CREATE TABLE tasks (Name TEXT, Status SELECT('Todo','Done'))"
@@ -54,7 +56,10 @@ notion-cli db update <data-source-id> --schema "ALTER TABLE ..."
 
 # Comments
 notion-cli comment list <page-id>
+notion-cli comment list <page-id> --all-blocks --include-resolved
+notion-cli comment list <page-id> --discussion-id discussion://pageId/blockId/discussionId
 notion-cli comment add <page-id> "comment text"
+# Note: Notion's current MCP surface does not expose comment delete or resolve operations
 
 # Users and teams
 notion-cli users
@@ -69,6 +74,7 @@ Choose the edit mode by scope:
 - `--find` and `--replace` for short exact replacements
 - `--find-file` and `--replace-file` for multiline sections
 - `--edits-file` for batch replacements in one call
+- `page remove-child` to remove an embedded child page reference from a parent page by exact child URL, ID, or exact title, with `--force` confirmation
 - `page update --content` only for full rewrites
 
 Example `edits.json`:

@@ -19,9 +19,9 @@ compatibility: Requires Node.js. Run `notion-cli auth` or `/notion-setup` in pi 
 ## Domain Mechanics
 1. Authenticate with `notion-cli auth`, then check `notion-cli auth status` if needed. Credentials live at `~/.config/notion-cli/credentials.json`.
 2. Search and fetch with `notion-cli search` and `notion-cli fetch`. Search is semantic, and page IDs work with or without hyphens.
-3. Manage pages with `page create`, `page edit`, `page update`, `page move`, and `page duplicate`. Use `--find` and `--replace` for short exact replacements, `--find-file` and `--replace-file` for multiline sections, and `--edits-file` for batch changes. In batch JSON, set `replace_all_matches` per update, and use `--allow-deleting-content` when a replacement deletes content, including an empty string.
+3. Manage pages with `page create`, `page edit`, `page update`, `page move`, `page duplicate`, and `page remove-child`. Use `--find` and `--replace` for short exact replacements, `--find-file` and `--replace-file` for multiline sections, and `--edits-file` for batch changes. Use `page remove-child --force` when a parent page embeds a child page reference that should be removed through Notion's child-page deletion flow. In batch JSON, set `replace_all_matches` per update, and use `--allow-deleting-content` when a replacement deletes content, including an empty string.
 4. Manage databases with `db create` and `db update`. Prefer `--schema`; `--ddl` still works as a fallback. `db create` can take an optional `--title`.
-5. Handle collaboration with `comment list`, `comment add`, `users`, `teams`, and `tools`.
+5. Handle collaboration with `comment list`, `comment add`, `users`, `teams`, and `tools`. `comment list` can also include child-block discussions, resolved threads, or one specific discussion via flags.
 *Judgment:* When the user asks for Notion structure, use `fetch` before guessing parent pages or database shape.
 
 ## Notion-flavored Markdown
@@ -41,7 +41,7 @@ Example batch file:
 
 - Using `--ddl` when `--schema` is preferred.
 - Assuming `page update --content` appends.
-- Using `page update --content` for a targeted edit when `page edit` would be safer.
+- Using `page update --content` for a targeted edit when `page edit` or `page remove-child` would be safer.
 - Using `--all` with `--edits-file`, or forgetting that batch replacements use `replace_all_matches` inside the JSON file.
 - Treating search as title-only instead of semantic.
 - Passing database URLs where a parent page ID is required.
