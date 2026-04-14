@@ -1,6 +1,6 @@
 ---
 name: notion
-description: Use when the user needs to search, read, create, update, move, duplicate, or comment on Notion pages or databases from the terminal, or needs Notion-flavored Markdown content. Do NOT use for Claude Code plugin or MCP setup.
+description: Use when the user needs to search, read, create, update, move, duplicate, remove child pages, or comment on Notion pages or databases from the terminal, or needs Notion-flavored Markdown content. Do NOT use for Claude Code plugin or MCP setup.
 compatibility: Requires Node.js. Run `notion-cli auth` or `/notion-setup` in pi to authenticate.
 ---
 

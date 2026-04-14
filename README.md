@@ -55,7 +55,7 @@ notion-cli search "deploy checklist" | jq -r '.results[0].text' | slack-cli post
 Each tool handles its own authentication. Most use OAuth with a browser flow:
 
 ```bash
-notion-cli auth login    # Opens browser → click Approve → done
+notion-cli auth          # Refreshes token first, then opens browser if needed
 slack-cli auth login     # Same pattern
 ```
 

@@ -101,6 +101,6 @@ notion-cli search "roadmap" | jq '.results[].title'
 
 ## How It Works
 
-The Notion API normally requires you to create an integration and share each page with it. This CLI skips both steps by authenticating through Notion's remote MCP server OAuth: one approve/deny prompt grants full workspace access, the same access that MCP connectors in Claude and Cursor provide.
+The Notion API normally requires you to create an integration and share each page with it. This CLI skips both steps by authenticating through Notion's remote MCP OAuth: one approve/deny prompt grants full workspace access, the same access that MCP connectors in Claude and Cursor provide.
 
 All operations route through `mcp.notion.com`, which handles Notion API calls server-side.

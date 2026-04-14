@@ -1,7 +1,7 @@
 {
   "name": "@ruminaider/notion-cli",
   "version": "1.2.0",
-  "description": "Notion CLI with full workspace access via OAuth. Supports surgical page edits and full page rewrites through Notion MCP.",
+  "description": "Notion CLI with full workspace access via OAuth. Manage pages, databases, comments, and Notion-flavored Markdown from the terminal.",
   "type": "module",
   "license": "MIT",
   "repository": {
