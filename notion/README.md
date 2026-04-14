@@ -59,7 +59,6 @@ notion-cli comment list <page-id>
 notion-cli comment list <page-id> --all-blocks --include-resolved
 notion-cli comment list <page-id> --discussion-id discussion://pageId/blockId/discussionId
 notion-cli comment add <page-id> "comment text"
-# Note: Notion's current MCP surface does not expose comment delete or resolve operations
 
 # Users and teams
 notion-cli users

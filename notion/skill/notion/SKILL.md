@@ -21,7 +21,7 @@ compatibility: Requires Node.js. Run `notion-cli auth` or `/notion-setup` in pi 
 2. Search and fetch with `notion-cli search` and `notion-cli fetch`. Search is semantic, and page IDs work with or without hyphens.
 3. Manage pages with `page create`, `page edit`, `page update`, `page move`, `page duplicate`, and `page remove-child`. Use `--find` and `--replace` for short exact replacements, `--find-file` and `--replace-file` for multiline sections, and `--edits-file` for batch changes. Use `page remove-child --force` when a parent page embeds a child page reference that should be removed through Notion's child-page deletion flow. In batch JSON, set `replace_all_matches` per update, and use `--allow-deleting-content` when a replacement deletes content, including an empty string.
 4. Manage databases with `db create` and `db update`. Prefer `--schema`; `--ddl` still works as a fallback. `db create` can take an optional `--title`.
-5. Handle collaboration with `comment list`, `comment add`, `users`, `teams`, and `tools`. `comment list` can also include child-block discussions, resolved threads, or one specific discussion via flags.
+5. Handle collaboration with `comment list`, `comment add`, `users`, `teams`, and `tools`. `comment list` can output child-block discussions, pre-existing resolved threads, or one specific discussion via flags.
 *Judgment:* When the user asks for Notion structure, use `fetch` before guessing parent pages or database shape.
 
 ## Notion-flavored Markdown
