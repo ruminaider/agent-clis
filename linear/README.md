@@ -60,10 +60,15 @@ All command results are JSON-first. Success responses include `ok: true`. Errors
 
 ## Auth and config precedence
 
-The current implementation resolves credentials and defaults in this order:
+Auth credentials resolve in this order:
+1. Explicit `--api-key`
+2. `LINEAR_API_KEY`
+3. Persisted credentials at `~/.config/linear-cli/credentials.json`
+
+Team and workspace defaults resolve in this order:
 1. Explicit CLI flags
 2. Environment variables
-3. Persisted config at `~/.config/linear-cli/config.json`
+3. Persisted defaults at `~/.config/linear-cli/config.json`
 
 Environment overrides:
 - `LINEAR_API_KEY`

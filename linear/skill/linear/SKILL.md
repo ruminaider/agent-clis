@@ -21,7 +21,15 @@ Do not assume write commands or additional namespaces exist yet.
 
 ## Auth and configuration
 
-Use explicit flags first, then environment variables, then persisted config.
+Auth precedence:
+1. Explicit `--api-key`
+2. `LINEAR_API_KEY`
+3. Persisted credentials in `~/.config/linear-cli/credentials.json`
+
+Default team and workspace precedence:
+1. Explicit CLI flags
+2. `LINEAR_DEFAULT_TEAM` and `LINEAR_DEFAULT_WORKSPACE`
+3. Persisted defaults in `~/.config/linear-cli/config.json`
 
 `auth login --api-key <key>` persists a Linear API key without starting the browser flow.
 
@@ -29,9 +37,6 @@ Environment overrides:
 - `LINEAR_API_KEY`
 - `LINEAR_DEFAULT_TEAM`
 - `LINEAR_DEFAULT_WORKSPACE`
-
-Credentials are stored in `~/.config/linear-cli/credentials.json`.
-Persistent defaults are stored in `~/.config/linear-cli/config.json`.
 
 ## Operating rules
 

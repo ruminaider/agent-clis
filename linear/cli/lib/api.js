@@ -89,9 +89,9 @@ export function throwNotFound(entityType, query) {
 }
 
 export const API_IDENTIFIER_STRATEGY = Object.freeze({
-  acceptedInputs: ["id", "key", "name"],
+  acceptedInputs: ["id", "key"],
   directMatchFields: ["id", "key"],
-  resolutionPolicy: "accept direct identifiers immediately; resolve human-friendly names through tool calls later; fail clearly on ambiguity",
+  resolutionPolicy: "accept direct identifiers immediately; keep name-based lookup out of the shipped MVP; fail clearly when a direct identifier is missing",
 });
 
 function stripNullish(arguments_ = {}) {
