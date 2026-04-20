@@ -40,9 +40,7 @@ if [ -d "$SCRIPT_DIR/cli/bin" ] && [ -f "$SCRIPT_DIR/cli/package.json" ]; then
     fail "npm link failed. Try: sudo npm link"
   }
 else
-  info "Installing @ruminaider/linear-cli from npm..."
-  npm install -g @ruminaider/linear-cli 2>&1 | tail -1
-  ok "Installed from npm"
+  fail "Installing from npm is not ready yet. Clone the repo and run this installer from local source."
 fi
 
 if command -v linear-cli &>/dev/null; then
@@ -58,7 +56,12 @@ echo ""
 echo "  Authenticate:"
 echo "    linear-cli auth"
 echo ""
-echo "  Then use:"
-echo "    linear-cli search \"my project\""
-echo "    linear-cli issue get <issue-id>"
+echo "  Current scaffold commands:"
+echo "    linear-cli --help"
+echo ""
+echo "  Verified MVP targets after implementation:"
+echo "    linear-cli mcp discover"
+echo "    linear-cli project list"
+echo "    linear-cli project get <project-id>"
+echo "    linear-cli comment list <issue-id>"
 echo ""

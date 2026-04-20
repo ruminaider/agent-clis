@@ -1,27 +1,36 @@
 ---
 name: linear
-description: Use when the user needs to search, read, create, or update Linear issues, projects, teams, labels, or comments from the terminal. This is a scaffold only, core behavior is not implemented yet.
-compatibility: Requires Node.js. Run `linear-cli auth` once the implementation lands.
+description: Use when the user needs to inspect Linear MCP connectivity, list or fetch projects, or list issue comments from the terminal. This is still a scaffold. Limit usage to the verified MVP surface until authenticated tool inventory is confirmed.
+compatibility: Requires Node.js. Run `linear-cli auth` once the implementation lands. Planned auth precedence: explicit CLI flags, environment variables, then `~/.config/linear-cli/config.json`.
 ---
 
 # Linear CLI
 
 ## Overview
-`linear-cli` is the planned Linear companion CLI. This wave only reserves the package shape, export names, and command namespaces.
+`linear-cli` is the planned Linear companion CLI. This wave reserves the package shape and the safe seams for auth, transport, config, and identifier handling.
 
-## Reserved command namespaces
+## Verified MVP target surface
+Use only these commands as the initial implementation target until authenticated `tools/list` inventory is confirmed:
 - `auth`
-- `search`
-- `issue`
-- `project`
-- `team`
-- `label`
-- `comment`
-- `config`
-- `mcp`
+- `mcp discover`
+- `project list`
+- `project get <project-id>`
+- `comment list <issue-id>`
 
-## Reserved exports
-- `lib/auth.js`: `loadCredentials`, `saveCredentials`, `clearCredentials`, `refreshToken`, `login`, `getAccessToken`
-- `lib/mcp.js`: `initializeMcpSession`, `resetMcpSession`, `callTool`, `listTools`
-- `lib/api.js`: `searchIssues`, `getIssue`, `createIssue`, `updateIssue`, `archiveIssue`, `listProjects`, `getProject`, `listTeams`, `getTeam`, `listUsers`, `listLabels`, `listStates`, `addComment`
-- `lib/config.js`: `TOOL_NAME`, `PACKAGE_NAME`, `CLI_NAME`, `PACKAGE_VERSION`, `COMMAND_NAMESPACES`, `CONFIG_DIR`, `CREDENTIALS_FILE`, `SETTINGS_FILE`, `CACHE_DIR`, `MCP_URL`, `API_BASE_URL`
+## Config and auth contract
+- Persisted defaults will live in `~/.config/linear-cli/config.json`.
+- Credentials will live in `~/.config/linear-cli/credentials.json`.
+- Precedence order: explicit CLI flags, environment variables, then persisted config.
+- Planned environment overrides: `LINEAR_API_KEY`, `LINEAR_DEFAULT_TEAM`, `LINEAR_DEFAULT_WORKSPACE`.
+
+## Identifier handling seam
+- Accept direct identifiers first, especially IDs and stable keys.
+- Resolve human-friendly names through tool calls only after authenticated capability checks are available.
+- Fail clearly on ambiguity. Do not guess between multiple matches.
+
+## Deferred until authenticated inventory is confirmed
+- Search commands
+- Issue create or update flows
+- Project create or update flows
+- Label or initiative commands
+- Any command that depends on unverified tool schemas

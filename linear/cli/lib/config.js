@@ -21,8 +21,25 @@ export const COMMAND_NAMESPACES = Object.freeze([
 export const DEFAULT_AUTH_PORT = 9886;
 export const CONFIG_DIR = join(homedir(), ".config", CLI_NAME);
 export const CREDENTIALS_FILE = join(CONFIG_DIR, "credentials.json");
-export const SETTINGS_FILE = join(CONFIG_DIR, "settings.json");
+export const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 export const CACHE_DIR = join(CONFIG_DIR, "cache");
 export const MCP_URL = null;
 export const API_BASE_URL = null;
 export const SKILL_PATH = join("skill", TOOL_NAME, "SKILL.md");
+
+export const CONFIG_ENV_KEYS = Object.freeze({
+  apiKey: "LINEAR_API_KEY",
+  defaultTeam: "LINEAR_DEFAULT_TEAM",
+  defaultWorkspace: "LINEAR_DEFAULT_WORKSPACE",
+});
+
+export const CONFIG_PRECEDENCE = Object.freeze([
+  "explicit CLI flag",
+  `env (${CONFIG_ENV_KEYS.defaultTeam}, ${CONFIG_ENV_KEYS.defaultWorkspace}, ${CONFIG_ENV_KEYS.apiKey})`,
+  `persisted config (${CONFIG_FILE})`,
+]);
+
+export const CONFIG_DEFAULTS = Object.freeze({
+  defaultTeam: null,
+  defaultWorkspace: null,
+});

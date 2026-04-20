@@ -94,7 +94,7 @@ Keep the first implementation deliberately conservative. Ship the smallest set t
 - `linear-cli auth logout`
 - `linear-cli auth status`
 - `linear-cli mcp discover`
-- `linear-cli project get <id-or-slug>`
+- `linear-cli project get <project-id>`
 - `linear-cli project list [filters]`
 - `linear-cli comment list <issue-id> [cursor|limit|orderBy]`
 
@@ -114,6 +114,8 @@ Keep the first implementation deliberately conservative. Ship the smallest set t
 
 ### Implementation guardrails
 
-- Prefer read-only flows first, especially metadata discovery and search.
+- Prefer read-only flows first, especially metadata discovery and project and comment reads.
 - Treat write operations as opt-in and gate them behind authenticated capability checks.
 - Normalize all server calls through one transport helper so the MCP auth flow, bearer mode, and future session handling stay isolated from CLI command logic.
+- Use config precedence in this order: explicit CLI flags, environment variables, then persisted config at `~/.config/linear-cli/config.json`.
+- Planned environment overrides: `LINEAR_API_KEY`, `LINEAR_DEFAULT_TEAM`, `LINEAR_DEFAULT_WORKSPACE`.

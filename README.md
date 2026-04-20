@@ -17,9 +17,11 @@ MCP servers bloat your agent's context with dozens of tool descriptions and prev
 ## Install
 
 ```bash
-# Via npm (recommended)
+# Via npm (ready today)
 npm i -g @ruminaider/notion-cli
-npm i -g @ruminaider/linear-cli
+
+# Linear publish target
+# npm i -g @ruminaider/linear-cli
 
 # Or clone and install all tools
 git clone https://github.com/ruminaider/agent-clis.git
@@ -55,11 +57,12 @@ notion-cli search "deploy checklist" | jq -r '.results[0].text' | slack-cli post
 
 ## Auth
 
-Each tool handles its own authentication. Most use OAuth with a browser flow:
+Each tool handles its own authentication. Most use OAuth with a browser flow, and some tools may also accept direct API keys for headless use:
 
 ```bash
 notion-cli auth          # Refreshes token first, then opens browser if needed
 slack-cli auth login     # Same pattern
+# Planned for linear-cli: explicit flags, env vars, then ~/.config/linear-cli/config.json
 ```
 
 You manage no API keys, create no integrations, and need no admin permissions.
