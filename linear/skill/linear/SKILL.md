@@ -1,34 +1,54 @@
 ---
 name: linear
-description: Use when the user needs to inspect Linear MCP connectivity, list or fetch projects, or list issue comments from the terminal. This is still a scaffold. Limit usage to the verified MVP surface until authenticated tool inventory is confirmed.
-compatibility: Requires Node.js. Planned auth commands are `linear-cli auth login`, `linear-cli auth logout`, and `linear-cli auth status` once the implementation lands. Planned auth precedence: explicit CLI flags, environment variables, then `~/.config/linear-cli/config.json`.
+description: Use when you need to authenticate with Linear MCP, inspect MCP capabilities, list projects, fetch a project, or list comments for an issue. This skill is intentionally limited to the current MVP surface.
+compatibility: Requires Node.js. Auth precedence is explicit CLI flags, environment variables, then persisted config.
 ---
 
 # Linear CLI
 
-## Overview
-`linear-cli` is the planned Linear companion CLI. This wave reserves the package shape and the safe seams for auth, transport, config, and identifier handling.
+## What this tool does
 
-## Planned MVP target surface
-These are the planned first-release commands. The current scaffold does not execute them yet. Use them as the implementation target until authenticated `tools/list` inventory is confirmed:
+`linear-cli` is the current MVP companion for Linear. It supports only the shipped read-only workflow surface:
 - `auth login`
 - `auth logout`
 - `auth status`
 - `mcp discover`
 - `project list`
-- `project get <project-id>`
-- `comment list <issue-id>`
+- `project get --project-id <project-id>`
+- `comment list --issue-id <issue-id>`
 
-## Config and auth contract
-- Persisted defaults will live in `~/.config/linear-cli/config.json`.
-- Credentials will live in `~/.config/linear-cli/credentials.json`.
-- Precedence order: explicit CLI flags, environment variables, then persisted config.
-- Planned environment overrides: `LINEAR_API_KEY`, `LINEAR_DEFAULT_TEAM`, `LINEAR_DEFAULT_WORKSPACE`.
+Do not assume write commands or additional namespaces exist yet.
 
-## Identifier handling seam
-- Accept direct identifiers first, especially IDs and stable keys.
-- Resolve human-friendly names through tool calls only after authenticated capability checks are available.
-- Fail clearly on ambiguity. Do not guess between multiple matches.
+## Auth and configuration
 
-## Outside the initial MVP
-Keep all other Linear command areas deferred until authenticated `tools/list` inventory confirms their schemas and behavior.
+Use explicit flags first, then environment variables, then persisted config.
+
+Environment overrides:
+- `LINEAR_API_KEY`
+- `LINEAR_DEFAULT_TEAM`
+- `LINEAR_DEFAULT_WORKSPACE`
+
+Credentials are stored in `~/.config/linear-cli/credentials.json`.
+Persistent defaults are stored in `~/.config/linear-cli/config.json`.
+
+## Operating rules
+
+- Prefer explicit identifiers. Pass `--project-id` for projects and `--issue-id` for comments.
+- Do not guess between multiple matches. If an identifier is unclear, stop and ask for a direct ID.
+- Use `mcp discover` when you need to inspect the current session or verify available tools.
+- Keep output handling simple. `linear-cli` prints JSON-first results, so prefer parsing JSON over reading formatted text.
+- Stay within the current MVP. If a task asks for a command that is not listed above, treat it as future expansion and do not invent it.
+
+## Suggested command patterns
+
+```bash
+linear-cli auth status
+linear-cli mcp discover
+linear-cli project list --team <team> --workspace <workspace>
+linear-cli project get --project-id <project-id>
+linear-cli comment list --issue-id <issue-id> --limit 20
+```
+
+## Current scope boundary
+
+This skill is for the linear/cli MVP only. It intentionally excludes issue mutation, project mutation, and any unverified Linear MCP tool until the authenticated inventory is confirmed.
