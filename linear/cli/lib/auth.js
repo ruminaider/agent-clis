@@ -298,8 +298,11 @@ async function login(options = {}) {
       try {
         const open = (await import("open")).default;
         await open(authUrl.toString());
-      } catch {
-        // browser opening is best effort
+      } catch (error) {
+        console.log("Browser auto-open failed. Open the URL above manually.");
+        if (error instanceof Error && error.message) {
+          console.log(`Auto-open error: ${error.message}`);
+        }
       }
 
       console.log("Waiting for authorization...");
