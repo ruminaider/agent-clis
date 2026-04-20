@@ -7,6 +7,7 @@ const MCP_REQUEST_TIMEOUT_MS = 30000;
 
 let sessionState = null;
 let sessionInitPromise = null;
+let nextRequestId = 1;
 
 function createMcpError(code, message, details = {}) {
   const error = new Error(message);
@@ -186,8 +187,14 @@ function extractTerminalSsePayload(events, requestId) {
   return terminalEvent?.data ?? null;
 }
 
+function createRequestId() {
+  const id = `req-${nextRequestId}`;
+  nextRequestId += 1;
+  return id;
+}
+
 async function rpc(method, params = {}, { sessionId = null, protocolVersion = null } = {}) {
-  const request = { jsonrpc: MCP_JSONRPC_VERSION, id: Date.now() + Math.random(), method, params };
+  const request = { jsonrpc: MCP_JSONRPC_VERSION, id: createRequestId(), method, params };
   const { response, body, contentType } = await performRequest({ body: request, sessionId, protocolVersion });
   const nextSessionId = getHeader(response.headers, "mcp-session-id") ?? sessionId;
 
@@ -216,22 +223,45 @@ async function rpc(method, params = {}, { sessionId = null, protocolVersion = nu
   return { result: extractRpcResult(payload), sessionId: nextSessionId };
 }
 
-async function ensureSession() {
-  if (sessionState?.initialized) return sessionState;
-  if (!sessionInitPromise) {
-    sessionInitPromise = (async () => {
+async function initializeWithFallback() {
+  const attempts = [];
+
+  for (const candidate of DEFAULT_PROTOCOL_VERSIONS) {
+    try {
       const initializeResponse = await rpc(
         "initialize",
         {
           clientInfo: { name: CLI_NAME, version: PACKAGE_VERSION },
           capabilities: {},
-          protocolVersion: DEFAULT_PROTOCOL_VERSIONS[0],
+          protocolVersion: candidate,
         },
         {},
       );
 
       const result = ensureObject(initializeResponse.result, "initialize result");
-      const protocolVersion = selectProtocolVersion(result);
+      return {
+        initializeResponse,
+        protocolVersion: selectProtocolVersion(result),
+      };
+    } catch (error) {
+      attempts.push({ protocolVersion: candidate, code: error?.code, message: error?.message, details: error?.details });
+    }
+  }
+
+  const lastAttempt = attempts[attempts.length - 1] ?? null;
+  throw createMcpError(
+    "MCP_PROTOCOL_NEGOTIATION_FAILED",
+    "Unable to initialize MCP session with any supported protocol version",
+    { attempts, lastAttempt },
+  );
+}
+
+async function ensureSession() {
+  if (sessionState?.initialized) return sessionState;
+  if (!sessionInitPromise) {
+    sessionInitPromise = (async () => {
+      const { initializeResponse, protocolVersion } = await initializeWithFallback();
+      const result = ensureObject(initializeResponse.result, "initialize result");
       const sessionId = initializeResponse.sessionId;
 
       sessionState = Object.freeze({
