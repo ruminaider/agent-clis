@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { clearCredentials, getAuthStatus, login, logout } from "../lib/auth.js";
 import { listComments, listProjects, getProject } from "../lib/api.js";
 import { initializeMcpSession, listTools } from "../lib/mcp.js";
@@ -215,7 +216,17 @@ export async function main(argv = process.argv.slice(2)) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+function isDirectExecution() {
+  if (!process.argv[1]) return false;
+
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isDirectExecution()) {
   main()
     .then((code) => process.exit(code))
     .catch((error) => {
