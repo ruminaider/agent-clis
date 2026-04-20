@@ -16,48 +16,19 @@ function normalizeList(value) {
     const items = value.map(normalizeText).filter(Boolean);
     return items.length > 0 ? items : null;
   }
-  if (typeof value === "string") {
-    const items = value
-      .split(",")
-      .map((entry) => entry.trim())
-      .filter(Boolean);
-    return items.length > 0 ? items : null;
-  }
-  return [String(value)];
+  return [normalizeText(value)].filter(Boolean);
 }
 
 function stripNullish(arguments_ = {}) {
   return Object.fromEntries(Object.entries(arguments_).filter(([, value]) => value !== null && value !== undefined && value !== ""));
 }
 
-function parseJsonMaybe(value) {
-  if (typeof value !== "string") return value;
-  const text = value.trim();
-  if (!text) return text;
-
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
-}
-
-function unwrapToolContent(result) {
-  if (!result || typeof result !== "object") return result;
-  if (!Array.isArray(result.content)) return result;
-
-  const textItems = result.content.filter((item) => item?.type === "text" && typeof item.text === "string");
-  if (textItems.length === 0) return result;
-  if (textItems.length === 1) return parseJsonMaybe(textItems[0].text);
-  return textItems.map((item) => parseJsonMaybe(item.text));
-}
-
-async function callParsedTool(name, arguments_ = {}) {
-  return unwrapToolContent(await callTool(name, stripNullish(arguments_)));
+async function call(name, arguments_) {
+  return callTool(name, stripNullish(arguments_));
 }
 
 export async function listProjects(options = {}) {
-  return callParsedTool("list_projects", {
+  return call("list_projects", {
     query: options.query ?? null,
     state: options.state ?? null,
     initiative: options.initiative ?? null,
@@ -76,7 +47,7 @@ export async function listProjects(options = {}) {
 }
 
 export async function getProject(query, options = {}) {
-  return callParsedTool("get_project", {
+  return call("get_project", {
     query: normalizeText(query),
     includeMilestones: options.includeMilestones ?? null,
     includeMembers: options.includeMembers ?? null,
@@ -85,7 +56,7 @@ export async function getProject(query, options = {}) {
 }
 
 export async function listComments(issueId, options = {}) {
-  return callParsedTool("list_comments", {
+  return call("list_comments", {
     issueId: normalizeText(issueId),
     limit: options.limit ?? null,
     cursor: options.cursor ?? null,
@@ -94,7 +65,7 @@ export async function listComments(issueId, options = {}) {
 }
 
 export async function saveProject(input = {}) {
-  return callParsedTool("save_project", {
+  return call("save_project", {
     id: normalizeText(input.id),
     name: normalizeText(input.name),
     icon: normalizeText(input.icon),
@@ -117,12 +88,3 @@ export async function saveProject(input = {}) {
     setInitiatives: normalizeList(input.setInitiatives),
   });
 }
-
-export const API_CONTEXT = Object.freeze({
-  callTool,
-  normalizeText,
-  normalizeNumber,
-  normalizeList,
-  stripNullish,
-  unwrapToolContent,
-});

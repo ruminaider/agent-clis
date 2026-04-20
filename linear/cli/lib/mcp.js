@@ -23,20 +23,6 @@ function ensureObject(value, context) {
   return value;
 }
 
-function getHeader(headers, name) {
-  if (!headers) return null;
-  if (typeof headers.get === "function") {
-    return headers.get(name);
-  }
-  const lowered = name.toLowerCase();
-  for (const [key, value] of Object.entries(headers)) {
-    if (key.toLowerCase() === lowered) {
-      return Array.isArray(value) ? value.join(", ") : value;
-    }
-  }
-  return null;
-}
-
 function parseContentType(value) {
   return String(value ?? "").split(";")[0].trim().toLowerCase();
 }
@@ -64,7 +50,7 @@ function parseSseEvents(text) {
 }
 
 async function readResponseBody(response) {
-  const contentType = parseContentType(getHeader(response.headers, "content-type"));
+  const contentType = parseContentType(response.headers.get("content-type"));
   const text = await response.text();
   if (!text) return { contentType, body: null };
 
@@ -88,25 +74,6 @@ async function readResponseBody(response) {
   }
 
   return { contentType, body: text };
-}
-
-function normalizeProtocolVersions(serverCapabilities, serverVersion) {
-  const seen = new Set();
-  const versions = [];
-  const candidates = [serverVersion, ...(Array.isArray(serverCapabilities?.protocolVersions) ? serverCapabilities.protocolVersions : [])];
-  for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate && !seen.has(candidate)) {
-      seen.add(candidate);
-      versions.push(candidate);
-    }
-  }
-  return versions;
-}
-
-function selectProtocolVersion(result) {
-  const serverSupported = normalizeProtocolVersions(result?.capabilities, result?.protocolVersion);
-  const negotiated = serverSupported.find((version) => DEFAULT_PROTOCOL_VERSIONS.includes(version));
-  return negotiated ?? DEFAULT_PROTOCOL_VERSIONS[0];
 }
 
 async function fetchAccessToken() {
@@ -196,7 +163,7 @@ function createRequestId() {
 async function rpc(method, params = {}, { sessionId = null, protocolVersion = null } = {}) {
   const request = { jsonrpc: MCP_JSONRPC_VERSION, id: createRequestId(), method, params };
   const { response, body, contentType } = await performRequest({ body: request, sessionId, protocolVersion });
-  const nextSessionId = getHeader(response.headers, "mcp-session-id") ?? sessionId;
+  const nextSessionId = response.headers.get("mcp-session-id") ?? sessionId;
 
   if (contentType === "text/event-stream") {
     const payload = extractTerminalSsePayload(body, request.id);
@@ -238,11 +205,8 @@ async function initializeWithFallback() {
         {},
       );
 
-      const result = ensureObject(initializeResponse.result, "initialize result");
-      return {
-        initializeResponse,
-        protocolVersion: selectProtocolVersion(result),
-      };
+      ensureObject(initializeResponse.result, "initialize result");
+      return { initializeResponse, protocolVersion: candidate };
     } catch (error) {
       attempts.push({ protocolVersion: candidate, code: error?.code, message: error?.message, details: error?.details });
     }
@@ -288,18 +252,30 @@ function unwrapToolList(result) {
   throw createMcpError("MCP_INVALID_RESPONSE", "MCP tools/list response did not contain a tool array", { result });
 }
 
+function parseJsonMaybe(value) {
+  if (typeof value !== "string") return value;
+  const text = value.trim();
+  if (!text) return text;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
 function unwrapToolCall(result) {
-  if (result && typeof result === "object") return result;
-  throw createMcpError("MCP_INVALID_RESPONSE", "MCP tools/call response was malformed", { result });
+  if (!result || typeof result !== "object") {
+    throw createMcpError("MCP_INVALID_RESPONSE", "MCP tools/call response was malformed", { result });
+  }
+  if (!Array.isArray(result.content)) return result;
+  const textItems = result.content.filter((item) => item?.type === "text" && typeof item.text === "string");
+  if (textItems.length === 0) return result;
+  if (textItems.length === 1) return parseJsonMaybe(textItems[0].text);
+  return textItems.map((item) => parseJsonMaybe(item.text));
 }
 
 export async function initializeMcpSession() {
   return ensureSession();
-}
-
-export async function resetMcpSession() {
-  sessionState = null;
-  sessionInitPromise = null;
 }
 
 export async function callTool(name, arguments_ = {}) {
@@ -321,10 +297,3 @@ export async function listTools() {
   );
   return unwrapToolList(response.result);
 }
-
-export const MCP_CONTEXT = Object.freeze({
-  cliName: CLI_NAME,
-  packageVersion: PACKAGE_VERSION,
-  mcpUrl: MCP_URL,
-  getAccessToken,
-});

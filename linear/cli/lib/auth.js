@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
 import { randomBytes, createHash } from "node:crypto";
+import { dirname } from "node:path";
 import {
   CLI_NAME,
   CREDENTIALS_FILE,
@@ -12,11 +13,10 @@ import {
   OAUTH_REVOCATION_URL,
   OAUTH_TOKEN_URL,
   PACKAGE_NAME,
-  PACKAGE_VERSION,
   TOOL_NAME,
 } from "./config.js";
 
-const CREDENTIALS_DIR = CREDENTIALS_FILE.slice(0, CREDENTIALS_FILE.lastIndexOf("/"));
+const CREDENTIALS_DIR = dirname(CREDENTIALS_FILE);
 const REFRESH_SKEW_MS = 60_000;
 const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -90,8 +90,8 @@ async function saveCredentials(creds) {
 async function clearCredentials() {
   try {
     await unlink(CREDENTIALS_FILE);
-  } catch {
-    // ignore
+  } catch (err) {
+    if (err?.code !== "ENOENT") throw err;
   }
 }
 
@@ -154,25 +154,26 @@ function generatePKCE() {
   return { verifier, challenge };
 }
 
+async function exchangeToken(tokenEndpoint, params, errorLabel) {
+  const res = await fetch(tokenEndpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+    body: new URLSearchParams(params),
+  });
+  if (!res.ok) {
+    throw new Error(`${errorLabel} failed: ${res.status} ${await res.text()}`);
+  }
+  return res.json();
+}
+
 async function refreshToken(creds) {
   const metadata = await discoverOAuthMetadata();
-  const body = new URLSearchParams({
+  const data = await exchangeToken(metadata.tokenEndpoint, {
     grant_type: "refresh_token",
     refresh_token: creds.refresh_token,
     client_id: creds.client_id,
-  });
+  }, "Token refresh");
 
-  const res = await fetch(metadata.tokenEndpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-    body,
-  });
-
-  if (!res.ok) {
-    throw new Error(`Token refresh failed: ${res.status} ${await res.text()}`);
-  }
-
-  const data = await res.json();
   const updated = normalizeCredentials({
     ...creds,
     access_token: data.access_token,
@@ -213,6 +214,13 @@ async function login(options = {}) {
   const state = randomBytes(16).toString("hex");
 
   return new Promise((resolve, reject) => {
+    let timeoutHandle = null;
+    const finish = (fn, value) => {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      server.close();
+      fn(value);
+    };
+
     const server = createServer(async (req, res) => {
       try {
         const url = new URL(req.url, redirectUri);
@@ -227,8 +235,7 @@ async function login(options = {}) {
           const desc = url.searchParams.get("error_description") || error;
           res.writeHead(200, { "Content-Type": "text/html" });
           res.end(html("Authorization Failed", `<p>${escapeHtml(desc)}</p>`));
-          server.close();
-          reject(new Error(`OAuth error: ${desc}`));
+          finish(reject, new Error(`OAuth error: ${desc}`));
           return;
         }
 
@@ -237,25 +244,14 @@ async function login(options = {}) {
         if (!code) throw new Error("No authorization code received");
         if (returnedState !== state) throw new Error("OAuth state mismatch");
 
-        const tokenBody = new URLSearchParams({
+        const tokenData = await exchangeToken(metadata.tokenEndpoint, {
           grant_type: "authorization_code",
           code,
           redirect_uri: redirectUri,
           client_id: clientId,
           code_verifier: verifier,
-        });
+        }, "Token exchange");
 
-        const tokenRes = await fetch(metadata.tokenEndpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-          body: tokenBody,
-        });
-
-        if (!tokenRes.ok) {
-          throw new Error(`Token exchange failed (${tokenRes.status}): ${await tokenRes.text()}`);
-        }
-
-        const tokenData = await tokenRes.json();
         const credentials = normalizeCredentials({
           access_token: tokenData.access_token,
           refresh_token: tokenData.refresh_token,
@@ -269,13 +265,11 @@ async function login(options = {}) {
         await saveCredentials(credentials);
         res.writeHead(200, { "Content-Type": "text/html" });
         res.end(html("✓ Authenticated with Linear", "<p>You can close this tab and return to the terminal.</p>"));
-        server.close();
-        resolve(credentials);
+        finish(resolve, credentials);
       } catch (err) {
         res.writeHead(500, { "Content-Type": "text/html" });
         res.end(html("Token Exchange Failed", `<p>${escapeHtml(err.message)}</p>`));
-        server.close();
-        reject(err);
+        finish(reject, err);
       }
     });
 
@@ -304,10 +298,12 @@ async function login(options = {}) {
       console.log("Waiting for authorization...");
     });
 
-    setTimeout(() => {
+    timeoutHandle = setTimeout(() => {
+      timeoutHandle = null;
       server.close();
       reject(new Error(`Authorization timed out after ${LOGIN_TIMEOUT_MS / 60000} minutes`));
     }, LOGIN_TIMEOUT_MS);
+    timeoutHandle.unref?.();
   });
 }
 
@@ -369,14 +365,3 @@ export {
   logout,
   getAccessToken,
 };
-
-export const AUTH_CONTEXT = Object.freeze({
-  cliName: CLI_NAME,
-  packageName: PACKAGE_NAME,
-  packageVersion: PACKAGE_VERSION,
-  toolName: TOOL_NAME,
-  credentialsFile: CREDENTIALS_FILE,
-  defaultAuthPort: DEFAULT_AUTH_PORT,
-  oauthProtectedResourceUrl: OAUTH_PROTECTED_RESOURCE_URL,
-  oauthAuthorizationServerUrl: OAUTH_AUTHORIZATION_SERVER_URL,
-});

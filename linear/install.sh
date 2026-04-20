@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ─── Linear CLI Installer ────────────────────────────────
-# Installs @ruminaider/linear-cli globally via npm.
-# Current MVP: auth, MCP discovery, project reads, one verified project write command, and comment reads.
-# ──────────────────────────────────────────────────────────
-
 info()  { echo "  → $*"; }
 ok()    { echo "  ✓ $*"; }
 fail()  { echo "  ✗ $*" >&2; exit 1; }

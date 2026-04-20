@@ -72,7 +72,6 @@ function appendFlagValue(values, flag, value) {
 }
 
 function parseBooleanValue(value, flag) {
-  if (value === true) return true;
   if (value === null || value === undefined) return true;
 
   const normalized = String(value).trim().toLowerCase();
@@ -297,17 +296,9 @@ export async function main(argv = process.argv.slice(2)) {
     return 1;
   }
 
-  const resolvedDefaults = await resolveConfigDefaults({
-    defaultTeam: getFlag(parsed, "--team"),
-  });
-
-  const commonOptions = {
-    apiKey: getFlag(parsed, "--api-key"),
-    defaultTeam: resolvedDefaults.defaultTeam,
-  };
-
-  if (commonOptions.apiKey) {
-    process.env.LINEAR_API_KEY = commonOptions.apiKey;
+  const apiKey = getFlag(parsed, "--api-key");
+  if (apiKey) {
+    process.env.LINEAR_API_KEY = apiKey;
   }
 
   try {
@@ -315,7 +306,7 @@ export async function main(argv = process.argv.slice(2)) {
       case "auth": {
         switch (subcommand) {
           case "login": {
-            const credentials = await login({ apiKey: commonOptions.apiKey });
+            const credentials = await login({ apiKey });
             json({ ok: true, command: "auth login", authenticated: true, authType: credentials?.auth_type ?? null });
             return 0;
           }
@@ -325,7 +316,7 @@ export async function main(argv = process.argv.slice(2)) {
             return 0;
           }
           case "status": {
-            const status = await getAuthStatus({ apiKey: commonOptions.apiKey });
+            const status = await getAuthStatus({ apiKey });
             json({ ok: true, command: "auth status", ...status });
             return 0;
           }
@@ -343,8 +334,9 @@ export async function main(argv = process.argv.slice(2)) {
       case "project": {
         switch (subcommand) {
           case "list": {
+            const defaults = await resolveConfigDefaults({ defaultTeam: getFlag(parsed, "--team") });
             const result = await listProjects({
-              team: commonOptions.defaultTeam,
+              team: defaults.defaultTeam,
               query: getFlag(parsed, "--query"),
               state: getFlag(parsed, "--state"),
               initiative: getFlag(parsed, "--initiative"),
