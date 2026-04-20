@@ -1,27 +1,32 @@
 ---
 name: linear
-description: Use when you need to authenticate with Linear MCP, inspect MCP capabilities, list projects, fetch a project, update a project, or list comments for an issue. This skill is intentionally limited to the shipped Linear CLI surface.
-compatibility: Requires Node.js. Auth precedence is explicit `--api-key`, then `LINEAR_API_KEY`, then persisted credentials in `~/.config/linear-cli/credentials.json`. Team defaults resolve separately from `~/.config/linear-cli/config.json`.
+description: Use when the user wants to work in Linear through `linear-cli`: authenticate, inspect MCP capabilities, list or fetch projects, update a project, or list comments on an issue. Also use when the user explicitly asks for `linear-cli`. Do NOT use for Linear's built-in connector, MCP plugin, or unrelated local files.
 ---
 
 # Linear CLI
 
-## What this tool does
+## Overview
+Use `linear-cli` when you want terminal-based access to Linear through the repo's shipped CLI. Keep to the implemented command surface, use explicit identifiers, and verify the target before any write.
 
-`linear-cli` is the current Linear companion for this repo. It supports only the shipped surface below:
-- `auth login`
-- `auth logout`
-- `auth status`
-- `mcp discover`
-- `project list`
-- `project get --query <query>`
-- `project save`
-- `comment list --issue-id <issue-id>`
+## Core Philosophy
+**Trust the shipped CLI surface, not guessed commands.** Only use the commands documented below.
 
-Do not assume any other Linear mutation command is available.
+**Use explicit identifiers.** Prefer `--query` for project lookup and `--issue-id` for comment listing. Do not invent old flags like `--project-id`.
 
-## Auth and configuration
+**Read before write.** Fetch the project first, then run `project save` only for an intended or disposable target.
 
+**Keep writes reversible.** For verification or low-risk updates, prefer small fields like summary or color that can be restored immediately.
+
+## Domain Mechanics
+1. Check auth with `linear-cli auth status`. Use `linear-cli auth login` for OAuth, or `linear-cli auth login --api-key <key>` to persist an API key.
+2. Inspect the live MCP surface with `linear-cli mcp discover` when you need to confirm the current server capabilities.
+3. List projects with `linear-cli project list` and optional filters such as `--team`, `--query`, `--state`, `--initiative`, `--member`, `--label`, `--created-at`, `--updated-at`, `--limit`, and `--order-by`.
+4. Fetch one project with `linear-cli project get --query <project name, ID, or slug>`.
+5. List comments with `linear-cli comment list --issue-id <issue UUID or key>`.
+6. Update a project with `linear-cli project save`. For updates, pass `--id <project-id>` plus only the fields you intend to change.
+*Judgment:* If the target project is ambiguous, stop and ask for a direct project identifier instead of guessing.
+
+## Auth and defaults
 Auth precedence:
 1. Explicit `--api-key`
 2. `LINEAR_API_KEY`
@@ -32,36 +37,20 @@ Team default precedence for project listing:
 2. `LINEAR_DEFAULT_TEAM`
 3. Persisted defaults in `~/.config/linear-cli/config.json`
 
-`auth login --api-key <key>` persists a Linear API key without starting the browser flow.
+## Current command surface
+- `linear-cli auth login`
+- `linear-cli auth login --api-key <key>`
+- `linear-cli auth logout`
+- `linear-cli auth status`
+- `linear-cli auth status --api-key <key>`
+- `linear-cli mcp discover`
+- `linear-cli project list`
+- `linear-cli project get --query <query>`
+- `linear-cli project save`
+- `linear-cli comment list --issue-id <issue-id>`
 
-Environment overrides:
-- `LINEAR_API_KEY`
-- `LINEAR_DEFAULT_TEAM`
-
-## Operating rules
-
-- Prefer explicit identifiers. Pass `--query` for project lookup and `--issue-id` for comment listing.
-- `project get` uses the real MCP schema field `query`. Do not use the old `--project-id` contract.
-- `project list` can filter by `--created-at` and `--updated-at` timestamps or durations.
-- `--issue-id` accepts either an issue UUID or a Linear issue key like `ENG-123`.
-- Use `project save` only when a write is required and the target is intended or disposable.
-- `project save` is the only shipped write command. It maps directly to `save_project`, and creating a project requires `--name` plus at least one team assignment flag.
-- If a project change is ambiguous, stop and ask for a direct project identifier instead of guessing.
-- Use `mcp discover` when you need to inspect the current session or verify available tools.
-- The Linear MCP session currently negotiates protocol `2024-11-05`.
-- Keep output handling simple. `linear-cli` prints JSON-first results, so prefer parsing JSON over reading formatted text.
-
-## Suggested command patterns
-
-```bash
-linear-cli auth status
-linear-cli mcp discover
-linear-cli project list --team <team> --query <query>
-linear-cli project get --query <project name, ID, or slug>
-linear-cli project save --id <project-id> --summary "Updated summary"
-linear-cli comment list --issue-id <issue-id> --limit 20
-```
-
-## Current scope boundary
-
-This skill is for the Linear CLI MVP only. It intentionally excludes issue mutation, comment mutation, and any unverified Linear MCP tool until the authenticated inventory is confirmed and a safer write path is needed.
+## Common Mistakes
+- Using `--project-id` with `project get` instead of `--query`
+- Treating `LINEAR_API_KEY` as persisted auth. It is ephemeral unless you run `auth login --api-key <key>`
+- Writing to a project before reading it first
+- Assuming issue mutation, comment mutation, or other Linear commands exist in this CLI when they are not part of the shipped surface

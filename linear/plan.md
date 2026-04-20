@@ -31,19 +31,19 @@ Deliver a new `linear-cli` package and `linear` pi skill in the monorepo that wr
 
 4. **Build the Linear MCP transport layer**: Adapt the Notion MCP client to Linear's streamable HTTP server and keep the debug surface small.
    - File: `linear/cli/lib/mcp.js`
-   - Changes: target `https://mcp.linear.app/mcp`, initialize with protocol version `2025-03-26`, preserve session reuse within a single CLI invocation, support capability discovery, and parse both SSE and JSON responses if Linear varies by content type.
+   - Changes: target `https://mcp.linear.app/mcp`, negotiate protocol versions dynamically, prefer the live server's current `2024-11-05` protocol, preserve session reuse within a single CLI invocation, support capability discovery, and parse both SSE and JSON responses if Linear varies by content type.
    - File: `linear/cli/bin/linear.js`
    - Changes: add an `mcp discover` command for capability discovery and troubleshooting.
    - Acceptance: authenticated `linear-cli mcp discover` returns server capabilities or tool descriptions, repeated calls in one invocation reuse the session ID, and server-side errors are surfaced clearly.
 
 5. **Implement thin API wrappers and the MVP CLI commands**: Keep the command set intentionally small and aligned to verified tool support.
    - File: `linear/cli/lib/api.js`
-   - Changes: add one wrapper per verified MCP tool, likely around issue lookup, issue list or search, issue create or update, comment list or add, and project read or update if those mutations are confirmed to work.
+   - Changes: add one wrapper per verified MCP tool in the shipped MVP. The final surface is centered on `mcp discover`, `project list`, `project get --query <query>`, `project save`, and `comment list --issue-id <issue-id>`.
    - File: `linear/cli/bin/linear.js`
    - Changes: add the top-level parser, subcommands, flags, help text, and JSON output behavior. Follow the `notion-cli` style of explicit flags and minimal formatting.
    - File: `linear/README.md`
    - Changes: document the final CLI syntax and example commands.
-   - Acceptance: each CLI command maps 1:1 to a working MCP tool, help text names all required flags, and manual smoke tests succeed for at least one read path and one write path in a disposable Linear workspace.
+   - Acceptance: each CLI command maps 1:1 to a working MCP tool, help text names all required flags, and manual smoke tests succeed for at least one read path and one safe reversible write path in a disposable or otherwise safe Linear target.
 
 6. **Write the pi skill with Linear-specific operating guidance**: Mirror the notion skill structure, but teach agents how to work safely with Linear entities.
    - File: `linear/skill/linear/SKILL.md`
@@ -91,8 +91,8 @@ Deliver a new `linear-cli` package and `linear` pi skill in the monorepo that wr
 - Task 7 depends on Tasks 2 through 6.
 
 ## Risks
-- Linear's docs confirm remote MCP, OAuth 2.1, and dynamic client registration, but the actual tool names and schemas still need to be discovered from an authenticated `tools/list` call.
-- There is at least one public report of tool drift, where `update_issue` appears in `tools/list` but fails at `tools/call`. Validate every write-path tool before making it part of the documented MVP.
+- Linear's docs confirm remote MCP, OAuth 2.1, and dynamic client registration. The authenticated tool inventory is now known, but any future surface expansion should still be gated on real `mcp discover` results rather than assumptions.
+- There is at least one public report of tool drift, where a tool may appear in discovery but fail at call time. Validate every new write-path tool before making it part of the documented CLI surface.
 - The current Notion MCP client assumes SSE parsing. Linear documents streamable HTTP, so the transport should be tested against both SSE and plain JSON response shapes.
-- Write-path verification needs a disposable Linear workspace, team, or issue. Without one, mutation testing will be incomplete.
-- Linear also documents direct `Authorization: Bearer` usage for API keys or external OAuth tokens. Decide explicitly whether that belongs in the first release, or keep the MVP aligned to the Notion-style interactive OAuth flow only.
+- Write-path verification needs a disposable Linear workspace, team, issue, or another clearly safe reversible target. Without that, mutation testing is incomplete.
+- Linear documents direct `Authorization: Bearer` usage for API keys or external OAuth tokens, and the shipped CLI now supports both browser OAuth and explicit API key auth.

@@ -5,3 +5,4 @@
 - Do not commit generated context artifacts like `context.md`. Add them to `.gitignore` before they can be staged or committed.
 - Do not silently swallow missing runtime dependencies for user-visible behavior. If browser launch is best-effort, log a clear fallback message and ensure required packages are declared in package.json.
 - When a user reports a CLI behaves differently in a brand new terminal, verify behavior in a clean shell environment before assuming the installed binary and current shell behave the same.
+- When installing skills across harnesses, check for native command or plugin name collisions first. Prefer removing redundant wrappers in Claude Code and renaming Codex skills if a built-in or plugin already owns the shorter name.
