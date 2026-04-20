@@ -44,21 +44,19 @@ export const SKILL_PATH = join("skill", TOOL_NAME, "SKILL.md");
 export const CONFIG_ENV_KEYS = Object.freeze({
   apiKey: "LINEAR_API_KEY",
   defaultTeam: "LINEAR_DEFAULT_TEAM",
-  defaultWorkspace: "LINEAR_DEFAULT_WORKSPACE",
 });
 
 export const CONFIG_PRECEDENCE = Object.freeze([
   "explicit CLI flag",
-  `env (${CONFIG_ENV_KEYS.defaultTeam}, ${CONFIG_ENV_KEYS.defaultWorkspace}, ${CONFIG_ENV_KEYS.apiKey})`,
+  `env (${CONFIG_ENV_KEYS.defaultTeam}, ${CONFIG_ENV_KEYS.apiKey})`,
   `persisted config (${CONFIG_FILE})`,
 ]);
 
 export const CONFIG_DEFAULTS = Object.freeze({
   defaultTeam: null,
-  defaultWorkspace: null,
 });
 
-const PERSISTED_CONFIG_KEYS = Object.freeze(["defaultTeam", "defaultWorkspace"]);
+const PERSISTED_CONFIG_KEYS = Object.freeze(["defaultTeam"]);
 
 function normalizeConfigValue(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -95,11 +93,9 @@ export async function resolveConfigDefaults(options = {}) {
   const persisted = await loadPersistedConfig();
   const env = {
     defaultTeam: normalizeConfigValue(process.env[CONFIG_ENV_KEYS.defaultTeam]),
-    defaultWorkspace: normalizeConfigValue(process.env[CONFIG_ENV_KEYS.defaultWorkspace]),
   };
 
   return {
     defaultTeam: normalizeConfigValue(options.defaultTeam) ?? env.defaultTeam ?? persisted.defaultTeam ?? CONFIG_DEFAULTS.defaultTeam,
-    defaultWorkspace: normalizeConfigValue(options.defaultWorkspace) ?? env.defaultWorkspace ?? persisted.defaultWorkspace ?? CONFIG_DEFAULTS.defaultWorkspace,
   };
 }

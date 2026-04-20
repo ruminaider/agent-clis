@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ─── Linear CLI Installer ────────────────────────────────
 # Installs @ruminaider/linear-cli globally via npm.
-# Current MVP: auth, MCP discovery, project reads, and comment reads.
+# Current MVP: auth, MCP discovery, project reads, one verified project write command, and comment reads.
 # ──────────────────────────────────────────────────────────
 
 info()  { echo "  → $*"; }
@@ -59,7 +59,8 @@ echo "    linear-cli auth logout"
 echo "    linear-cli auth status"
 echo "    linear-cli mcp discover"
 echo "    linear-cli project list"
-echo "    linear-cli project get --project-id <project-id>"
+echo "    linear-cli project get --query <query>"
+echo "    linear-cli project save --id <project-id> [fields]"
 echo "    linear-cli comment list --issue-id <issue-id>"
 echo ""
 echo "  Auth modes:"
@@ -69,5 +70,5 @@ echo "    linear-cli auth status --api-key <key>"
 echo ""
 echo "  Persistence:"
 echo "    Credentials and explicitly persisted API keys: ~/.config/linear-cli/credentials.json"
-echo "    Team and workspace defaults: ~/.config/linear-cli/config.json"
+echo "    Team defaults: ~/.config/linear-cli/config.json"
 echo ""

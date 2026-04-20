@@ -1,7 +1,7 @@
 {
   "name": "@ruminaider/linear-cli",
   "version": "0.0.0",
-  "description": "Linear CLI scaffold for agent-clis. Command namespaces and module exports are reserved for later implementation.",
+  "description": "Linear CLI aligned to authenticated MCP schemas with JSON-first project, comment, and verified project write commands.",
   "type": "module",
   "license": "MIT",
   "repository": {

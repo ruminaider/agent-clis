@@ -9,7 +9,7 @@ MCP servers bloat your agent's context with dozens of tool descriptions and prev
 | Tool | Replaces | Status |
 |------|----------|--------|
 | [notion](./notion/) | Notion MCP Server | Ready |
-| [linear](./linear/) | Linear MCP Server | MVP read surface |
+| [linear](./linear/) | Linear MCP Server | MCP-synced read/write surface |
 | [slack](./slack/) | Slack MCP Server | Planned |
 | [metabase](./metabase/) | Metabase MCP Server | Planned |
 | [newrelic](./newrelic/) | NewRelic MCP Server | Planned |

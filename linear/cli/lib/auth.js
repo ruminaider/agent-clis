@@ -20,10 +20,6 @@ const CREDENTIALS_DIR = CREDENTIALS_FILE.slice(0, CREDENTIALS_FILE.lastIndexOf("
 const REFRESH_SKEW_MS = 60_000;
 const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
 
-function scaffold(feature) {
-  throw new Error(`${CLI_NAME} scaffold: ${feature} is not implemented yet`);
-}
-
 function nowIso() {
   return new Date().toISOString();
 }

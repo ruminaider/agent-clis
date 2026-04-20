@@ -1,158 +1,128 @@
-import { CLI_NAME } from "./config.js";
 import { callTool } from "./mcp.js";
-
-function scaffold(feature) {
-  throw new Error(`${CLI_NAME} scaffold: ${feature} is not implemented yet`);
-}
-
-export function createApiError(code, message, details = {}) {
-  const error = new Error(message);
-  error.code = code;
-  error.details = details;
-  return error;
-}
-
-export function createIdentifierReference({ id = null, key = null, name = null, source = "unknown" } = {}) {
-  return Object.freeze({ id, key, name, source });
-}
-
-export function hasDirectIdentifier(reference = {}) {
-  return typeof reference.id === "string" || typeof reference.key === "string";
-}
 
 function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function looksLikeUuid(value) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+function normalizeNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
-function looksLikeLinearKey(value) {
-  return /^[A-Z0-9]+-\d+$/.test(value);
-}
-
-function normalizeReference(reference) {
-  if (typeof reference === "string") {
-    const value = normalizeText(reference);
-    if (!value) return createIdentifierReference();
-    if (looksLikeUuid(value)) {
-      return createIdentifierReference({ id: value, source: "input" });
-    }
-    if (looksLikeLinearKey(value)) {
-      return createIdentifierReference({ key: value, source: "input" });
-    }
-    return createIdentifierReference({ name: value, source: "input" });
+function normalizeList(value) {
+  if (value === null || value === undefined || value === "") return null;
+  if (Array.isArray(value)) {
+    const items = value.map(normalizeText).filter(Boolean);
+    return items.length > 0 ? items : null;
   }
-  if (!reference || typeof reference !== "object") {
-    return createIdentifierReference();
+  if (typeof value === "string") {
+    const items = value
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    return items.length > 0 ? items : null;
   }
-  return createIdentifierReference({
-    id: normalizeText(reference.id) || null,
-    key: normalizeText(reference.key) || null,
-    name: normalizeText(reference.name) || null,
-    source: normalizeText(reference.source) || "input",
-  });
+  return [String(value)];
 }
-
-export async function resolveIdentifierReference(entityType, reference, resolver) {
-  const normalized = normalizeReference(reference);
-  if (hasDirectIdentifier(normalized)) {
-    return normalized;
-  }
-
-  if (typeof resolver !== "function") {
-    throw createApiError(
-      "IDENTIFIER_RESOLUTION_UNAVAILABLE",
-      `${entityType} name resolution is unavailable in this build`,
-      { entityType, reference: normalized },
-    );
-  }
-
-  return resolver(normalized);
-}
-
-export function throwAmbiguousMatch(entityType, query, matches = []) {
-  throw createApiError(
-    "AMBIGUOUS_MATCH",
-    `${entityType} lookup is ambiguous. Pass a unique ID or key instead.`,
-    { entityType, query, matches },
-  );
-}
-
-export function throwNotFound(entityType, query) {
-  throw createApiError(
-    "NOT_FOUND",
-    `${entityType} not found. Pass a valid ID, key, or exact name.`,
-    { entityType, query },
-  );
-}
-
-export const API_IDENTIFIER_STRATEGY = Object.freeze({
-  acceptedInputs: ["id", "key"],
-  directMatchFields: ["id", "key"],
-  resolutionPolicy: "accept direct identifiers immediately; keep name-based lookup out of the shipped MVP; fail clearly when a direct identifier is missing",
-});
 
 function stripNullish(arguments_ = {}) {
   return Object.fromEntries(Object.entries(arguments_).filter(([, value]) => value !== null && value !== undefined && value !== ""));
 }
 
-function unwrapToolPayload(result, fallbackKey = null) {
-  if (result && typeof result === "object") {
-    if (Array.isArray(result)) return result;
-    if (fallbackKey && Array.isArray(result[fallbackKey])) return result[fallbackKey];
-    if (Array.isArray(result.items)) return result.items;
-    if (Array.isArray(result.nodes)) return result.nodes;
-    if (Array.isArray(result.data)) return result.data;
+function parseJsonMaybe(value) {
+  if (typeof value !== "string") return value;
+  const text = value.trim();
+  if (!text) return text;
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
   }
-  return result;
 }
 
-export async function getProjectByReference(reference) {
-  const resolved = await resolveIdentifierReference("Project", reference, null);
-  const arguments_ = resolved.id ? { id: resolved.id } : { key: resolved.key };
-  const result = await callTool("get_project", arguments_);
-  return unwrapToolPayload(result, "project");
+function unwrapToolContent(result) {
+  if (!result || typeof result !== "object") return result;
+  if (!Array.isArray(result.content)) return result;
+
+  const textItems = result.content.filter((item) => item?.type === "text" && typeof item.text === "string");
+  if (textItems.length === 0) return result;
+  if (textItems.length === 1) return parseJsonMaybe(textItems[0].text);
+  return textItems.map((item) => parseJsonMaybe(item.text));
 }
 
-async function resolveIssueReference(reference) {
-  const query = normalizeReference(reference);
-  if (hasDirectIdentifier(query)) return query;
-  throw createApiError(
-    "IDENTIFIER_RESOLUTION_UNAVAILABLE",
-    "Issue name resolution is unavailable in this build",
-    { entityType: "Issue", reference: query },
-  );
+async function callParsedTool(name, arguments_ = {}) {
+  return unwrapToolContent(await callTool(name, stripNullish(arguments_)));
 }
 
 export async function listProjects(options = {}) {
-  const result = await callTool("list_projects", stripNullish({
+  return callParsedTool("list_projects", {
+    query: options.query ?? null,
+    state: options.state ?? null,
+    initiative: options.initiative ?? null,
     team: options.team ?? null,
-    workspace: options.workspace ?? null,
-    cursor: options.cursor ?? null,
+    member: options.member ?? null,
+    label: options.label ?? null,
+    createdAt: options.createdAt ?? null,
+    updatedAt: options.updatedAt ?? null,
+    includeMilestones: options.includeMilestones ?? null,
+    includeMembers: options.includeMembers ?? null,
+    includeArchived: options.includeArchived ?? null,
     limit: options.limit ?? null,
+    cursor: options.cursor ?? null,
     orderBy: options.orderBy ?? null,
-  }));
-  return unwrapToolPayload(result, "projects");
+  });
 }
 
-export async function getProject(reference) {
-  return getProjectByReference(reference);
+export async function getProject(query, options = {}) {
+  return callParsedTool("get_project", {
+    query: normalizeText(query),
+    includeMilestones: options.includeMilestones ?? null,
+    includeMembers: options.includeMembers ?? null,
+    includeResources: options.includeResources ?? null,
+  });
 }
 
-export async function listComments(issueReference, options = {}) {
-  const resolvedIssue = await resolveIssueReference(issueReference);
-  const result = await callTool("list_comments", stripNullish({
-    issueId: resolvedIssue.id ?? null,
-    issueKey: resolvedIssue.key ?? null,
-    cursor: options.cursor ?? null,
+export async function listComments(issueId, options = {}) {
+  return callParsedTool("list_comments", {
+    issueId: normalizeText(issueId),
     limit: options.limit ?? null,
+    cursor: options.cursor ?? null,
     orderBy: options.orderBy ?? null,
-  }));
-  return unwrapToolPayload(result, "comments");
+  });
+}
+
+export async function saveProject(input = {}) {
+  return callParsedTool("save_project", {
+    id: normalizeText(input.id),
+    name: normalizeText(input.name),
+    icon: normalizeText(input.icon),
+    color: normalizeText(input.color),
+    summary: normalizeText(input.summary),
+    description: normalizeText(input.description),
+    state: normalizeText(input.state),
+    startDate: normalizeText(input.startDate),
+    startDateResolution: normalizeText(input.startDateResolution),
+    targetDate: normalizeText(input.targetDate),
+    targetDateResolution: normalizeText(input.targetDateResolution),
+    priority: normalizeNumber(input.priority),
+    addTeams: normalizeList(input.addTeams),
+    removeTeams: normalizeList(input.removeTeams),
+    setTeams: normalizeList(input.setTeams),
+    labels: normalizeList(input.labels),
+    lead: input.lead === null ? null : normalizeText(input.lead),
+    addInitiatives: normalizeList(input.addInitiatives),
+    removeInitiatives: normalizeList(input.removeInitiatives),
+    setInitiatives: normalizeList(input.setInitiatives),
+  });
 }
 
 export const API_CONTEXT = Object.freeze({
   callTool,
+  normalizeText,
+  normalizeNumber,
+  normalizeList,
+  stripNullish,
+  unwrapToolContent,
 });
