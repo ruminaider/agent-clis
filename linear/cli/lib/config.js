@@ -30,6 +30,7 @@ export const OAUTH_AUTHORIZATION_SERVER_URL = `${MCP_BASE_URL}/.well-known/oauth
 export const OAUTH_AUTHORIZE_URL = `${MCP_BASE_URL}/authorize`;
 export const OAUTH_TOKEN_URL = `${MCP_BASE_URL}/token`;
 export const OAUTH_REGISTER_URL = `${MCP_BASE_URL}/register`;
+export const OAUTH_REVOCATION_URL = `${MCP_BASE_URL}/token`;
 export const SKILL_PATH = join("skill", TOOL_NAME, "SKILL.md");
 
 export const CONFIG_ENV_KEYS = Object.freeze({

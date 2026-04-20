@@ -57,7 +57,7 @@ notion-cli search "deploy checklist" | jq -r '.results[0].text' | slack-cli post
 
 ## Auth
 
-Each tool handles its own authentication. Most use OAuth with a browser flow, and some tools may also accept direct API keys for headless use:
+Each tool handles its own authentication. Most use OAuth with a browser flow, and some tools also accept direct API keys for headless use:
 
 ```bash
 notion-cli auth          # Refreshes token first, then opens browser if needed
@@ -65,7 +65,7 @@ slack-cli auth login     # Same pattern
 # Planned for linear-cli: explicit flags, env vars, then ~/.config/linear-cli/config.json
 ```
 
-You manage no API keys, create no integrations, and need no admin permissions.
+You create no custom integrations, and most flows should not require admin permissions.
 
 ## For AI Agent Harnesses
 

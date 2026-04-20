@@ -1,7 +1,7 @@
 ---
 name: linear
 description: Use when the user needs to inspect Linear MCP connectivity, list or fetch projects, or list issue comments from the terminal. This is still a scaffold. Limit usage to the verified MVP surface until authenticated tool inventory is confirmed.
-compatibility: Requires Node.js. Run `linear-cli auth` once the implementation lands. Planned auth precedence: explicit CLI flags, environment variables, then `~/.config/linear-cli/config.json`.
+compatibility: Requires Node.js. Planned auth commands are `linear-cli auth login`, `linear-cli auth logout`, and `linear-cli auth status` once the implementation lands. Planned auth precedence: explicit CLI flags, environment variables, then `~/.config/linear-cli/config.json`.
 ---
 
 # Linear CLI
