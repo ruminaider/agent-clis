@@ -1,0 +1,29 @@
+{
+  "name": "@ruminaider/linear-cli",
+  "version": "0.0.0",
+  "description": "Linear CLI scaffold for agent-clis. Command namespaces and module exports are reserved for later implementation.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ruminaider/agent-clis.git",
+    "directory": "linear/cli"
+  },
+  "keywords": [
+    "linear",
+    "cli",
+    "mcp",
+    "agent",
+    "pi-package"
+  ],
+  "bin": {
+    "linear-cli": "bin/linear.js"
+  },
+  "files": [
+    "bin/",
+    "lib/"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

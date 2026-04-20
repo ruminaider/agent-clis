@@ -1,0 +1,28 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+export const TOOL_NAME = "linear";
+export const PACKAGE_NAME = "@ruminaider/linear-cli";
+export const CLI_NAME = "linear-cli";
+export const PACKAGE_VERSION = "0.0.0";
+
+export const COMMAND_NAMESPACES = Object.freeze([
+  "auth",
+  "search",
+  "issue",
+  "project",
+  "team",
+  "label",
+  "comment",
+  "config",
+  "mcp",
+]);
+
+export const DEFAULT_AUTH_PORT = 9886;
+export const CONFIG_DIR = join(homedir(), ".config", CLI_NAME);
+export const CREDENTIALS_FILE = join(CONFIG_DIR, "credentials.json");
+export const SETTINGS_FILE = join(CONFIG_DIR, "settings.json");
+export const CACHE_DIR = join(CONFIG_DIR, "cache");
+export const MCP_URL = null;
+export const API_BASE_URL = null;
+export const SKILL_PATH = join("skill", TOOL_NAME, "SKILL.md");

@@ -9,6 +9,7 @@ MCP servers bloat your agent's context with dozens of tool descriptions and prev
 | Tool | Replaces | Status |
 |------|----------|--------|
 | [notion](./notion/) | Notion MCP Server | Ready |
+| [linear](./linear/) | Linear MCP Server | Scaffold |
 | [slack](./slack/) | Slack MCP Server | Planned |
 | [metabase](./metabase/) | Metabase MCP Server | Planned |
 | [newrelic](./newrelic/) | NewRelic MCP Server | Planned |
@@ -18,6 +19,7 @@ MCP servers bloat your agent's context with dozens of tool descriptions and prev
 ```bash
 # Via npm (recommended)
 npm i -g @ruminaider/notion-cli
+npm i -g @ruminaider/linear-cli
 
 # Or clone and install all tools
 git clone https://github.com/ruminaider/agent-clis.git
@@ -25,6 +27,7 @@ bash agent-clis/install.sh
 
 # Or clone and install one tool
 bash agent-clis/notion/install.sh
+bash agent-clis/linear/install.sh
 ```
 
 ## Why CLI Tools
@@ -71,6 +74,10 @@ agent-clis/
 │   ├── cli/              # The CLI tool
 │   ├── skill/            # Agent skill (SKILL.md)
 │   └── install.sh        # Standalone installer
+├── linear/
+│   ├── cli/
+│   ├── skill/
+│   └── install.sh
 ├── slack/
 │   ├── cli/
 │   ├── skill/
