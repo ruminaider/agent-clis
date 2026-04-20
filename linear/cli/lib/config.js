@@ -5,7 +5,7 @@ import { join } from "node:path";
 export const TOOL_NAME = "linear";
 export const PACKAGE_NAME = "@ruminaider/linear-cli";
 export const CLI_NAME = "linear-cli";
-export const PACKAGE_VERSION = "0.0.0";
+export const PACKAGE_VERSION = "0.1.0";
 
 export const RESERVED_COMMAND_NAMESPACES = Object.freeze([
   "auth",
