@@ -92,7 +92,7 @@ async function readResponseBody(response) {
 function normalizeProtocolVersions(serverCapabilities, serverVersion) {
   const seen = new Set();
   const versions = [];
-  const candidates = [serverVersion, ...(Array.isArray(serverCapabilities?.protocolVersions) ? serverCapabilities.protocolVersions : []), ...DEFAULT_PROTOCOL_VERSIONS];
+  const candidates = [serverVersion, ...(Array.isArray(serverCapabilities?.protocolVersions) ? serverCapabilities.protocolVersions : [])];
   for (const candidate of candidates) {
     if (typeof candidate === "string" && candidate && !seen.has(candidate)) {
       seen.add(candidate);
@@ -103,8 +103,9 @@ function normalizeProtocolVersions(serverCapabilities, serverVersion) {
 }
 
 function selectProtocolVersion(result) {
-  const supported = normalizeProtocolVersions(result?.capabilities, result?.protocolVersion);
-  return supported[0] ?? DEFAULT_PROTOCOL_VERSIONS[0];
+  const serverSupported = normalizeProtocolVersions(result?.capabilities, result?.protocolVersion);
+  const negotiated = serverSupported.find((version) => DEFAULT_PROTOCOL_VERSIONS.includes(version));
+  return negotiated ?? DEFAULT_PROTOCOL_VERSIONS[0];
 }
 
 async function fetchAccessToken() {
@@ -171,14 +172,35 @@ function extractRpcResult(payload) {
   return payload;
 }
 
+function extractTerminalSsePayload(events, requestId) {
+  if (!Array.isArray(events)) return events;
+
+  const terminalEvent = events.find((event) => {
+    const payload = event?.data;
+    if (!payload || typeof payload !== "object") return false;
+    if (payload.jsonrpc !== MCP_JSONRPC_VERSION) return false;
+    if (!Object.prototype.hasOwnProperty.call(payload, "id")) return false;
+    return payload.id === requestId;
+  });
+
+  return terminalEvent?.data ?? null;
+}
+
 async function rpc(method, params = {}, { sessionId = null, protocolVersion = null } = {}) {
   const request = { jsonrpc: MCP_JSONRPC_VERSION, id: Date.now() + Math.random(), method, params };
   const { response, body, contentType } = await performRequest({ body: request, sessionId, protocolVersion });
   const nextSessionId = getHeader(response.headers, "mcp-session-id") ?? sessionId;
 
   if (contentType === "text/event-stream") {
-    const firstJsonEvent = Array.isArray(body) ? body.find((event) => event?.data && typeof event.data === "object") : null;
-    const payload = firstJsonEvent?.data ?? body;
+    const payload = extractTerminalSsePayload(body, request.id);
+    if (!payload) {
+      throw createMcpError("MCP_INVALID_RESPONSE", "MCP SSE response did not include a terminal JSON-RPC payload", {
+        method,
+        params,
+        requestId: request.id,
+        body,
+      });
+    }
     const rpcError = extractRpcError(payload);
     if (rpcError) {
       throw createMcpError("MCP_RPC_ERROR", rpcError.message ?? "MCP RPC error", { error: rpcError, method, params });
