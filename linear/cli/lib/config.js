@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export const TOOL_NAME = "linear";
@@ -56,3 +57,49 @@ export const CONFIG_DEFAULTS = Object.freeze({
   defaultTeam: null,
   defaultWorkspace: null,
 });
+
+const PERSISTED_CONFIG_KEYS = Object.freeze(["defaultTeam", "defaultWorkspace"]);
+
+function normalizeConfigValue(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+export function normalizePersistedConfig(config = {}) {
+  const normalized = {};
+  for (const key of PERSISTED_CONFIG_KEYS) {
+    const value = normalizeConfigValue(config?.[key]);
+    if (value !== null) {
+      normalized[key] = value;
+    }
+  }
+  return normalized;
+}
+
+export async function loadPersistedConfig() {
+  try {
+    const parsed = JSON.parse(await readFile(CONFIG_FILE, "utf8"));
+    return normalizePersistedConfig(parsed);
+  } catch {
+    return {};
+  }
+}
+
+export async function savePersistedConfig(config = {}) {
+  await mkdir(CONFIG_DIR, { recursive: true });
+  const normalized = normalizePersistedConfig(config);
+  await writeFile(CONFIG_FILE, `${JSON.stringify(normalized, null, 2)}\n`, { mode: 0o600 });
+  return normalized;
+}
+
+export async function resolveConfigDefaults(options = {}) {
+  const persisted = await loadPersistedConfig();
+  const env = {
+    defaultTeam: normalizeConfigValue(process.env[CONFIG_ENV_KEYS.defaultTeam]),
+    defaultWorkspace: normalizeConfigValue(process.env[CONFIG_ENV_KEYS.defaultWorkspace]),
+  };
+
+  return {
+    defaultTeam: normalizeConfigValue(options.defaultTeam) ?? env.defaultTeam ?? persisted.defaultTeam ?? CONFIG_DEFAULTS.defaultTeam,
+    defaultWorkspace: normalizeConfigValue(options.defaultWorkspace) ?? env.defaultWorkspace ?? persisted.defaultWorkspace ?? CONFIG_DEFAULTS.defaultWorkspace,
+  };
+}

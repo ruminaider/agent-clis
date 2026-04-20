@@ -20,20 +20,48 @@ export function hasDirectIdentifier(reference = {}) {
   return typeof reference.id === "string" || typeof reference.key === "string";
 }
 
+function normalizeText(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function looksLikeCanonicalId(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value) || /^[A-Z0-9]+-\d+$/.test(value);
+}
+
+function normalizeReference(reference) {
+  if (typeof reference === "string") {
+    const value = normalizeText(reference);
+    if (!value) return createIdentifierReference();
+    return looksLikeCanonicalId(value)
+      ? createIdentifierReference({ id: value, source: "input" })
+      : createIdentifierReference({ name: value, source: "input" });
+  }
+  if (!reference || typeof reference !== "object") {
+    return createIdentifierReference();
+  }
+  return createIdentifierReference({
+    id: normalizeText(reference.id) || null,
+    key: normalizeText(reference.key) || null,
+    name: normalizeText(reference.name) || null,
+    source: normalizeText(reference.source) || "input",
+  });
+}
+
 export async function resolveIdentifierReference(entityType, reference, resolver) {
-  if (hasDirectIdentifier(reference)) {
-    return reference;
+  const normalized = normalizeReference(reference);
+  if (hasDirectIdentifier(normalized)) {
+    return normalized;
   }
 
   if (typeof resolver !== "function") {
     throw createApiError(
       "IDENTIFIER_RESOLUTION_UNAVAILABLE",
-      `${CLI_NAME} scaffold: ${entityType} identifier resolution is not implemented yet`,
-      { entityType, reference },
+      `${entityType} name resolution is unavailable in this build`,
+      { entityType, reference: normalized },
     );
   }
 
-  return resolver(reference);
+  return resolver(normalized);
 }
 
 export function throwAmbiguousMatch(entityType, query, matches = []) {
@@ -58,16 +86,85 @@ export const API_IDENTIFIER_STRATEGY = Object.freeze({
   resolutionPolicy: "accept direct identifiers immediately; resolve human-friendly names through tool calls later; fail clearly on ambiguity",
 });
 
-export async function listProjects() {
-  return scaffold("listProjects");
+function stripNullish(arguments_ = {}) {
+  return Object.fromEntries(Object.entries(arguments_).filter(([, value]) => value !== null && value !== undefined && value !== ""));
 }
 
-export async function getProject() {
-  return scaffold("getProject");
+function unwrapToolPayload(result, fallbackKey = null) {
+  if (result && typeof result === "object") {
+    if (Array.isArray(result)) return result;
+    if (fallbackKey && Array.isArray(result[fallbackKey])) return result[fallbackKey];
+    if (Array.isArray(result.items)) return result.items;
+    if (Array.isArray(result.nodes)) return result.nodes;
+    if (Array.isArray(result.data)) return result.data;
+  }
+  return result;
 }
 
-export async function listComments() {
-  return scaffold("listComments");
+function pickFirstMatch(matches = []) {
+  if (!Array.isArray(matches) || matches.length === 0) return null;
+  if (matches.length > 1) {
+    return { ambiguous: true, matches };
+  }
+  return { ambiguous: false, match: matches[0] };
+}
+
+async function findProjectReference(reference) {
+  const query = normalizeReference(reference);
+  if (hasDirectIdentifier(query)) return query;
+  if (!query.name) throwNotFound("Project", query);
+
+  const result = await callTool("list_projects", {});
+  const projects = unwrapToolPayload(result, "projects") || [];
+  const exactMatches = projects.filter((project) => normalizeText(project?.name) === query.name);
+  const matchInfo = pickFirstMatch(exactMatches);
+  if (!matchInfo) throwNotFound("Project", query);
+  if (matchInfo.ambiguous) throwAmbiguousMatch("Project", query, exactMatches);
+  return createIdentifierReference({ id: matchInfo.match.id ?? null, key: matchInfo.match.key ?? null, name: matchInfo.match.name ?? query.name, source: "tool:list_projects" });
+}
+
+async function getProjectByReference(reference) {
+  const resolved = await resolveIdentifierReference("Project", reference, findProjectReference);
+  const arguments_ = resolved.id ? { id: resolved.id } : { key: resolved.key };
+  const result = await callTool("get_project", arguments_);
+  return unwrapToolPayload(result, "project");
+}
+
+async function resolveIssueReference(reference) {
+  const query = normalizeReference(reference);
+  if (hasDirectIdentifier(query)) return query;
+  throw createApiError(
+    "IDENTIFIER_RESOLUTION_UNAVAILABLE",
+    "Issue name resolution is unavailable in this build",
+    { entityType: "Issue", reference: query },
+  );
+}
+
+export async function listProjects(options = {}) {
+  const result = await callTool("list_projects", stripNullish({
+    team: options.team ?? null,
+    workspace: options.workspace ?? null,
+    cursor: options.cursor ?? null,
+    limit: options.limit ?? null,
+    orderBy: options.orderBy ?? null,
+  }));
+  return unwrapToolPayload(result, "projects");
+}
+
+export async function getProject(reference) {
+  return getProjectByReference(reference);
+}
+
+export async function listComments(issueReference, options = {}) {
+  const resolvedIssue = await resolveIssueReference(issueReference);
+  const result = await callTool("list_comments", stripNullish({
+    issueId: resolvedIssue.id ?? null,
+    issueKey: resolvedIssue.key ?? null,
+    cursor: options.cursor ?? null,
+    limit: options.limit ?? null,
+    orderBy: options.orderBy ?? null,
+  }));
+  return unwrapToolPayload(result, "comments");
 }
 
 export const API_CONTEXT = Object.freeze({
