@@ -202,9 +202,8 @@ async function persistApiKey(apiKey, source = "input") {
 }
 
 async function login(options = {}) {
-  if (options.apiKey || process.env.LINEAR_API_KEY) {
-    const apiKey = options.apiKey || process.env.LINEAR_API_KEY;
-    return persistApiKey(apiKey, options.apiKey ? "input" : "env");
+  if (options.apiKey) {
+    return persistApiKey(options.apiKey, "input");
   }
 
   const port = options.port || DEFAULT_AUTH_PORT;

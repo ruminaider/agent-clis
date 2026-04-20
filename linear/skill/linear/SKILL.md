@@ -1,7 +1,7 @@
 ---
 name: linear
 description: Use when you need to authenticate with Linear MCP, inspect MCP capabilities, list projects, fetch a project, or list comments for an issue. This skill is intentionally limited to the current MVP surface.
-compatibility: Requires Node.js. Auth precedence is explicit CLI flags, environment variables, then persisted config.
+compatibility: Requires Node.js. Auth precedence is explicit `--api-key`, then `LINEAR_API_KEY`, then persisted credentials in `~/.config/linear-cli/credentials.json`. Team and workspace defaults resolve separately from `~/.config/linear-cli/config.json`.
 ---
 
 # Linear CLI

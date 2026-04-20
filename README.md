@@ -62,7 +62,7 @@ Each tool handles its own authentication. Most use OAuth with a browser flow, an
 ```bash
 notion-cli auth          # Refreshes token first, then opens browser if needed
 slack-cli auth login     # Same pattern
-linear-cli auth status   # Also supports --api-key and persisted defaults
+linear-cli auth status   # Also supports --api-key and persisted credentials
 ```
 
 You create no custom integrations, and most flows should not require admin permissions.
