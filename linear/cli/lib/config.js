@@ -23,8 +23,13 @@ export const CONFIG_DIR = join(homedir(), ".config", CLI_NAME);
 export const CREDENTIALS_FILE = join(CONFIG_DIR, "credentials.json");
 export const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 export const CACHE_DIR = join(CONFIG_DIR, "cache");
-export const MCP_URL = null;
-export const API_BASE_URL = null;
+export const MCP_BASE_URL = "https://mcp.linear.app";
+export const MCP_URL = `${MCP_BASE_URL}/mcp`;
+export const OAUTH_PROTECTED_RESOURCE_URL = `${MCP_BASE_URL}/.well-known/oauth-protected-resource`;
+export const OAUTH_AUTHORIZATION_SERVER_URL = `${MCP_BASE_URL}/.well-known/oauth-authorization-server`;
+export const OAUTH_AUTHORIZE_URL = `${MCP_BASE_URL}/authorize`;
+export const OAUTH_TOKEN_URL = `${MCP_BASE_URL}/token`;
+export const OAUTH_REGISTER_URL = `${MCP_BASE_URL}/register`;
 export const SKILL_PATH = join("skill", TOOL_NAME, "SKILL.md");
 
 export const CONFIG_ENV_KEYS = Object.freeze({

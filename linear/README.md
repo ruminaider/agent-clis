@@ -88,7 +88,9 @@ bash install.sh
 
 Keep the first implementation deliberately conservative. Ship the smallest set that is clearly supported by the public discovery evidence, then expand after authenticated tool inventory is confirmed.
 
-### MVP, verified and low risk
+### Planned MVP after scaffold implementation
+
+These namespaces and subcommands are the intended first release surface. The current scaffold does not execute them yet.
 
 - `linear-cli auth login`
 - `linear-cli auth logout`

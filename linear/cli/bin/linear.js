@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import { CLI_NAME, COMMAND_NAMESPACES } from "../lib/config.js";
 
 export function printUsage() {
-  console.log(`${CLI_NAME} scaffold\n\nUsage:\n  ${CLI_NAME} <namespace> [command]\n  ${CLI_NAME} --help\n\nNamespaces:\n  ${COMMAND_NAMESPACES.join(", ")}\n\nThis package is a scaffold only. Core behavior will be implemented in later waves.`);
+  console.log(`${CLI_NAME} scaffold\n\nUsage:\n  ${CLI_NAME} <namespace> [command]\n  ${CLI_NAME} --help\n\nNamespaces:\n  ${COMMAND_NAMESPACES.join(", ")}\n\nCurrent behavior:\n  Only --help is implemented today.\n\nPlanned MVP namespaces and commands:\n  auth login\n  auth logout\n  auth status\n  mcp discover\n  project list\n  project get <project-id>\n  comment list <issue-id>\n\nThis package is a scaffold only. Core behavior will be implemented in later waves.`);
 }
 
 export async function main(argv = process.argv.slice(2)) {

@@ -9,9 +9,11 @@ compatibility: Requires Node.js. Run `linear-cli auth` once the implementation l
 ## Overview
 `linear-cli` is the planned Linear companion CLI. This wave reserves the package shape and the safe seams for auth, transport, config, and identifier handling.
 
-## Verified MVP target surface
-Use only these commands as the initial implementation target until authenticated `tools/list` inventory is confirmed:
-- `auth`
+## Planned MVP target surface
+These are the planned first-release commands. The current scaffold does not execute them yet. Use them as the implementation target until authenticated `tools/list` inventory is confirmed:
+- `auth login`
+- `auth logout`
+- `auth status`
 - `mcp discover`
 - `project list`
 - `project get <project-id>`
