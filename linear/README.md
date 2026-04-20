@@ -94,15 +94,15 @@ Keep the first implementation deliberately conservative. Ship the smallest set t
 - `linear-cli auth logout`
 - `linear-cli auth status`
 - `linear-cli mcp discover`
-- `linear-cli search <query>`
-- `linear-cli issue get <id-or-key>`
-- `linear-cli issue list [filters]`
 - `linear-cli project get <id-or-slug>`
 - `linear-cli project list [filters]`
 - `linear-cli comment list <issue-id> [cursor|limit|orderBy]`
 
 ### Deferred until authenticated tool inventory is confirmed
 
+- `linear-cli search <query>`
+- `linear-cli issue get <id-or-key>`
+- `linear-cli issue list [filters]`
 - `issue create`
 - `issue update`
 - `project create`
@@ -110,7 +110,7 @@ Keep the first implementation deliberately conservative. Ship the smallest set t
 - `comment create`
 - initiative commands of any kind
 - project label management commands of any kind
-- any command that depends on the exact `tools/list` schema rather than public docs
+- any command that depends on the exact `tools/list` schema rather than public docs, including search until the authenticated schema is confirmed
 
 ### Implementation guardrails
 
