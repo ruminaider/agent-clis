@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import { clearCredentials, getAuthStatus, login, logout } from "../lib/auth.js";
 import { listComments, listProjects, getProject } from "../lib/api.js";
 import { initializeMcpSession, listTools } from "../lib/mcp.js";
-import { CLI_NAME, CONFIG_ENV_KEYS } from "../lib/config.js";
+import { CLI_NAME, CONFIG_ENV_KEYS, resolveConfigDefaults } from "../lib/config.js";
 
 const COMMANDS = new Set([
   "auth",
@@ -25,10 +25,9 @@ const VALUE_FLAGS = new Set([
   "--cursor",
   "--limit",
   "--order-by",
-  "--port",
 ]);
 
-function printHelp() {
+export function printHelp() {
   console.log(`${CLI_NAME}
 
 Usage:
@@ -115,7 +114,7 @@ function asInteger(value) {
   return parsed;
 }
 
-async function main(argv = process.argv.slice(2)) {
+export async function main(argv = process.argv.slice(2)) {
   const parsed = parseArgs(argv);
   const [command, subcommand] = parsed.positionals;
 
@@ -124,10 +123,15 @@ async function main(argv = process.argv.slice(2)) {
     return 0;
   }
 
+  const resolvedDefaults = await resolveConfigDefaults({
+    defaultTeam: getFlag(parsed, "--team"),
+    defaultWorkspace: getFlag(parsed, "--workspace"),
+  });
+
   const commonOptions = {
     apiKey: getFlag(parsed, "--api-key"),
-    team: getFlag(parsed, "--team"),
-    workspace: getFlag(parsed, "--workspace"),
+    team: resolvedDefaults.defaultTeam,
+    workspace: resolvedDefaults.defaultWorkspace,
   };
 
   if (commonOptions.apiKey) {
@@ -180,7 +184,7 @@ async function main(argv = process.argv.slice(2)) {
             return 0;
           }
           case "get": {
-            const projectId = getFlag(parsed, "--project-id") ?? parsed.positionals[2] ?? null;
+            const projectId = getFlag(parsed, "--project-id");
             if (!projectId) throw new Error("Usage: linear-cli project get --project-id <project-id>");
             const project = await getProject(projectId);
             json({ ok: true, command: "project get", project });
@@ -192,7 +196,7 @@ async function main(argv = process.argv.slice(2)) {
       }
       case "comment": {
         if (subcommand !== "list") throw new Error("Usage: linear-cli comment list --issue-id <issue-id>");
-        const issueId = getFlag(parsed, "--issue-id") ?? parsed.positionals[2] ?? null;
+        const issueId = getFlag(parsed, "--issue-id");
         if (!issueId) throw new Error("Usage: linear-cli comment list --issue-id <issue-id>");
         const comments = await listComments(issueId, {
           cursor: getFlag(parsed, "--cursor"),

@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ─── Linear CLI Installer ────────────────────────────────
 # Installs @ruminaider/linear-cli globally via npm.
-# Scaffold only. Core behavior lands in later waves.
+# Current MVP: auth, MCP discovery, project reads, and comment reads.
 # ──────────────────────────────────────────────────────────
 
 info()  { echo "  → $*"; }
@@ -53,18 +53,16 @@ echo ""
 echo "  ────────────────────"
 echo "  ✓ Installed!"
 echo ""
-echo "  Current scaffold note:"
-echo "    linear-cli currently exposes help only"
-echo ""
-echo "  Current scaffold commands:"
-echo "    linear-cli --help"
-echo ""
-echo "  Planned MVP commands after implementation:"
+echo "  Current MVP commands:"
 echo "    linear-cli auth login"
 echo "    linear-cli auth logout"
 echo "    linear-cli auth status"
 echo "    linear-cli mcp discover"
 echo "    linear-cli project list"
-echo "    linear-cli project get <project-id>"
-echo "    linear-cli comment list <issue-id>"
+echo "    linear-cli project get --project-id <project-id>"
+echo "    linear-cli comment list --issue-id <issue-id>"
+echo ""
+echo "  Auth modes:"
+echo "    linear-cli auth login"
+echo "    linear-cli auth status --api-key <key>"
 echo ""

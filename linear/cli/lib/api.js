@@ -24,17 +24,25 @@ function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function looksLikeCanonicalId(value) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value) || /^[A-Z0-9]+-\d+$/.test(value);
+function looksLikeUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function looksLikeLinearKey(value) {
+  return /^[A-Z0-9]+-\d+$/.test(value);
 }
 
 function normalizeReference(reference) {
   if (typeof reference === "string") {
     const value = normalizeText(reference);
     if (!value) return createIdentifierReference();
-    return looksLikeCanonicalId(value)
-      ? createIdentifierReference({ id: value, source: "input" })
-      : createIdentifierReference({ name: value, source: "input" });
+    if (looksLikeUuid(value)) {
+      return createIdentifierReference({ id: value, source: "input" });
+    }
+    if (looksLikeLinearKey(value)) {
+      return createIdentifierReference({ key: value, source: "input" });
+    }
+    return createIdentifierReference({ name: value, source: "input" });
   }
   if (!reference || typeof reference !== "object") {
     return createIdentifierReference();
@@ -101,30 +109,8 @@ function unwrapToolPayload(result, fallbackKey = null) {
   return result;
 }
 
-function pickFirstMatch(matches = []) {
-  if (!Array.isArray(matches) || matches.length === 0) return null;
-  if (matches.length > 1) {
-    return { ambiguous: true, matches };
-  }
-  return { ambiguous: false, match: matches[0] };
-}
-
-async function findProjectReference(reference) {
-  const query = normalizeReference(reference);
-  if (hasDirectIdentifier(query)) return query;
-  if (!query.name) throwNotFound("Project", query);
-
-  const result = await callTool("list_projects", {});
-  const projects = unwrapToolPayload(result, "projects") || [];
-  const exactMatches = projects.filter((project) => normalizeText(project?.name) === query.name);
-  const matchInfo = pickFirstMatch(exactMatches);
-  if (!matchInfo) throwNotFound("Project", query);
-  if (matchInfo.ambiguous) throwAmbiguousMatch("Project", query, exactMatches);
-  return createIdentifierReference({ id: matchInfo.match.id ?? null, key: matchInfo.match.key ?? null, name: matchInfo.match.name ?? query.name, source: "tool:list_projects" });
-}
-
-async function getProjectByReference(reference) {
-  const resolved = await resolveIdentifierReference("Project", reference, findProjectReference);
+export async function getProjectByReference(reference) {
+  const resolved = await resolveIdentifierReference("Project", reference, null);
   const arguments_ = resolved.id ? { id: resolved.id } : { key: resolved.key };
   const result = await callTool("get_project", arguments_);
   return unwrapToolPayload(result, "project");

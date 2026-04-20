@@ -23,6 +23,8 @@ Do not assume write commands or additional namespaces exist yet.
 
 Use explicit flags first, then environment variables, then persisted config.
 
+`auth login --api-key <key>` persists a Linear API key without starting the browser flow.
+
 Environment overrides:
 - `LINEAR_API_KEY`
 - `LINEAR_DEFAULT_TEAM`
@@ -34,6 +36,7 @@ Persistent defaults are stored in `~/.config/linear-cli/config.json`.
 ## Operating rules
 
 - Prefer explicit identifiers. Pass `--project-id` for projects and `--issue-id` for comments.
+- `--issue-id` accepts either an issue UUID or a Linear issue key like `ENG-123`.
 - Do not guess between multiple matches. If an identifier is unclear, stop and ask for a direct ID.
 - Use `mcp discover` when you need to inspect the current session or verify available tools.
 - Keep output handling simple. `linear-cli` prints JSON-first results, so prefer parsing JSON over reading formatted text.

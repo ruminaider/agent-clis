@@ -15,11 +15,13 @@ linear-cli --help
 
 ```bash
 linear-cli auth login
+linear-cli auth login --api-key <key>
 linear-cli auth logout
 linear-cli auth status
+linear-cli auth status --api-key <key>
 ```
 
-`auth login` stores credentials in `~/.config/linear-cli/credentials.json`.
+`auth login` stores credentials in `~/.config/linear-cli/credentials.json`. Use `--api-key` to persist a Linear API key instead of starting the browser flow.
 
 ### MCP discovery
 
@@ -38,8 +40,8 @@ linear-cli project get --project-id <project-id> --api-key <key>
 
 Notes:
 - `--team` and `--workspace` override the default context for the command.
-- `--api-key` can be used instead of browser auth for a single invocation or for `auth status` checks.
-- `project get` currently requires an explicit `--project-id` flag. A positional ID is accepted for compatibility, but the flag is preferred.
+- `--api-key` can be used instead of browser auth for a single invocation, or persisted with `auth login --api-key <key>`.
+- `project get` requires an explicit `--project-id` flag.
 
 ### Comments
 
@@ -49,6 +51,7 @@ linear-cli comment list --issue-id <issue-id> --cursor <cursor> --limit <n> --or
 
 Notes:
 - `--issue-id` is required.
+- Comment listing accepts issue IDs or issue keys through the same explicit flag.
 - `--cursor`, `--limit`, and `--order-by` are passed through to the verified comment listing tool.
 
 ## Output
