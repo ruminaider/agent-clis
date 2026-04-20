@@ -1,0 +1,32 @@
+{
+  "name": "@ruminaider/linear-cli",
+  "version": "0.1.0",
+  "description": "Linear CLI with authenticated MCP-backed project reads, comment reads, and a minimal verified project write command.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ruminaider/agent-clis.git",
+    "directory": "linear/cli"
+  },
+  "keywords": [
+    "linear",
+    "cli",
+    "mcp",
+    "agent",
+    "pi-package"
+  ],
+  "bin": {
+    "linear-cli": "bin/linear.js"
+  },
+  "files": [
+    "bin/",
+    "lib/"
+  ],
+  "dependencies": {
+    "open": "^10.1.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

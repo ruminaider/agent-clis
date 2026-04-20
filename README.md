@@ -9,6 +9,7 @@ MCP servers bloat your agent's context with dozens of tool descriptions and prev
 | Tool | Replaces | Status |
 |------|----------|--------|
 | [notion](./notion/) | Notion MCP Server | Ready |
+| [linear](./linear/) | Linear MCP Server | MCP-synced read/write surface |
 | [slack](./slack/) | Slack MCP Server | Planned |
 | [metabase](./metabase/) | Metabase MCP Server | Planned |
 | [newrelic](./newrelic/) | NewRelic MCP Server | Planned |
@@ -16,8 +17,11 @@ MCP servers bloat your agent's context with dozens of tool descriptions and prev
 ## Install
 
 ```bash
-# Via npm (recommended)
+# Via npm (ready today)
 npm i -g @ruminaider/notion-cli
+
+# Linear publish target
+# npm i -g @ruminaider/linear-cli
 
 # Or clone and install all tools
 git clone https://github.com/ruminaider/agent-clis.git
@@ -25,6 +29,7 @@ bash agent-clis/install.sh
 
 # Or clone and install one tool
 bash agent-clis/notion/install.sh
+bash agent-clis/linear/install.sh
 ```
 
 ## Why CLI Tools
@@ -52,14 +57,15 @@ notion-cli search "deploy checklist" | jq -r '.results[0].text' | slack-cli post
 
 ## Auth
 
-Each tool handles its own authentication. Most use OAuth with a browser flow:
+Each tool handles its own authentication. Most use OAuth with a browser flow, and some tools also accept direct API keys for headless use:
 
 ```bash
 notion-cli auth          # Refreshes token first, then opens browser if needed
 slack-cli auth login     # Same pattern
+linear-cli auth status   # Also supports --api-key and persisted credentials
 ```
 
-You manage no API keys, create no integrations, and need no admin permissions.
+You create no custom integrations, and most flows should not require admin permissions.
 
 ## For AI Agent Harnesses
 
@@ -71,6 +77,10 @@ agent-clis/
 │   ├── cli/              # The CLI tool
 │   ├── skill/            # Agent skill (SKILL.md)
 │   └── install.sh        # Standalone installer
+├── linear/
+│   ├── cli/
+│   ├── skill/
+│   └── install.sh
 ├── slack/
 │   ├── cli/
 │   ├── skill/
