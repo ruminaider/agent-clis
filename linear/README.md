@@ -5,11 +5,11 @@ Scaffold package for the Linear tool. Core behavior will be added in later waves
 ## Install
 
 ```bash
-# Via npm
-npm i -g @ruminaider/linear-cli
-
-# Or from repo clone
+# Current supported path: repo clone
 bash install.sh
+
+# Publish target, not live yet
+# npm i -g @ruminaider/linear-cli
 ```
 
 ## Reserved command namespaces

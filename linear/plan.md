@@ -31,10 +31,10 @@ Deliver a new `linear-cli` package and `linear` pi skill in the monorepo that wr
 
 4. **Build the Linear MCP transport layer**: Adapt the Notion MCP client to Linear's streamable HTTP server and keep the debug surface small.
    - File: `linear/cli/lib/mcp.js`
-   - Changes: target `https://mcp.linear.app/mcp`, initialize with protocol version `2025-03-26`, preserve session reuse within a single CLI invocation, support `tools/list`, and parse both SSE and JSON responses if Linear varies by content type.
+   - Changes: target `https://mcp.linear.app/mcp`, initialize with protocol version `2025-03-26`, preserve session reuse within a single CLI invocation, support capability discovery, and parse both SSE and JSON responses if Linear varies by content type.
    - File: `linear/cli/bin/linear.js`
-   - Changes: add a `tools` command for capability discovery and troubleshooting.
-   - Acceptance: authenticated `linear-cli tools` returns server tools and descriptions, repeated calls in one invocation reuse the session ID, and server-side errors are surfaced clearly.
+   - Changes: add an `mcp discover` command for capability discovery and troubleshooting.
+   - Acceptance: authenticated `linear-cli mcp discover` returns server capabilities or tool descriptions, repeated calls in one invocation reuse the session ID, and server-side errors are surfaced clearly.
 
 5. **Implement thin API wrappers and the MVP CLI commands**: Keep the command set intentionally small and aligned to verified tool support.
    - File: `linear/cli/lib/api.js`
@@ -59,7 +59,7 @@ Deliver a new `linear-cli` package and `linear` pi skill in the monorepo that wr
    - Changes: make any fixes needed for local-link or global-install reliability.
    - File: `linear/README.md`
    - Changes: correct any command examples or caveats found during verification.
-   - Acceptance: from a clean shell, `bash linear/install.sh` or `npm link` yields a working `linear-cli`; auth succeeds; `tools` works; at least one read and one write command succeed; the published package would exclude unnecessary files.
+   - Acceptance: from a clean shell, `bash linear/install.sh` or `npm link` yields a working `linear-cli`; auth succeeds; `linear-cli mcp discover` works; at least one read and one write command succeed; the published package would exclude unnecessary files.
 
 ## Files to Modify
 - `README.md` - add Linear to the monorepo tool list and install documentation.
