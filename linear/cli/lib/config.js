@@ -6,7 +6,7 @@ export const PACKAGE_NAME = "@ruminaider/linear-cli";
 export const CLI_NAME = "linear-cli";
 export const PACKAGE_VERSION = "0.0.0";
 
-export const COMMAND_NAMESPACES = Object.freeze([
+export const RESERVED_COMMAND_NAMESPACES = Object.freeze([
   "auth",
   "search",
   "issue",
@@ -15,6 +15,13 @@ export const COMMAND_NAMESPACES = Object.freeze([
   "label",
   "comment",
   "config",
+  "mcp",
+]);
+
+export const MVP_COMMAND_NAMESPACES = Object.freeze([
+  "auth",
+  "project",
+  "comment",
   "mcp",
 ]);
 

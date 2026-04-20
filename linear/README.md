@@ -12,18 +12,6 @@ bash install.sh
 # npm i -g @ruminaider/linear-cli
 ```
 
-## Reserved command namespaces
-
-- `auth`
-- `search`
-- `issue`
-- `project`
-- `team`
-- `label`
-- `comment`
-- `config`
-- `mcp`
-
 ## Reserved module surface
 
 - `cli/bin/linear.js`: executable entrypoint
@@ -100,19 +88,9 @@ These namespaces and subcommands are the intended first release surface. The cur
 - `linear-cli project list [filters]`
 - `linear-cli comment list <issue-id> [cursor|limit|orderBy]`
 
-### Deferred until authenticated tool inventory is confirmed
+### Outside the initial MVP
 
-- `linear-cli search <query>`
-- `linear-cli issue get <id-or-key>`
-- `linear-cli issue list [filters]`
-- `issue create`
-- `issue update`
-- `project create`
-- `project update`
-- `comment create`
-- initiative commands of any kind
-- project label management commands of any kind
-- any command that depends on the exact `tools/list` schema rather than public docs, including search until the authenticated schema is confirmed
+Keep all other Linear command areas deferred until authenticated `tools/list` inventory confirms their schemas and behavior.
 
 ### Implementation guardrails
 

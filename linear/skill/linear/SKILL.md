@@ -30,9 +30,5 @@ These are the planned first-release commands. The current scaffold does not exec
 - Resolve human-friendly names through tool calls only after authenticated capability checks are available.
 - Fail clearly on ambiguity. Do not guess between multiple matches.
 
-## Deferred until authenticated inventory is confirmed
-- Search commands
-- Issue create or update flows
-- Project create or update flows
-- Label or initiative commands
-- Any command that depends on unverified tool schemas
+## Outside the initial MVP
+Keep all other Linear command areas deferred until authenticated `tools/list` inventory confirms their schemas and behavior.
