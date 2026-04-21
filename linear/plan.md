@@ -38,7 +38,7 @@ Deliver a new `linear-cli` package and `linear` pi skill in the monorepo that wr
 
 5. **Implement thin API wrappers and the MVP CLI commands**: Keep the command set intentionally small and aligned to verified tool support.
    - File: `linear/cli/lib/api.js`
-   - Changes: add one wrapper per verified MCP tool in the shipped MVP. The final surface is centered on `mcp discover`, `project list`, `project get --query <query>`, `project save`, and `comment list --issue-id <issue-id>`.
+   - Changes: add one wrapper per verified MCP tool. The shipped surface now covers every Linear MCP tool: `project list/get/save`, `project-label list`, `issue list/get/save`, `issue-label list/create`, `status list/get`, `comment list/save/delete`, `attachment get/create/delete`, `cycle list`, `document list/get/create/update`, `milestone list/get/save`, `team list/get`, `user list/get`, `image extract`, and `docs search`.
    - File: `linear/cli/bin/linear.js`
    - Changes: add the top-level parser, subcommands, flags, help text, and JSON output behavior. Follow the `notion-cli` style of explicit flags and minimal formatting.
    - File: `linear/README.md`

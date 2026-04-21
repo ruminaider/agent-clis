@@ -1,7 +1,11 @@
 {
   "name": "@ruminaider/linear-cli",
-  "version": "0.1.0",
-  "description": "Linear CLI with authenticated MCP-backed project reads, comment reads, and a minimal verified project write command.",
+  "version": "0.2.0",
+  "description": "JSON-first CLI for Linear. Wraps every authenticated Linear MCP tool: projects, issues, comments, attachments, cycles, documents, milestones, teams, users, labels, statuses, images, and docs search.",
+  "homepage": "https://github.com/ruminaider/agent-clis/tree/main/linear",
+  "bugs": {
+    "url": "https://github.com/ruminaider/agent-clis/issues"
+  },
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -23,6 +27,9 @@
     "bin/",
     "lib/"
   ],
+  "scripts": {
+    "e2e": "bash scripts/e2e.sh"
+  },
   "dependencies": {
     "open": "^10.1.2"
   },
