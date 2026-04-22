@@ -4,3 +4,11 @@ package-lock.json
 .DS_Store
 docs/plans/
 context.md
+.venv/
+**/.venv/
+.pytest_cache/
+**/.pytest_cache/
+__pycache__/
+**/__pycache__/
+*.egg-info/
+**/*.egg-info/
