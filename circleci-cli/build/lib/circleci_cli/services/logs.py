@@ -156,9 +156,9 @@ def _interesting_score(step_name: str | None, action_name: str | None) -> int:
 
 
 def _select_log_sections(build: dict[str, Any], *, client: CircleCIClient, failed_only: bool, tail: int) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    failed_sections: list[dict[str, Any]] = []
-    interesting_sections: list[tuple[int, dict[str, Any]]] = []
-    successful_sections: list[dict[str, Any]] = []
+    failed_sections: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    interesting_sections: list[tuple[int, dict[str, Any], dict[str, Any]]] = []
+    successful_sections: list[tuple[dict[str, Any], dict[str, Any]]] = []
     total_actions = 0
 
     for step in build.get("steps") or []:
@@ -166,28 +166,33 @@ def _select_log_sections(build: dict[str, Any], *, client: CircleCIClient, faile
         for action in actions:
             total_actions += 1
             status = str(action.get("status") or "").lower()
-            output_url = action.get("output_url")
-            excerpt = _fetch_action_output(client, output_url, tail) if output_url else []
-            normalized = _normalize_action(step, action, excerpt)
-
             if status in _FAILURE_STATUSES:
-                failed_sections.append(normalized)
+                failed_sections.append((step, action))
+                continue
+
+            interesting_score = _interesting_score(step.get("name"), action.get("name"))
+            if interesting_score > 0:
+                interesting_sections.append((interesting_score, step, action))
             else:
-                interesting_score = _interesting_score(step.get("name"), action.get("name"))
-                if interesting_score > 0:
-                    interesting_sections.append((interesting_score, normalized))
-                else:
-                    successful_sections.append(normalized)
+                successful_sections.append((step, action))
 
     if failed_only:
-        selected = failed_sections
+        selected_sections = failed_sections
     elif failed_sections:
-        selected = failed_sections
+        selected_sections = failed_sections
     elif interesting_sections:
-        ranked_interesting = [section for _, section in sorted(interesting_sections, key=lambda item: item[0], reverse=True)]
-        selected = ranked_interesting[:3]
+        selected_sections = [
+            (step, action)
+            for _, step, action in sorted(interesting_sections, key=lambda item: item[0], reverse=True)[:3]
+        ]
     else:
-        selected = successful_sections[-3:]
+        selected_sections = successful_sections[-3:]
+
+    selected = []
+    for step, action in selected_sections:
+        output_url = action.get("output_url")
+        excerpt = _fetch_action_output(client, output_url, tail) if output_url else []
+        selected.append(_normalize_action(step, action, excerpt))
 
     counts = {
         "total_actions": total_actions,
@@ -259,13 +264,13 @@ def run(
     tests: list[dict[str, Any]] = []
     try:
         tests = client.get_job_tests(project.project_slug, selected_job_number)
-    except Exception:
+    except NotFoundError:
         tests = []
 
     artifacts: list[dict[str, Any]] = []
     try:
         artifacts = client.get_job_artifacts(project.project_slug, selected_job_number)
-    except Exception:
+    except NotFoundError:
         artifacts = []
 
     failing_tests = [test for test in tests if _result_is_failure(test.get("result"))]
