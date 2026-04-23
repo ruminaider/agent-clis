@@ -19,12 +19,17 @@ description: Use when the user wants to inspect CircleCI through `circleci-cli`:
 
 ## Domain mechanics
 
-1. **Doctor.** `circleci-cli doctor [--project-slug <slug>]`. Run first. Confirms auth, slug, and official-binary presence.
-2. **Status.** `circleci-cli status --target <t> [--branch <b>] [--commit <sha>] [--fail-on-ci-failure]`. Finds the most relevant recent pipeline for the target and summarizes workflows, jobs, counts, and links. `--fail-on-ci-failure` makes the command exit 3 (not 1) when the resolved pipeline has failed jobs; use it inside scripts that must branch on CI health.
+1. **Doctor.** `circleci-cli doctor [--project-slug <slug>]`. Run first. Confirms auth, slug, and official-binary presence. `token_present` reflects pure presence (a non-empty token was resolved); `auth_valid` reflects API acceptance. An invalid token shows `token_present=true`, `auth_valid=false`, with the error in `token_error`.
+2. **Status.** `circleci-cli status --target <t> [--branch <b>] [--commit <sha>] [--fail-on-ci-failure]`. Selects the latest matching pipeline by `created_at` and summarizes workflows, jobs, counts, and links. Failure-aware ranking applies only as a tiebreaker when timestamps match. `--fail-on-ci-failure` makes the command exit 3 when the resolved pipeline has ANY failed matched job (keyed off `status_counts.failed > 0`, not just the display-oriented `primary_job`). Use it inside scripts that must branch on CI health.
 3. **Pipeline.** `circleci-cli pipeline <pipeline-id> --target <t>`. Same normalized shape as `status`, scoped to an explicit pipeline id from a prior `status` call or a CircleCI URL.
-4. **Logs.** `circleci-cli logs --target <t> [--branch <b>] [--failed-only] [--tail <n>] [selector]`. The selector is exactly one of: `--job-number <n>`, `--workflow-id <id>`, `--pipeline-id <id>`, or `--job-name <name>`. When using `--job-name`, also pass `--target` (and usually `--branch`) so the resolver can find the right workflow. Default behavior is verbose; pass `--failed-only` for root-cause output and `--tail` to cap lines per step.
+4. **Logs.** `circleci-cli logs --target <t> [--branch <b>] [--failed-only] [--tail <n>] [selector]`. Selector rules (enforced by the CLI; conflicts are rejected with a `USAGE_ERROR` before any API call):
+   - `--job-number <n>` is standalone; cannot be combined with any other selector.
+   - `--workflow-id <id>` and `--pipeline-id <id>` are mutually exclusive.
+   - `--job-name <name>` requires exactly one of `--workflow-id` or `--pipeline-id`.
+   - Omitting all selectors falls back to the default target-based resolver.
+   Output fetching is lazy: only selected sections incur HTTP calls. Pass `--failed-only` for root-cause output and `--tail` to cap lines per step. When using `--job-name`, also pass `--target` (and usually `--branch`) so the resolver can find the right workflow. Expected-empty responses (jobs with no tests or artifacts) return `[]`; real fetch failures surface as structured errors.
 5. **Flaky tests.** `circleci-cli flaky-tests --target <t> [--branch <b>] [--window <n>] [--min-failures <n>]`. Returns normalized flaky-test insights. `--window` controls recency; `--min-failures` filters the tail.
-6. **Config validate.** `circleci-cli config validate [--path .circleci/config.yml]`. Delegates to the official `circleci` binary. If `doctor` says the binary is missing, install it before calling this.
+6. **Config validate.** `circleci-cli config validate [--path .circleci/config.yml]`. Delegates to the official `circleci` binary. If `doctor` says the binary is missing, install it before calling this. The CLI propagates the delegated subprocess exit code on failure while preserving the JSON response envelope.
 
 *Judgment:* If the user gives a CircleCI URL, extract the pipeline id from it and use `pipeline` rather than guessing at `status` filters. If the user gives a branch only, use `status --target <t> --branch <b>`, then drill down with `logs` using the returned pipeline or workflow id.
 
@@ -55,11 +60,14 @@ Error (stderr, single JSON object):
 { "error": { "code": "AUTH_ERROR", "message": "...", "details": { ... } } }
 ```
 
+Common codes: `AUTH_ERROR`, `USAGE_ERROR` (malformed invocations and conflicting `logs` selectors; argparse failures are converted to this envelope rather than emitted as plain text), `NOT_FOUND`, `CLI_ERROR`.
+
 **Exit codes:**
 - `0`: success
 - `1`: auth, HTTP, or operational failure
 - `2`: argument or usage error
-- `3`: command succeeded but `status --fail-on-ci-failure` found failed jobs
+- `3`: command succeeded but `status --fail-on-ci-failure` found at least one failed matched job
+- `config validate` propagates the delegated tool's exit code when validation fails
 
 Errors go to stderr. When piping through `jq`, capture both streams or read stderr separately.
 
@@ -73,8 +81,9 @@ Errors go to stderr. When piping through `jq`, capture both streams or read stde
 - Calling the official `circleci` binary directly for status or logs. Use `circleci-cli`.
 - Omitting `--target`. Resolution then depends on the default slug and recent activity, which is rarely what the user meant.
 - Starting at `logs` without an id. Run `status` first, then pass the returned workflow or pipeline id.
-- Guessing `--job` instead of `--job-name`, or combining multiple selectors (`--job-number` with `--workflow-id`). Pick exactly one.
+- Guessing `--job` instead of `--job-name`, or combining conflicting selectors. The CLI now rejects invalid combinations with a `USAGE_ERROR` (exit 2) before any API call; follow the selector rules above rather than relying on silent precedence.
 - Setting `CIRCLECI_API_TOKEN` instead of `CIRCLECI_TOKEN`.
-- Treating exit 0 as "CI green." Without `--fail-on-ci-failure`, a failed pipeline still exits 0. Inspect `data` or add the flag.
+- Treating exit 0 as "CI green." Without `--fail-on-ci-failure`, a failed pipeline still exits 0. Inspect `data.pipeline.status_counts` or add the flag.
+- Confusing `token_present` with `auth_valid` in `doctor` output. A revoked or typo'd token has `token_present=true`, `auth_valid=false`; key on `auth_valid` to decide whether auth works.
 - Parsing error output from stdout. Errors are on stderr.
 - Inventing rerun or cancel commands. The wrapper is read-only by design.
