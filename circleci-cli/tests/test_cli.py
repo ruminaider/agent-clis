@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from circleci_cli.cli import main
+from circleci_cli.errors import AuthError
 from circleci_cli.models import CommandResponse
 
 
@@ -21,6 +22,14 @@ class _ExplodingClient:
 
     def get_me(self):
         raise AssertionError("should not be called")
+
+
+class _InvalidTokenClient:
+    def __init__(self, token: str):
+        self.token = token
+
+    def get_me(self):
+        raise AuthError("Unauthorized", details={"status": 401})
 
 
 def _read_json(stderr: str) -> dict:
@@ -47,6 +56,19 @@ def test_doctor_outputs_json(capsys, monkeypatch):
     assert payload["command"] == "doctor"
     assert payload["data"]["project_slug"] == "gh/Recora-Health/recora-health-back-end"
     assert payload["data"]["auth_valid"] is True
+    assert payload["data"]["token_present"] is True
+
+
+def test_doctor_handles_invalid_token(capsys, monkeypatch):
+    monkeypatch.setenv("PI_CIRCLECI_PROJECT_SLUG", "gh/Recora-Health/recora-health-back-end")
+    monkeypatch.setattr("circleci_cli.cli.resolve_token", lambda: "secret")
+    monkeypatch.setattr("circleci_cli.cli.CircleCIClient", _InvalidTokenClient)
+    code = main(["doctor"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["token_present"] is True
+    assert payload["data"]["auth_valid"] is False
+    assert payload["data"]["token_error"] == "Unauthorized"
 
 
 def test_doctor_handles_missing_token(capsys, monkeypatch):
@@ -59,6 +81,7 @@ def test_doctor_handles_missing_token(capsys, monkeypatch):
     payload = json.loads(capsys.readouterr().out)
     assert payload["data"]["auth_valid"] is False
     assert payload["data"]["token_present"] is False
+    assert payload["data"]["token_error"] == "Missing CircleCI token"
 
 
 @pytest.mark.parametrize(
@@ -116,6 +139,48 @@ def test_logs_without_selectors_uses_default_resolution_path(capsys, monkeypatch
     payload = json.loads(capsys.readouterr().out)
     assert payload["command"] == "logs"
     assert payload["data"]["selector"] == "default"
+
+
+def test_config_validate_failure_returns_delegated_exit_code_and_json_envelope(capsys, monkeypatch):
+    monkeypatch.setattr("circleci_cli.cli.is_installed", lambda: True)
+    monkeypatch.setattr(
+        "circleci_cli.cli.validate_config",
+        lambda path: SimpleNamespace(returncode=7, stdout="validation failed", stderr="config invalid"),
+    )
+
+    code = main(["config", "validate", "--path", ".circleci/config.yml"])
+    assert code == 7
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "config validate"
+    assert payload["summary"] == "Config validation failed"
+    assert payload["data"] == {
+        "path": ".circleci/config.yml",
+        "stdout": "validation failed",
+        "stderr": "config invalid",
+        "returncode": 7,
+    }
+    assert payload["meta"]["delegated_to"] == "circleci"
+
+
+def test_config_validate_success_returns_zero_and_json_envelope(capsys, monkeypatch):
+    monkeypatch.setattr("circleci_cli.cli.is_installed", lambda: True)
+    monkeypatch.setattr(
+        "circleci_cli.cli.validate_config",
+        lambda path: SimpleNamespace(returncode=0, stdout="config valid", stderr=""),
+    )
+
+    code = main(["config", "validate", "--path", ".circleci/config.yml"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "config validate"
+    assert payload["summary"] == "Config validation completed"
+    assert payload["data"] == {
+        "path": ".circleci/config.yml",
+        "stdout": "config valid",
+        "stderr": "",
+        "returncode": 0,
+    }
+    assert payload["meta"]["delegated_to"] == "circleci"
 
 
 def test_status_fail_on_ci_failure_returns_three(monkeypatch):

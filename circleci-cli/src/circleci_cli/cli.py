@@ -95,20 +95,23 @@ def _make_parser() -> argparse.ArgumentParser:
 
 def _doctor(args: argparse.Namespace) -> CommandResponse:
     project = resolve_project(args.project_slug, target="all")
-    token_present = True
+    token_present = False
     auth_valid = False
     actor_login = None
     token_error = None
 
     try:
         token = resolve_token()
-        me = CircleCIClient(token=token).get_me()
-        auth_valid = True
-        actor_login = me.get("login")
+        token_present = bool(token)
+        try:
+            me = CircleCIClient(token=token).get_me()
+            auth_valid = True
+            actor_login = me.get("login")
+        except AuthError as error:
+            token_error = error.message
+        except CliError as error:
+            token_error = error.message
     except AuthError as error:
-        token_present = False
-        token_error = error.message
-    except CliError as error:
         token_error = error.message
 
     summary = "CircleCI auth is valid" if auth_valid else "CircleCI auth is not ready"
@@ -218,6 +221,8 @@ def main(argv: list[str] | None = None) -> int:
             raise NotImplementedCliError(args.command)
 
         print(format_success(response, getattr(args, "format", "json")))
+        if args.command == "config" and args.config_command == "validate":
+            return int(response.data.get("returncode", 0))
         if getattr(args, "fail_on_ci_failure", False):
             primary_job = response.to_dict().get("data", {}).get("pipeline", {}).get("primary_job")
             if primary_job and primary_job.get("status") == "failed":
