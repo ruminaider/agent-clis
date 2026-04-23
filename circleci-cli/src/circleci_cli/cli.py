@@ -8,12 +8,22 @@ from pathlib import Path
 
 from .auth import resolve_token
 from .client import CircleCIClient
-from .errors import AuthError, CliError, NotImplementedCliError
+from .errors import AuthError, CliError, NotImplementedCliError, UsageError
 from .formatters import format_error, format_success
 from .models import CommandResponse
 from .official_cli import is_installed, validate_config
 from .project_resolver import resolve_project
 from .services import flaky_tests, logs, pipeline, status
+
+
+class StructuredArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise UsageError(message, details={"usage": self.format_usage().strip()})
+
+    def exit(self, status: int = 0, message: str | None = None) -> None:
+        if status == 0:
+            return super().exit(status, message)
+        raise UsageError((message or "Invalid CLI usage").strip(), details={"usage": self.format_usage().strip()})
 
 
 def _add_common_flags(parser: argparse.ArgumentParser, *, include_target: bool = True) -> None:
@@ -26,11 +36,11 @@ def _add_common_flags(parser: argparse.ArgumentParser, *, include_target: bool =
 
 
 def _make_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = StructuredArgumentParser(
         prog="circleci-cli",
         description="JSON-first CircleCI CLI for AI agents.",
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command", required=True, parser_class=StructuredArgumentParser)
 
     doctor = subparsers.add_parser("doctor", help="Validate local CircleCI CLI prerequisites")
     doctor.add_argument("--format", choices=("json", "text"), default="json", help="Output format")
@@ -48,12 +58,24 @@ def _make_parser() -> argparse.ArgumentParser:
     pipeline_parser.add_argument("pipeline_id", help="CircleCI pipeline id")
     _add_common_flags(pipeline_parser)
 
-    logs_parser = subparsers.add_parser("logs", help="Inspect failure logs")
+    logs_parser = subparsers.add_parser(
+        "logs",
+        help="Inspect failure logs",
+        description="Inspect failure logs and resolve a job before fetching log excerpts.",
+        epilog=(
+            "Selector rules:\n"
+            "  --job-number is standalone and cannot be combined with --pipeline-id, --workflow-id, or --job-name.\n"
+            "  --workflow-id and --pipeline-id are mutually exclusive.\n"
+            "  --job-name requires exactly one of --workflow-id or --pipeline-id.\n"
+            "  No selector flags remains a valid default resolution path."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     _add_common_flags(logs_parser)
-    logs_parser.add_argument("--pipeline-id", help="CircleCI pipeline id")
-    logs_parser.add_argument("--workflow-id", help="CircleCI workflow id")
-    logs_parser.add_argument("--job-number", type=int, help="CircleCI job number")
-    logs_parser.add_argument("--job-name", help="CircleCI job name to resolve within the selected workflow or pipeline")
+    logs_parser.add_argument("--pipeline-id", help="CircleCI pipeline id, mutually exclusive with --workflow-id")
+    logs_parser.add_argument("--workflow-id", help="CircleCI workflow id, mutually exclusive with --pipeline-id")
+    logs_parser.add_argument("--job-number", type=int, help="CircleCI job number, standalone selector")
+    logs_parser.add_argument("--job-name", help="CircleCI job name, requires exactly one of --workflow-id or --pipeline-id")
     logs_parser.add_argument("--failed-only", action="store_true", help="Restrict to failed steps")
     logs_parser.add_argument("--tail", type=int, default=200, help="Tail lines to return")
 
@@ -118,14 +140,52 @@ def _config_validate(args: argparse.Namespace) -> CommandResponse:
     )
 
 
+def _validate_logs_selectors(args: argparse.Namespace) -> None:
+    has_pipeline_id = args.pipeline_id is not None
+    has_workflow_id = args.workflow_id is not None
+    has_job_number = args.job_number is not None
+    has_job_name = args.job_name is not None
+
+    if has_job_number and (has_pipeline_id or has_workflow_id or has_job_name):
+        raise UsageError(
+            "--job-number is standalone and cannot be combined with --pipeline-id, --workflow-id, or --job-name.",
+            details={
+                "pipeline_id": args.pipeline_id,
+                "workflow_id": args.workflow_id,
+                "job_number": args.job_number,
+                "job_name": args.job_name,
+            },
+        )
+
+    if has_pipeline_id and has_workflow_id:
+        raise UsageError(
+            "--workflow-id and --pipeline-id are mutually exclusive.",
+            details={"pipeline_id": args.pipeline_id, "workflow_id": args.workflow_id},
+        )
+
+    if has_job_name and (has_pipeline_id == has_workflow_id):
+        raise UsageError(
+            "--job-name requires exactly one of --workflow-id or --pipeline-id.",
+            details={
+                "pipeline_id": args.pipeline_id,
+                "workflow_id": args.workflow_id,
+                "job_name": args.job_name,
+            },
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _make_parser()
-    args = parser.parse_args(argv)
 
     try:
+        args = parser.parse_args(argv)
+
         if args.command == "doctor":
             response = _doctor(args)
         elif args.command in {"status", "pipeline", "logs", "flaky-tests"}:
+            if args.command == "logs":
+                _validate_logs_selectors(args)
+
             token = resolve_token()
             client = CircleCIClient(token=token)
             project = resolve_project(args.project_slug, args.target, branch=args.branch, commit=args.commit)

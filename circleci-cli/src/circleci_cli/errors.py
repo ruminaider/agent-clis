@@ -8,7 +8,7 @@ from typing import Any
 
 @dataclass(slots=True)
 class CliError(Exception):
-    """Base structured CLI error, surfaced as JSON. Comment by Claude."""
+    """Base structured CLI error, surfaced as JSON."""
 
     code: str
     message: str
