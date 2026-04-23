@@ -10,7 +10,7 @@ MCP servers bloat your agent's context with dozens of tool descriptions and prev
 |------|----------|--------|
 | [notion](./notion/) | Notion MCP Server | Ready |
 | [linear](./linear/) | Linear MCP Server | MCP-synced read/write surface |
-| [circleci-cli](./circleci-cli/) | CircleCI MCP Server | Scaffolded |
+| [circleci-cli](./circleci-cli/) | CircleCI MCP Server | Ready |
 | [slack](./slack/) | Slack MCP Server | Planned |
 | [metabase](./metabase/) | Metabase MCP Server | Planned |
 | [newrelic](./newrelic/) | NewRelic MCP Server | Planned |

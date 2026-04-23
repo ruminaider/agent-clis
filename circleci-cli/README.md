@@ -23,7 +23,13 @@ circleci-cli status --target tonic
 circleci-cli doctor
 circleci-cli status [--target <target>] [--branch <branch>] [--commit <sha>] [--project-slug <slug>] [--format json|text] [--fail-on-ci-failure]
 circleci-cli pipeline <pipeline-id> [--target <target>] [--project-slug <slug>] [--format json|text]
-circleci-cli logs [--target <target>] [--branch <branch>] [--pipeline-id <id> | --workflow-id <id> | --job-number <n> | --job-name <name>] [--project-slug <slug>] [--failed-only] [--tail <n>] [--format json|text]
+circleci-cli logs [--target <target>] [--branch <branch>] [selector] [--project-slug <slug>] [--failed-only] [--tail <n>] [--format json|text]
+# selector rules (conflicts are rejected with USAGE_ERROR before any API call):
+#   --job-number <n>                         standalone
+#   --workflow-id <id>                       mutually exclusive with --pipeline-id
+#   --pipeline-id <id>                       mutually exclusive with --workflow-id
+#   --job-name <name> --workflow-id <id>     (or --pipeline-id)
+# omitting all selectors falls back to the default target-based resolver
 circleci-cli flaky-tests [--target <target>] [--branch <branch>] [--window <n>] [--min-failures <n>] [--project-slug <slug>] [--format json|text]
 circleci-cli config validate [--path .circleci/config.yml] [--format json|text]
 ```
@@ -32,11 +38,11 @@ circleci-cli config validate [--path .circleci/config.yml] [--format json|text]
 
 Current supported capabilities:
 - `doctor`: validates auth, project slug resolution, and whether the official `circleci` binary is installed
-- `status`: finds the most relevant recent pipeline for a target and summarizes workflows, jobs, counts, and direct links
+- `status`: selects the latest matching pipeline by `created_at` and summarizes workflows, jobs, counts, and direct links. Failure-aware ranking is a tiebreaker only when timestamps match.
 - `pipeline`: inspects a specific pipeline ID with the same normalized output as `status`
-- `logs`: resolves a job by number, workflow, pipeline, or job name, then returns root-cause-oriented failure logs, test failures, and artifacts
+- `logs`: resolves a job by number, workflow, pipeline, or job name, then returns root-cause-oriented failure logs, test failures, and artifacts. Output fetching is lazy: only selected sections incur HTTP calls. Real fetch failures (auth, 5xx, network) surface as errors; expected-empty responses (404 for jobs with no tests or artifacts) return `[]`.
 - `flaky-tests`: fetches and normalizes CircleCI flaky test insights for a target
-- `config validate`: delegates to the official `circleci config validate` command when available
+- `config validate`: delegates to the official `circleci config validate` command. The CLI propagates the delegated exit code on failure while preserving the JSON response envelope.
 
 ## Auth and configuration
 
@@ -51,7 +57,11 @@ Token:
 1. `CIRCLECI_TOKEN`
 2. `PI_CIRCLECI_TOKEN`
 
-The `doctor` command validates the resolved token and project slug.
+The `doctor` command validates the resolved token and project slug. Two fields distinguish presence from validity:
+- `token_present`: `true` whenever a non-empty token was resolved from the precedence chain
+- `auth_valid`: `true` only if the token was accepted by the CircleCI API
+
+An invalid token keeps `token_present=true` and sets `auth_valid=false`, with the underlying error surfaced in `token_error`.
 
 ## Output contract
 
@@ -86,11 +96,14 @@ Errors emit structured JSON to stderr:
 }
 ```
 
+Error codes include `AUTH_ERROR`, `USAGE_ERROR` (malformed invocations, conflicting `logs` selectors; argparse failures are converted to this envelope rather than emitted as plain text), `NOT_FOUND`, and generic `CLI_ERROR`.
+
 Exit codes:
 - `0`: command succeeded
 - `1`: auth, HTTP, or operational failure
 - `2`: argument or usage error
-- `3`: command succeeded, but `status --fail-on-ci-failure` found a failed primary job
+- `3`: command succeeded, but `status --fail-on-ci-failure` found at least one failed matched job in the resolved pipeline (keyed off `status_counts.failed > 0`)
+- delegated tools (`config validate`) propagate the underlying tool's exit code when validation fails
 
 ## Development
 
