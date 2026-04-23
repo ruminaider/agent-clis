@@ -111,7 +111,7 @@ def _doctor(args: argparse.Namespace) -> CommandResponse:
             token_error = error.message
         except CliError as error:
             token_error = error.message
-    except AuthError as error:
+    except CliError as error:
         token_error = error.message
 
     summary = "CircleCI auth is valid" if auth_valid else "CircleCI auth is not ready"
@@ -224,8 +224,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "config" and args.config_command == "validate":
             return int(response.data.get("returncode", 0))
         if getattr(args, "fail_on_ci_failure", False):
-            primary_job = response.to_dict().get("data", {}).get("pipeline", {}).get("primary_job")
-            if primary_job and primary_job.get("status") == "failed":
+            failed_jobs = response.data.get("pipeline", {}).get("status_counts", {}).get("failed", 0)
+            if failed_jobs > 0:
                 return 3
         return 0
     except CliError as error:

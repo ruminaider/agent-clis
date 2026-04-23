@@ -172,6 +172,27 @@ def _job(job_number, status, started_at):
     }
 
 
+class MixedStatusPipelineClient(PipelineSelectionClient):
+    def list_pipelines(self, project_slug, branch=None):
+        return [
+            _pipeline("pipeline-old", 100, "2026-04-21T00:00:00Z"),
+            _pipeline("pipeline-new", 101, "2026-04-22T00:00:00Z"),
+        ]
+
+    def list_workflows(self, pipeline_id):
+        if pipeline_id == "pipeline-old":
+            return [_workflow("workflow-old", "success", "2026-04-21T00:00:00Z")]
+        return [_workflow("workflow-new", "failed", "2026-04-22T00:00:00Z")]
+
+    def list_workflow_jobs(self, workflow_id):
+        if workflow_id == "workflow-old":
+            return [_job(76, "success", "2026-04-21T00:00:00Z")]
+        return [
+            _job(78, "running", "2026-04-22T01:00:00Z"),
+            _job(77, "failed", "2026-04-22T00:00:00Z"),
+        ]
+
+
 def test_status_response():
     response = status.run(client=FakeClient(), project=resolved_project())
     assert response.command == "status"
@@ -202,6 +223,15 @@ def test_latest_pipeline_wins_over_older_failed_pipeline():
     assert response.data["pipeline"]["id"] == "pipeline-new"
     assert response.data["pipeline"]["state"] == "running"
     assert response.data["pipeline"]["primary_job"]["status"] == "running"
+    assert response.links["primary_job"]["job_number"] == 77
+
+
+def test_status_prefers_failed_job_over_later_running_job_in_selected_pipeline():
+    response = status.run(client=MixedStatusPipelineClient({}, {}, {}), project=resolved_project())
+    assert response.data["pipeline"]["id"] == "pipeline-new"
+    assert response.data["pipeline"]["status_counts"]["failed"] == 1
+    assert response.data["pipeline"]["primary_job"]["status"] == "failed"
+    assert response.data["pipeline"]["primary_job"]["job_number"] == 77
     assert response.links["primary_job"]["job_number"] == 77
 
 

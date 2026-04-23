@@ -244,10 +244,19 @@ def _status_counts(summary: PipelineSummary) -> dict[str, int]:
 
 
 def _primary_job(summary: PipelineSummary) -> JobSummary | None:
+    first_job: JobSummary | None = None
+    first_running_job: JobSummary | None = None
+
     for workflow in summary.workflows:
         for job in workflow.jobs:
-            return job
-    return None
+            if first_job is None:
+                first_job = job
+            if job.status == "failed":
+                return job
+            if job.status == "running" and first_running_job is None:
+                first_running_job = job
+
+    return first_running_job or first_job
 
 
 def _pipeline_links(summary: PipelineSummary) -> dict[str, Any]:
