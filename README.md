@@ -10,6 +10,7 @@ MCP servers bloat your agent's context with dozens of tool descriptions and prev
 |------|----------|--------|
 | [notion](./notion/) | Notion MCP Server | Ready |
 | [linear](./linear/) | Linear MCP Server | MCP-synced read/write surface |
+| [circleci-cli](./circleci-cli/) | CircleCI MCP Server | Scaffolded |
 | [slack](./slack/) | Slack MCP Server | Planned |
 | [metabase](./metabase/) | Metabase MCP Server | Planned |
 | [newrelic](./newrelic/) | NewRelic MCP Server | Planned |
@@ -30,6 +31,7 @@ bash agent-clis/install.sh
 # Or clone and install one tool
 bash agent-clis/notion/install.sh
 bash agent-clis/linear/install.sh
+bash agent-clis/circleci-cli/install.sh
 ```
 
 ## Why CLI Tools
