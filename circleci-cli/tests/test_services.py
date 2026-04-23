@@ -1,6 +1,6 @@
 import pytest
 
-from circleci_cli.errors import NotFoundError
+from circleci_cli.errors import AuthError, HttpError, NotFoundError
 from circleci_cli.project_resolver import ResolvedProject, TargetConfig
 from circleci_cli.services import flaky_tests, logs, pipeline, status
 
@@ -344,6 +344,128 @@ def test_logs_unknown_job_name_raises_not_found():
             workflow_id=None,
             job_number=None,
             job_name="missing-job",
+            failed_only=True,
+            tail=50,
+        )
+
+
+def test_select_log_sections_fetches_only_selected_sections(monkeypatch):
+    build = {
+        "steps": [
+            {
+                "name": "RSpec",
+                "actions": [
+                    {
+                        "name": f"Run tests {index}",
+                        "status": "success",
+                        "output_url": f"https://example.test/output/{index}",
+                    }
+                    for index in range(8)
+                ],
+            }
+        ]
+    }
+    calls: list[str] = []
+
+    def fake_fetch(client, output_url, tail):
+        calls.append(output_url)
+        return [f"excerpt for {output_url}"]
+
+    monkeypatch.setattr(logs, "_fetch_action_output", fake_fetch)
+
+    selected_sections, counts = logs._select_log_sections(build, client=FakeClient(), failed_only=False, tail=50)
+
+    assert counts["interesting_actions"] == 8
+    assert counts["returned_actions"] == 3
+    assert len(selected_sections) == 3
+    assert calls == [
+        "https://example.test/output/0",
+        "https://example.test/output/1",
+        "https://example.test/output/2",
+    ]
+
+
+class MissingTestsClient(FakeClient):
+    def get_job_tests(self, project_slug, job_number):
+        raise NotFoundError("tests missing", details={"project_slug": project_slug, "job_number": job_number})
+
+
+class MissingArtifactsClient(FakeClient):
+    def get_job_artifacts(self, project_slug, job_number):
+        raise NotFoundError("artifacts missing", details={"project_slug": project_slug, "job_number": job_number})
+
+
+class AuthTestsClient(FakeClient):
+    def get_job_tests(self, project_slug, job_number):
+        raise AuthError("unauthorized", details={"project_slug": project_slug, "job_number": job_number})
+
+
+class AuthArtifactsClient(FakeClient):
+    def get_job_artifacts(self, project_slug, job_number):
+        raise AuthError("unauthorized", details={"project_slug": project_slug, "job_number": job_number})
+
+
+class HttpTestsClient(FakeClient):
+    def get_job_tests(self, project_slug, job_number):
+        raise HttpError("server exploded", details={"project_slug": project_slug, "job_number": job_number})
+
+
+class HttpArtifactsClient(FakeClient):
+    def get_job_artifacts(self, project_slug, job_number):
+        raise HttpError("server exploded", details={"project_slug": project_slug, "job_number": job_number})
+
+
+@pytest.mark.parametrize(
+    "client_cls, expected_field",
+    [
+        (MissingTestsClient, "tests"),
+        (MissingArtifactsClient, "artifacts"),
+    ],
+)
+def test_logs_404_from_optional_endpoints_returns_empty(client_cls, expected_field):
+    response = logs.run(
+        client=client_cls(),
+        project=resolved_project(),
+        pipeline_id=None,
+        workflow_id=None,
+        job_number=None,
+        job_name=None,
+        failed_only=True,
+        tail=50,
+    )
+
+    assert response.data[expected_field]["total"] == 0
+    assert response.data[expected_field]["sample"] == []
+    if expected_field == "tests":
+        assert response.data[expected_field]["failing"] == 0
+    assert "warning" not in response.data[expected_field]
+
+
+@pytest.mark.parametrize("client_cls", [AuthTestsClient, AuthArtifactsClient])
+def test_logs_auth_errors_from_optional_endpoints_are_surfaced(client_cls):
+    with pytest.raises(AuthError):
+        logs.run(
+            client=client_cls(),
+            project=resolved_project(),
+            pipeline_id=None,
+            workflow_id=None,
+            job_number=None,
+            job_name=None,
+            failed_only=True,
+            tail=50,
+        )
+
+
+@pytest.mark.parametrize("client_cls", [HttpTestsClient, HttpArtifactsClient])
+def test_logs_http_errors_from_optional_endpoints_are_surfaced(client_cls):
+    with pytest.raises(HttpError):
+        logs.run(
+            client=client_cls(),
+            project=resolved_project(),
+            pipeline_id=None,
+            workflow_id=None,
+            job_number=None,
+            job_name=None,
             failed_only=True,
             tail=50,
         )
