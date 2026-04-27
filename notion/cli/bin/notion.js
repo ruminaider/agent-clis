@@ -289,7 +289,7 @@ async function main() {
     }
   } catch (err) {
     if (err.message?.includes("Not authenticated")) {
-      console.error("Not authenticated. Run: notion-cli auth login");
+      console.error("Not authenticated. Run: notion-cli auth");
     } else {
       console.error(`Error: ${err.message}`);
     }
@@ -327,7 +327,7 @@ async function cmdAuth() {
       const creds = await loadCredentials();
       if (!creds?.access_token) {
         console.log("✗ Not authenticated");
-        console.log("  Run: notion-cli auth login");
+        console.log("  Run: notion-cli auth");
         process.exit(1);
       }
       console.log("✓ Authenticated");
@@ -344,7 +344,7 @@ async function cmdAuth() {
       break;
     }
     default:
-      console.log(`Usage: notion-cli auth [login|logout|status]\n\n  login [--port <port>]   Authenticate (refreshes token, or opens browser if needed)\n  logout                  Clear credentials\n  status                  Show auth status`);
+      console.log(`Usage: notion-cli auth [logout|status] [--port <port>]\n\n  notion-cli auth         Authenticate (refreshes token, or opens browser if needed)\n  auth logout             Clear credentials\n  auth status             Show auth status`);
   }
 }
 
@@ -574,7 +574,7 @@ function printHelp() {
 Usage: notion-cli <command> [options]
 
 Auth:
-  auth [login]                 Authenticate (refreshes token, or opens browser)
+  auth                         Authenticate (refreshes token, or opens browser)
   auth logout                  Clear credentials
   auth status                  Show auth status
 

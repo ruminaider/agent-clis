@@ -58,6 +58,7 @@ guidance for agents to remember the claim/record cycle.
   default (`git status --porcelain`); `AGENT_LEDGER_BASH_MODE=block`
   blocks bash entirely because shell mutation detection is incomplete.
 
+## [0.1.0] - 2026-04-27
 
 ### Phase 1 kernel slice
 
@@ -166,4 +167,5 @@ Code, and Babysitter adapters arrive in later phases.
   published `*_checksums.txt` file. A Homebrew tap with signed
   binaries is a Phase 5 deliverable.
 
-[Unreleased]: https://github.com/ruminaider/agent-clis/compare/main...HEAD
+[Unreleased]: https://github.com/ruminaider/agent-clis/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.0
