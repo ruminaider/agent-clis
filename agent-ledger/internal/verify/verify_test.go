@@ -595,12 +595,77 @@ func TestVerify_ExitCodes(t *testing.T) {
 		{"config_error", verify.Report{Status: verify.StatusError, Findings: []verify.Finding{{Code: verify.CodeConfigError}}}, 2},
 		{"storage_error", verify.Report{Status: verify.StatusError, Findings: []verify.Finding{{Code: verify.CodeStorageError}}}, 3},
 		{"needs_decision", verify.Report{Status: verify.StatusNeedsDecision}, 4},
+		// RV2-001: conflict + storage_error still routes to exit 3 via StatusError.
+		{"conflict_and_storage_error", verify.Report{
+			Status: verify.StatusError,
+			Findings: []verify.Finding{
+				{Code: verify.CodeActiveConflict, Severity: verify.SevError},
+				{Code: verify.CodeStorageError, Severity: verify.SevFatal},
+			},
+		}, 3},
 	}
 	for _, c := range cases {
 		r := c.report
 		if r.ExitCode() != c.wantCode {
 			t.Errorf("%s: expected exit %d, got %d", c.name, c.wantCode, r.ExitCode())
 		}
+	}
+}
+
+// TestVerify_ConflictOnly_NeedsDecision is the RV2-001 regression test
+// (wv1-rv-f09). A report whose only error-severity findings are
+// ACTIVE_CONFLICT must resolve to needs-decision (exit 4), not failed
+// (exit 1). The bug was that ACTIVE_CONFLICT findings (SevError) set
+// both hasConflict and hasError, causing the hasError&&hasConflict
+// branch to win and return StatusFailed.
+func TestVerify_ConflictOnly_NeedsDecision(t *testing.T) {
+	root, ledger := setupProject(t)
+	writeFile(t, filepath.Join(root, "shared.md"), "x")
+	store := openTestStore(t, ledger)
+	d := domain.New(store)
+	ctx := context.Background()
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: "pi.worker.a", AgentKind: "worker"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.InsertAssignment(ctx, domain.Assignment{
+		TaskID: "TCD", OrchestratorID: "pi.main.test", AssignedAgentID: "pi.worker.a",
+		AllowedPaths: []string{"shared.md"}, ConflictPolicy: domain.PolicyWarn, Reason: "x",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	n, _ := paths.Normalize(root, "shared.md")
+	first, err := d.InsertIntent(ctx, domain.Intent{
+		TaskID: "TCD", AgentID: "pi.worker.a", AccessMode: domain.AccessWrite,
+		ConflictPolicy: domain.PolicyWarn, Reason: "first",
+	}, []domain.IntentPath{{
+		Path: n.Display, RealPath: n.RealPath, PathHash: n.PathHash, AccessMode: domain.AccessWrite,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.InsertConflict(ctx, domain.Conflict{
+		Path: n.Display, PathHash: n.PathHash, ExistingIntentID: first.IntentID,
+		NewIntentID: first.IntentID, Policy: domain.PolicyWarn,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	rep := runVerify(t, verify.Inputs{
+		Root:                 root,
+		LedgerDirFlag:        ledger,
+		TaskID:               "TCD",
+		ChangedPathsOverride: []string{"shared.md"},
+	})
+	codes := findingsByCode(rep)
+	if len(codes[verify.CodeActiveConflict]) == 0 {
+		t.Fatalf("expected ACTIVE_CONFLICT finding, got %+v", rep.Findings)
+	}
+	if rep.Status != verify.StatusNeedsDecision {
+		t.Fatalf("expected needs-decision, got %s (findings=%+v)", rep.Status, rep.Findings)
+	}
+	if rep.ExitCode() != 4 {
+		t.Fatalf("expected exit 4, got %d", rep.ExitCode())
 	}
 }
 

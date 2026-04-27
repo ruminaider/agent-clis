@@ -664,6 +664,11 @@ func newReport(mode string, now time.Time) *Report {
 // decideStatus picks the report status based on findings. CONFIG and
 // STORAGE error codes are caller-controlled; this helper handles the
 // pass/fail/conflict split.
+//
+// ACTIVE_CONFLICT findings carry SevError but must NOT contribute to
+// hasError: their presence alone signals "needs decision", not a hard
+// failure. Setting hasConflict and then continuing skips the
+// severity-based hasError accumulation for conflict findings.
 func decideStatus(r *Report) string {
 	hasConflict := false
 	hasError := false
@@ -675,6 +680,7 @@ func decideStatus(r *Report) string {
 			return StatusError
 		case CodeActiveConflict:
 			hasConflict = true
+			continue // skip severity check; conflict alone routes to needs-decision
 		}
 		if f.Severity == SevError || f.Severity == SevFatal {
 			hasError = true
