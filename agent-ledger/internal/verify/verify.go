@@ -28,12 +28,12 @@
 //	}
 //
 // Exit codes follow SPEC §19.1 directly: 0 passed, 1 failed, 2 config
-// error, 3 storage error, 4 conflict requires decision, 5 reserved.
-// Note: this differs from the broader `internal/cli` constants
-// (ExitNotImplemented=3, ExitStorageIO=5) because those constants
-// were authored for the wider CLI surface. The verify command MUST
-// follow §19.1 exactly, so this package defines its own exit-code
-// helper instead of routing through cli.Exit*.
+// error, 3 storage error, 4 conflict requires decision, 5 reserved
+// for sync/auth. The verify command MUST follow §19.1 exactly, so
+// this package defines its own exit-code helper instead of routing
+// through cli.Exit*. The internal/cli constants are kept aligned
+// with §19.1 for codes 0-5; codes 6+ over there are
+// implementation-private extensions.
 package verify
 
 import (
