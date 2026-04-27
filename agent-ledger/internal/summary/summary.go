@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/domain"
@@ -181,7 +182,9 @@ func Build(ctx context.Context, in Inputs) (Document, error) {
 			// Use the portable hash (sha256 of NFC-normalized relative path with
 			// forward slashes) so that verify --summary succeeds in any checkout
 			// regardless of the absolute realpath. SPEC §20.1, §32.
-			portableHash := paths.PortableHash(p.Path)
+			// filepath.ToSlash converts any platform-native separators before
+			// hashing; it is a no-op on POSIX.
+			portableHash := paths.PortableHash(filepath.ToSlash(p.Path))
 			d.Changes = append(d.Changes, ChangeRef{
 				ChangeID:    c.ChangeID,
 				Path:        p.Path,

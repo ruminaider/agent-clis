@@ -145,18 +145,18 @@ func Hash(p string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// PortableHash returns sha256 hex of the NFC-normalized project-relative path
-// with forward slashes. Unlike [Hash], this value is stable across machines
-// because it depends only on the relative path, not on the absolute realpath.
-// Summaries must use this form so that verify --summary works in any checkout.
+// PortableHash returns sha256 hex of the NFC-normalized project-relative path.
+// Unlike [Hash], this value is stable across machines because it depends only
+// on the relative path, not on the absolute realpath. Summaries must use this
+// form so that verify --summary works in any checkout. SPEC §32.
 //
-// Backslashes are replaced with forward slashes unconditionally before
-// NFC normalization so that Windows-origin paths hash identically to
-// the canonical POSIX form stored in summaries. filepath.ToSlash is
-// platform-specific (no-op on POSIX), so strings.ReplaceAll is used
-// instead. SPEC §32.
+// Callers are responsible for converting platform-native separators to forward
+// slashes before calling PortableHash (use filepath.ToSlash at the call site).
+// On POSIX, backslash is a valid filename character, so folding it here would
+// alias two distinct paths to the same hash and silently corrupt summary
+// keying. The conversion belongs at the call site, not inside the hash.
 func PortableHash(display string) string {
-	s := norm.NFC.String(strings.ReplaceAll(display, "\\", "/"))
+	s := norm.NFC.String(display)
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
 }

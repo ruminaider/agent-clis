@@ -132,15 +132,17 @@ func TestNormalize_SlashSeparators(t *testing.T) {
 	}
 }
 
-// TestPortableHash_BackslashEqualsForwardSlash is the RV2-004 regression
-// test (wv1-rv-f10). PortableHash must produce the same value for
-// "a/b/c" and "a\\b\\c" so that Windows-origin paths hash identically
-// to the canonical POSIX form stored in summaries. SPEC §32.
-func TestPortableHash_BackslashEqualsForwardSlash(t *testing.T) {
-	forward := PortableHash("a/b/c")
-	backward := PortableHash("a\\b\\c")
-	if forward != backward {
-		t.Fatalf("PortableHash mismatch: forward=%q backward=%q", forward, backward)
+// TestPortableHash_NoBackslashCoercion asserts that PortableHash does NOT
+// fold backslashes to forward slashes (RV3-001). On POSIX, backslash is a
+// valid filename character; aliasing "a\\b" to "a/b" would silently corrupt
+// summary keying for files whose names contain backslashes. Callers that
+// receive platform-native paths must apply filepath.ToSlash before calling
+// PortableHash. SPEC §32.
+func TestPortableHash_NoBackslashCoercion(t *testing.T) {
+	forward := PortableHash(`a/b`)
+	backward := PortableHash(`a\b`)
+	if forward == backward {
+		t.Fatalf("PortableHash should differ: forward=%q backward=%q", forward, backward)
 	}
 	if len(forward) != 64 {
 		t.Fatalf("expected 64-char hex, got %q", forward)

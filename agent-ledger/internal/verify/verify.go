@@ -906,5 +906,7 @@ func pathHashAtRoot(root, rel string) (string, bool) {
 	if _, err := os.Stat(p); err != nil {
 		return "", false
 	}
-	return paths.PortableHash(rel), true
+	// filepath.ToSlash converts any platform-native separators before
+	// hashing; it is a no-op on POSIX.
+	return paths.PortableHash(filepath.ToSlash(rel)), true
 }
