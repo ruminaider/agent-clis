@@ -52,7 +52,15 @@ func NewRootCommand(streams IOStreams) *cobra.Command {
 	// Custom version template: just the version string plus newline.
 	root.SetVersionTemplate("{{.Version}}\n")
 
+	realCommands := map[string]func(IOStreams, *rootFlags) *cobra.Command{
+		"init":   newInitCommand,
+		"doctor": newDoctorCommand,
+	}
 	for _, name := range Phase1Commands() {
+		if build, ok := realCommands[name]; ok {
+			root.AddCommand(build(streams, flags))
+			continue
+		}
 		root.AddCommand(newStubCommand(name, flags))
 	}
 

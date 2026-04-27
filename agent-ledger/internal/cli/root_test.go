@@ -45,7 +45,12 @@ func TestRootVersionIsNonEmpty(t *testing.T) {
 }
 
 func TestStubCommandsReturnExit3(t *testing.T) {
+	// init and doctor are now wired; everything else is still stubbed.
+	wired := map[string]bool{"init": true, "doctor": true}
 	for _, name := range Phase1Commands() {
+		if wired[name] {
+			continue
+		}
 		t.Run(name, func(t *testing.T) {
 			streams, _, errBuf := newTestStreams()
 			code := Execute(streams, []string{name})
