@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -62,6 +63,9 @@ func seedAssignmentClaimRecord(t *testing.T, ledger, root, task, agentID string,
 	d := domain.New(store)
 	ctx := context.Background()
 
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: agentID, AgentKind: "worker"}); err != nil {
+		t.Fatalf("agent: %v", err)
+	}
 	if _, err := d.InsertAssignment(ctx, domain.Assignment{
 		TaskID:          task,
 		OrchestratorID:  "pi.main.test",
@@ -136,6 +140,23 @@ func findingsByCode(rep *verify.Report) map[string][]verify.Finding {
 		m[f.Code] = append(m[f.Code], f)
 	}
 	return m
+}
+
+func TestVerify_PathHashAtRoot_AppliesToSlashAtCallSite(t *testing.T) {
+	t.Logf("runtime.GOOS=%s; FromSlash(\"a/b/c.txt\")=%q", runtime.GOOS, filepath.FromSlash("a/b/c.txt"))
+	// On POSIX filepath.FromSlash is a no-op (a/b/c.txt == a/b/c.txt), so this
+	// test is tautological there. On Windows it produces a\\b\\c.txt and catches
+	// removal of filepath.ToSlash at internal/verify/verify.go:911.
+	root, ledger := setupProject(t)
+	writeFile(t, filepath.Join(root, "a/b/c.txt"), "x")
+	seedAssignmentClaimRecord(t, ledger, root, "T1", "pi.worker.test", []string{"a/**"}, nil, "a/b/c.txt", true)
+	rep := runVerify(t, verify.Inputs{Root: root, LedgerDirFlag: ledger, TaskID: "T1", ChangedPathsOverride: []string{filepath.FromSlash("a/b/c.txt")}})
+	if rep.Status != verify.StatusPassed {
+		t.Fatalf("expected passed, got %s", rep.Status)
+	}
+	if got := rep.Summary.ClaimedPaths; got != 1 {
+		t.Fatalf("expected 1 claimed path, got %d", got)
+	}
 }
 
 func TestVerify_HappyPath(t *testing.T) {
