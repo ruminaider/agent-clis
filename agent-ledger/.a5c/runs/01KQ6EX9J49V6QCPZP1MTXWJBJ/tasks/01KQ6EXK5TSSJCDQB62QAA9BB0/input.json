@@ -1,6 +1,0 @@
-{
-  "topic": "Execute the Phase 1 kernel slice of the Agent Ledger implementation spec. SPEC.md and tasks/phase-1-task-packet.md are present at the project root.",
-  "userPrompt": "execute the implementation spec for agent clis in this directory",
-  "specPath": "SPEC.md",
-  "planPath": "tasks/phase-1-task-packet.md"
-}
