@@ -149,7 +149,14 @@ func Hash(p string) string {
 // with forward slashes. Unlike [Hash], this value is stable across machines
 // because it depends only on the relative path, not on the absolute realpath.
 // Summaries must use this form so that verify --summary works in any checkout.
+//
+// Backslashes are replaced with forward slashes unconditionally before
+// NFC normalization so that Windows-origin paths hash identically to
+// the canonical POSIX form stored in summaries. filepath.ToSlash is
+// platform-specific (no-op on POSIX), so strings.ReplaceAll is used
+// instead. SPEC §32.
 func PortableHash(display string) string {
-	sum := sha256.Sum256([]byte(norm.NFC.String(display)))
+	s := norm.NFC.String(strings.ReplaceAll(display, "\\", "/"))
+	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
 }

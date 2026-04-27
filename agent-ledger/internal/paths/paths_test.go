@@ -131,3 +131,18 @@ func TestNormalize_SlashSeparators(t *testing.T) {
 		t.Fatalf("backslash in display: %q", n.Display)
 	}
 }
+
+// TestPortableHash_BackslashEqualsForwardSlash is the RV2-004 regression
+// test (wv1-rv-f10). PortableHash must produce the same value for
+// "a/b/c" and "a\\b\\c" so that Windows-origin paths hash identically
+// to the canonical POSIX form stored in summaries. SPEC §32.
+func TestPortableHash_BackslashEqualsForwardSlash(t *testing.T) {
+	forward := PortableHash("a/b/c")
+	backward := PortableHash("a\\b\\c")
+	if forward != backward {
+		t.Fatalf("PortableHash mismatch: forward=%q backward=%q", forward, backward)
+	}
+	if len(forward) != 64 {
+		t.Fatalf("expected 64-char hex, got %q", forward)
+	}
+}
