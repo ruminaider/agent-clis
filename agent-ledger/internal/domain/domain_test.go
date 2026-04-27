@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/domain"
@@ -56,6 +57,9 @@ func TestInsertAssignment_UnsafeReason(t *testing.T) {
 	if !errors.Is(err, domain.ErrUnsafeReason) {
 		t.Fatalf("expected errors.Is(err, domain.ErrUnsafeReason) to be true, got err=%v", err)
 	}
+	if strings.Contains(err.Error(), "\n") {
+		t.Fatalf("err.Error() should be single line, got %q", err.Error())
+	}
 }
 
 // TestInsertAssignment_UnsafeReason_PreservesPrivacyType asserts that the
@@ -76,21 +80,7 @@ func TestInsertAssignment_UnsafeReason_PreservesPrivacyType(t *testing.T) {
 		ConflictPolicy: domain.PolicyWarn,
 		Reason:         unsafeReason,
 	})
-	if err == nil {
-		t.Fatal("expected error for unsafe reason, got nil")
-	}
-	// errors.Is must still recognize ErrUnsafeReason.
-	if !errors.Is(err, domain.ErrUnsafeReason) {
-		t.Fatalf("errors.Is(err, ErrUnsafeReason) = false; err=%v", err)
-	}
-	// errors.As must reach the underlying *privacy.SecretError.
-	var typed *privacy.SecretError
-	if !errors.As(err, &typed) {
-		t.Fatalf("errors.As(err, *privacy.SecretError) = false; err=%v", err)
-	}
-	if typed.Label != "assignment.reason" {
-		t.Fatalf("SecretError.Label = %q, want %q", typed.Label, "assignment.reason")
-	}
+	assertUnsafeReasonError(t, err, "assignment.reason")
 }
 
 // TestInsertIntent_UnsafeReason mirrors TestInsertAssignment_UnsafeReason
@@ -130,19 +120,22 @@ func TestInsertIntent_UnsafeReason_PreservesPrivacyType(t *testing.T) {
 		ConflictPolicy: domain.PolicyWarn,
 		Reason:         unsafeReason,
 	}, nil)
+	assertUnsafeReasonError(t, err, "intent.reason")
+}
+
+func assertUnsafeReasonError(t *testing.T, err error, wantLabel string) {
+	t.Helper()
 	if err == nil {
-		t.Fatal("expected error for unsafe reason, got nil")
+		t.Fatal("expected error, got nil")
 	}
-	// errors.Is must still recognize ErrUnsafeReason.
 	if !errors.Is(err, domain.ErrUnsafeReason) {
-		t.Fatalf("errors.Is(err, ErrUnsafeReason) = false; err=%v", err)
+		t.Fatalf("errors.Is(ErrUnsafeReason)=false; err=%v", err)
 	}
-	// errors.As must reach the underlying *privacy.SecretError.
 	var typed *privacy.SecretError
 	if !errors.As(err, &typed) {
-		t.Fatalf("errors.As(err, *privacy.SecretError) = false; err=%v", err)
+		t.Fatalf("errors.As(*SecretError)=false; err=%v", err)
 	}
-	if typed.Label != "intent.reason" {
-		t.Fatalf("SecretError.Label = %q, want %q", typed.Label, "intent.reason")
+	if typed.Label != wantLabel {
+		t.Fatalf("SecretError.Label=%q want %q", typed.Label, wantLabel)
 	}
 }
