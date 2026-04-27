@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -59,13 +60,40 @@ type runResult struct {
 // env entries are appended to os.Environ so callers can override
 // AGENT_ID/HOME/etc. without polluting other tests. The shared
 // per-test t.TempDir() based HOME isolates XDG state lookups.
+//
+// Keys listed in env take precedence: any entry in the inherited
+// environment whose key matches an override key is stripped before
+// the override is appended. This prevents duplicate-key ambiguity
+// when the parent process already exports the same variable.
 func run(t *testing.T, dir string, env []string, args ...string) runResult {
 	t.Helper()
 	bin := builtBinary(t)
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = dir
-	base := append([]string{}, os.Environ()...)
-	cmd.Env = append(base, env...)
+
+	// Build a set of keys that the caller wants to override.
+	overrideKeys := make(map[string]struct{}, len(env))
+	for _, e := range env {
+		if idx := strings.IndexByte(e, '='); idx > 0 {
+			overrideKeys[e[:idx]] = struct{}{}
+		}
+	}
+
+	// Strip conflicting keys from the inherited environment, then
+	// append the caller-supplied overrides.
+	base := os.Environ()
+	filtered := make([]string, 0, len(base))
+	for _, e := range base {
+		key := e
+		if idx := strings.IndexByte(e, '='); idx >= 0 {
+			key = e[:idx]
+		}
+		if _, skip := overrideKeys[key]; skip {
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+	cmd.Env = append(filtered, env...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
