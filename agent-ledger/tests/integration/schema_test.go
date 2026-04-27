@@ -298,13 +298,11 @@ func TestSchema_SummaryJSON(t *testing.T) {
 		t.Errorf("validations len=%d want 1", len(v))
 	}
 
-	// Run verify --summary back against the same project root. The
-	// path_hash field binds to the realpath of each changed file, so
-	// the same root reproduces the hash deterministically. SPEC
-	// §20.1 supports cross-checkout summary verification but the
-	// Phase 1 path-hash binding (sha256 of realpath) is sensitive to
-	// the on-disk root; cross-machine summary replay is tracked
-	// separately.
+	// Run verify --summary back against the same project root. Since
+	// R-003 (e120d9a) path_hash is sha256(NFC(project-relative path
+	// with forward slashes)), making it stable across checkouts and
+	// machines. The same root reproduces the hash deterministically
+	// because the relative path is invariant. SPEC §20.1, §32.
 	writeFile(t, filepath.Join(root, "summary.json"), string(raw))
 	v2 := run(t, root, nil, "verify", "--summary", "summary.json", "--json",
 		"--ledger-dir", ledger,

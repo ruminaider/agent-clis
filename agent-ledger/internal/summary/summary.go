@@ -81,14 +81,19 @@ type AssignmentSnapshot struct {
 	ReasonSHA256    string   `json:"reason_sha256,omitempty"`
 }
 
-// PathRef is the privacy-safe pointer used in changed_paths: display
-// path plus sha256(realpath-normalized).
+// PathRef is the privacy-safe pointer used in changed_paths. PathHash
+// is sha256(NFC(project-relative path with forward slashes)), i.e.
+// paths.PortableHash(Path). The hash is stable across checkouts and
+// machines because it depends only on the relative path, not on the
+// absolute realpath. SPEC §32.
 type PathRef struct {
 	Path     string `json:"path"`
 	PathHash string `json:"path_hash"`
 }
 
-// ChangeRef is the privacy-safe per-path change record. before/after
+// ChangeRef is the privacy-safe per-path change record. PathHash uses
+// the same portable scheme as PathRef (sha256 of NFC project-relative
+// path with forward slashes; see paths.PortableHash). before/after
 // hashes are optional and only set when the recorder was able to
 // compute them. patch_sha256 binds the change to a normalized diff
 // hash without exposing diff content.
