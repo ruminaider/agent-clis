@@ -21,11 +21,12 @@ guidance for agents to remember the claim/record cycle.
 - `agent-ledger/adapters/pi/agent-ledger.ts`: pi extension that
   hooks `tool_call` and `tool_result` for `Edit`, `Write`,
   `MultiEdit`, `Bash`, and `subagent`. Pre-claims paths before edits
-  (blocking on failure), records after edits, post-scans `git status`
-  after bash, and auto-assigns child tasks for every dispatched
-  subagent so the chain is followed without orchestrator intervention.
+  (blocking on failure), records after edits, snapshots and diffs
+  `git status` around bash calls, and auto-assigns child tasks for
+  every dispatched subagent so the chain is followed without
+  orchestrator intervention.
 - `agent-ledger/adapters/pi/install.sh`: idempotent installer that
-  symlinks the extension and shared helper into
+  symlinks the extension and shared helpers into
   `~/.pi/agent/extensions/`.
 - `agent-ledger/adapters/babysitter/define-ledger-task.js`:
   higher-order replacement for the SDK's `defineTask`. Wraps every
@@ -34,6 +35,10 @@ guidance for agents to remember the claim/record cycle.
   `execution.env` so worker subagents inherit the discipline.
 - `agent-ledger/adapters/shared/session-bootstrap.sh`: idempotent
   identify + ensure-assignment shell helper used by every adapter.
+- `agent-ledger/adapters/shared/marker.sh` and `marker.js`: shared
+  auto-assignment reason marker helpers for v0.1 audit trails.
+- `agent-ledger/adapters/tests/run.sh`: lightweight adapter smoke
+  tests using `node --test` and shell stubs, wired into `make check`.
 - `agent-ledger/docs/adapters.md`: cross-harness env var contract
   (`AGENT_ID`, `AGENT_LEDGER_TASK_ID`, `AGENT_LEDGER_PARENT_TASK_ID`,
   `AGENT_LEDGER_REQUIRE_TASK`, etc.), auto-assignment design, and
@@ -41,17 +46,17 @@ guidance for agents to remember the claim/record cycle.
 
 #### Design notes
 
-- Missing task id is solved by auto-derivation with audit trail
-  (`metadata.auto_assigned = true`), not by fail-closed-by-default.
+- Missing task id is solved by auto-derivation with a v0.1 audit
+  marker in the assignment reason, not by fail-closed-by-default.
   Operators who want strict enforcement opt in via
   `AGENT_LEDGER_REQUIRE_TASK=1`.
 - Subagent inheritance is enforced by the parent pi extension
   intercepting the `subagent` tool call, auto-assigning a child
   task, and injecting `AGENT_LEDGER_TASK_ID` /
   `AGENT_LEDGER_PARENT_TASK_ID` into the subagent's env.
-- Bash mutations are handled by warn-and-post-scan by default
-  (`git status --porcelain`); `AGENT_LEDGER_BASH_MODE=block` switches
-  to fail-closed for known mutating commands.
+- Bash mutations are handled by warn, pre-snapshot, and post-scan by
+  default (`git status --porcelain`); `AGENT_LEDGER_BASH_MODE=block`
+  blocks bash entirely because shell mutation detection is incomplete.
 
 
 ### Phase 1 kernel slice

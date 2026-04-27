@@ -24,7 +24,7 @@ Every adapter implements the same env var contract documented in
 
 - `AGENT_ID`: identity, set by the harness or auto-derived.
 - `AGENT_LEDGER_TASK_ID`: orchestrator-set; auto-derived if missing
-  (with `metadata.auto_assigned = true` for audit).
+  (with a leading `[auto-assigned ...]` reason marker for v0.1 audit).
 - `AGENT_LEDGER_PARENT_TASK_ID`: chains a child task to its parent.
 - `AGENT_LEDGER_DIR`: optional ledger directory override.
 - `AGENT_LEDGER_REQUIRE_TASK=1`: opt into fail-closed enforcement
@@ -36,10 +36,12 @@ The "orchestrator forgot to assign" failure mode is handled by
 auto-derivation, not fail-closed-by-default. When a worker is
 dispatched without `AGENT_LEDGER_TASK_ID`, the adapter generates
 `auto/<agent-slug>/<utc-timestamp>` and writes an assignment marked
-`metadata.auto_assigned = true`. The worker proceeds with full
-attribution; reviewers find every auto-assigned task by filtering on
-that metadata flag, and `verify` emits a `MISSING_ASSIGNMENT`
-warning that surfaces in CI without blocking merges.
+a leading reason marker of the form `[auto-assigned by <source>
+auto-derived ...]`. The worker proceeds with full attribution;
+reviewers find every auto-assigned task by filtering assignment
+reasons that start with `[auto-assigned`, and `verify` emits a
+`MISSING_ASSIGNMENT` warning that surfaces in CI without blocking
+merges.
 
 Operators who want strict enforcement set
 `AGENT_LEDGER_REQUIRE_TASK=1` and accept the disruption.

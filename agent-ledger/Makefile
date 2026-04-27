@@ -1,4 +1,4 @@
-.PHONY: fmt fmt-check vet test test-short test-race test-integration coverage build check clean release-snapshot
+.PHONY: fmt fmt-check vet test test-short test-race test-integration test-adapters coverage build check clean release-snapshot
 
 PKG := ./...
 BIN_DIR := bin
@@ -52,6 +52,9 @@ test-race:
 test-integration:
 	go test ./tests/...
 
+test-adapters:
+	./adapters/tests/run.sh
+
 # coverage emits an HTML report alongside a coverage.out file. The
 # threshold is intentionally informational for Phase 1.
 coverage:
@@ -64,7 +67,7 @@ build:
 	@mkdir -p $(BIN_DIR)
 	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) $(CMD)
 
-check: fmt-check vet test build
+check: fmt-check vet test test-adapters build
 
 # release-snapshot builds the four-target Phase 1 archive set under dist/
 # without publishing. Requires goreleaser; see scripts/release-snapshot.sh

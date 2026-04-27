@@ -13,9 +13,9 @@ wrapper, future Claude Code hooks) implements the same shape.
 
 | Variable | Producer | Consumer | Required | Purpose |
 | -------- | -------- | -------- | -------- | ------- |
-| `AGENT_ID` | harness or orchestrator | every claim/record | yes | Identity attributed to events. Set by the harness; falls back to a derived value at session bootstrap. |
+| `AGENT_ID` | harness or orchestrator | every claim/record | yes | Identity attributed to events. Set by the harness; falls back to a non-PII opaque value at session bootstrap. |
 | `AGENT_LEDGER_TASK_ID` | orchestrator | adapters | strongly preferred | The task id this agent is working on. Orchestrators set it before dispatching a worker. If unset at first claim, the adapter auto-derives one. |
-| `AGENT_LEDGER_PARENT_TASK_ID` | orchestrator | adapters | optional | Set by the orchestrator when dispatching a subagent for a sub-task. Auto-derived child tasks record this in `metadata.parent_task` for audit. |
+| `AGENT_LEDGER_PARENT_TASK_ID` | orchestrator | adapters | optional | Set by the orchestrator when dispatching a subagent for a sub-task. Auto-derived child tasks include this in the v0.1 reason marker as `parent=<id>` for audit. |
 | `AGENT_LEDGER_DIR` | operator | every CLI call | optional | Override the resolved ledger directory. Defaults to `${XDG_STATE_HOME:-$HOME/.local/state}/agent-ledger/repos/<slug>-<fingerprint>/`. |
 | `AGENT_LEDGER_REASON` | orchestrator | adapters | optional | Default `--reason` text for claims and records when the adapter cannot derive one from tool input. |
 | `AGENT_LEDGER_REQUIRE_TASK` | operator | adapters | optional | When `1`, the adapter fails closed on missing `AGENT_LEDGER_TASK_ID` instead of auto-deriving. Default `0`. |
@@ -35,12 +35,10 @@ missed the assign step), the adapter must choose between:
   point.
 - **Auto-derive with audit trail (default)**: at session bootstrap,
   the adapter generates a task id of the shape
-  `auto/<agent-slug>/<utc-timestamp>` and writes an assignment with
-  `metadata.auto_assigned = true`, `metadata.auto_assigned_by =
-  "<harness>-extension"`, and `metadata.parent_task = <id>` when
-  `AGENT_LEDGER_PARENT_TASK_ID` is set. The worker proceeds. Reviewers
-  filtering verify findings on `metadata.auto_assigned = true` see
-  every session where the orchestrator forgot.
+  `auto/<agent-slug>/<utc-timestamp>` and writes an assignment reason
+  that starts with `[auto-assigned`. The worker proceeds. Reviewers
+  filtering assignment reasons with that prefix see every session
+  where the orchestrator forgot.
 
 Auto-derivation is the default because it solves the "subagent is
 useful even when the orchestrator forgot" requirement. Operators who
@@ -54,8 +52,7 @@ so adapters encode the audit signal in the assignment's `reason`
 text as a leading bracketed marker:
 
 ```
-[auto-assigned by pi-extension auto-derived parent=<id>] <human reason>
-[auto-assigned by babysitter-wrapper task=<name> effect=<id>] <human reason>
+[auto-assigned by <source> auto-derived task=<task-id> parent=<parent-id> agent=<agent-id> effect=<effect-id>] <human reason>
 ```
 
 Reviewers find every auto-derived assignment with:
@@ -85,19 +82,23 @@ the public surface for adapter audit.
 
 Every adapter runs the same bootstrap once per session, idempotent:
 
-1. Resolve `AGENT_ID`. If unset, derive `<user>@<host>:<harness>:<utc-timestamp>`,
-   sanitize, and export. Run `agent-ledger identify --agent-kind <kind>
-   --harness <harness>` to register the identity.
+1. Resolve `AGENT_ID`. If unset, derive a non-PII opaque value,
+   sanitize it, export it, then run `agent-ledger identify --agent-kind <kind>
+   --harness <harness>` to register the identity. Operators who want a
+   human-readable local identity can opt in with
+   `AGENT_LEDGER_HUMAN_READABLE_AGENT_ID=1`.
 2. Resolve `AGENT_LEDGER_TASK_ID`. If unset:
    - If `AGENT_LEDGER_REQUIRE_TASK=1`, error and exit non-zero.
    - Else derive `auto/<agent-slug>/<session-start-utc>` and proceed.
 3. Resolve assignment for the task id. If
    `agent-ledger status --task <id> --json` returns no assignment, run
    `agent-ledger assign --task <id> --orchestrator "<adapter>" --agent
-   "$AGENT_ID" --policy "$AGENT_LEDGER_AUTO_ASSIGN_POLICY" --allow
-   "$AGENT_LEDGER_AUTO_ASSIGN_ALLOW" --reason "auto-assigned by
-   adapter"` with `metadata.auto_assigned = true`.
-4. Export the resolved env vars for child processes.
+   "$AGENT_ID" --policy "$AGENT_LEDGER_AUTO_ASSIGN_POLICY"` with one
+   `--allow` per colon-separated glob in
+   `$AGENT_LEDGER_AUTO_ASSIGN_ALLOW` and a reason that starts with the
+   v0.1 marker prefix above.
+4. Export the resolved env vars for child processes. Shell callers use
+   export lines; pi uses the helper's `--json` mode.
 
 The shared shell helper `adapters/shared/session-bootstrap.sh`
 implements this and is sourced by both the pi extension launcher and
@@ -113,12 +114,11 @@ the babysitter wrapper.
 - Hooks `tool_result` for the same call id. Calls
   `agent-ledger record` with the captured intent id and a summary
   derived from the tool input.
-- Hooks `tool_call` for `bash`. Default mode is `warn`: log a notice
-  and let the command run, then post-scan with `git status --porcelain`
-  to detect modified files and `agent-ledger record` them against an
-  "auto-bash" intent. `AGENT_LEDGER_BASH_MODE=block` switches to
-  fail-closed for known mutating commands (`rm -rf`, `git checkout`,
-  `sed -i`, etc.).
+- Hooks `tool_call` for `bash`. Default mode is `warn`: snapshot
+  `git status --porcelain`, let the command run, then record paths
+  that became newly dirty against an "auto-bash" intent.
+  `AGENT_LEDGER_BASH_MODE=block` blocks all bash tool calls because
+  shell mutation detection is not complete.
 - Hooks `tool_call` for `subagent`. Auto-creates a child task id and
   passes it to the subagent via env so the child's pi extension picks
   up where the parent left off. This is how subagent inheritance is

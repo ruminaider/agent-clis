@@ -1,7 +1,7 @@
 # Agent Ledger babysitter wrapper
 
 `defineLedgerTask` is a higher-order replacement for the Babysitter
-SDK's `defineTask`. It bracets every wrapped agent task with a
+SDK's `defineTask`. It brackets every wrapped agent task with an
 `agent-ledger assign` shell pre-step and a `agent-ledger verify` shell
 post-step. The agent runs with `AGENT_LEDGER_TASK_ID`,
 `AGENT_LEDGER_PARENT_TASK_ID`, and `AGENT_ID` injected into
@@ -63,8 +63,9 @@ ledger fields:
 ```
 
 If `taskId` is omitted, the wrapper auto-derives
-`auto/<task-name>/<effect-id>` and marks the assignment with
-`metadata.auto_assigned = true`.
+`auto/<task-name>/<effect-id>` and prefixes the assignment reason with
+`[auto-assigned by babysitter-wrapper ...]`. Explicit `taskId` values
+leave the reason unmodified.
 
 ## Wrapped task structure
 
