@@ -2,38 +2,45 @@
 // SPEC §19. It produces a stable JSON document with a status,
 // per-finding codes, severities, paths, and recovery hints.
 //
-// JSON schema (top level):
+// JSON schema (top level), aligned with SPEC §19.2:
 //
 //	{
 //	  "schema":             "agent-ledger.verify.v1",
-//	  "status":             "passed|failed|config_error|storage_error|conflict",
+//	  "status":             "passed|failed|needs-decision|error",
 //	  "project_id":         "...",
 //	  "project_fingerprint":"...",
 //	  "project_slug":       "...",
 //	  "task_id":            "...",         // when scoped to a task
-//	  "summary_path":       "...",         // when scoped to a summary file
-//	  "mode":               "project|task|summary",
 //	  "generated_at":       "RFC3339",
-//	  "summary": { "counts": { ... } },
+//	  "summary": {
+//	    "changed_paths": 0, "claimed_paths": 0, "unclaimed_paths": 0,
+//	    "forbidden_path_violations": 0, "active_conflicts": 0,
+//	    "open_intents": 0, "stale_intents": 0
+//	  },
 //	  "findings": [
 //	    {
 //	      "code":     "UNCLAIMED_CHANGE",
-//	      "severity": "info|warn|error|critical",
+//	      "severity": "info|warning|error|fatal",
 //	      "message":  "...",
-//	      "paths":    [ "src/foo.go" ],
+//	      "path":     "src/foo.go",
 //	      "details":  { ... },
-//	      "recovery": "concrete CLI hint"
+//	      "suggested_recovery": "concrete CLI hint"
 //	    }
 //	  ]
 //	}
 //
+// Additive extensions retained beyond SPEC §19.2 for operator
+// utility (kept as documented extras, not contract changes):
+//   - Top level: "mode" (project|task|summary), "summary_path"
+//     (when mode=summary).
+//   - Summary: "outside_assignment_paths", "findings" (count).
+//
 // Exit codes follow SPEC §19.1 directly: 0 passed, 1 failed, 2 config
 // error, 3 storage error, 4 conflict requires decision, 5 reserved
-// for sync/auth. The verify command MUST follow §19.1 exactly, so
-// this package defines its own exit-code helper instead of routing
-// through cli.Exit*. The internal/cli constants are kept aligned
-// with §19.1 for codes 0-5; codes 6+ over there are
-// implementation-private extensions.
+// for sync/auth. Status "error" maps to either 2 or 3 by inspecting
+// the dominant finding code (CONFIG_ERROR vs STORAGE_ERROR). The
+// verify command MUST follow §19.1 exactly, so this package defines
+// its own exit-code helper instead of routing through cli.Exit*.
 package verify
 
 import (
@@ -63,21 +70,20 @@ import (
 // Schema is the schema field on every verify report.
 const Schema = "agent-ledger.verify.v1"
 
-// Verification statuses.
+// Verification statuses (SPEC §19.2).
 const (
-	StatusPassed       = "passed"
-	StatusFailed       = "failed"
-	StatusConfigError  = "config_error"
-	StatusStorageError = "storage_error"
-	StatusConflict     = "conflict"
+	StatusPassed        = "passed"
+	StatusFailed        = "failed"
+	StatusNeedsDecision = "needs-decision"
+	StatusError         = "error"
 )
 
-// Finding severities.
+// Finding severities (SPEC §19.2).
 const (
-	SevInfo     = "info"
-	SevWarn     = "warn"
-	SevError    = "error"
-	SevCritical = "critical"
+	SevInfo    = "info"
+	SevWarning = "warning"
+	SevError   = "error"
+	SevFatal   = "fatal"
 )
 
 // Verification mode strings.
@@ -87,22 +93,24 @@ const (
 	ModeSummary = "summary"
 )
 
-// Finding codes (SPEC §19.3 subset implemented for Phase 1).
+// Finding codes (SPEC §19.3). Phase 1 implements the subset below;
+// integration test SchemaTest_VerifyCodeRegistry snapshots the
+// canonical SPEC list to fail fast on future drift.
 const (
-	CodeUnclaimedChange   = "UNCLAIMED_CHANGE"
-	CodeForbiddenPath     = "FORBIDDEN_PATH"
-	CodeOutsideAssignment = "OUTSIDE_ASSIGNMENT"
-	CodeActiveConflict    = "ACTIVE_CONFLICT"
-	CodeStaleIntent       = "STALE_INTENT"
-	CodeOpenIntent        = "OPEN_INTENT"
-	CodeMissingReason     = "MISSING_REASON"
-	CodeMissingAssignment = "MISSING_ASSIGNMENT"
-	CodeAgentMismatch     = "AGENT_MISMATCH"
-	CodeReviewOnlyWrite   = "REVIEW_ONLY_WRITE"
-	CodeExclusiveLockHeld = "EXCLUSIVE_LOCK_HELD"
-	CodeConfigError       = "CONFIG_ERROR"
-	CodeStorageError      = "STORAGE_ERROR"
-	CodeSummaryMismatch   = "SUMMARY_MISMATCH"
+	CodeUnclaimedChange       = "UNCLAIMED_CHANGE"
+	CodeForbiddenPathChanged  = "FORBIDDEN_PATH_CHANGED"
+	CodePathOutsideAssignment = "PATH_OUTSIDE_ASSIGNMENT"
+	CodeActiveConflict        = "ACTIVE_CONFLICT"
+	CodeStaleIntent           = "STALE_INTENT"
+	CodeOpenIntent            = "OPEN_INTENT"
+	CodeMissingReason         = "MISSING_REASON"
+	CodeMissingAssignment     = "MISSING_ASSIGNMENT"
+	CodeAgentMismatch         = "AGENT_MISMATCH"
+	CodeReviewOnlyWrite       = "REVIEW_ONLY_WRITE"
+	CodeExclusiveLockHeld     = "EXCLUSIVE_LOCK_HELD"
+	CodeConfigError           = "CONFIG_ERROR"
+	CodeStorageError          = "STORAGE_ERROR"
+	CodeSummaryMismatch       = "SUMMARY_MISMATCH"
 )
 
 // DefaultStaleAfter is the heartbeat-expiry window applied when a
@@ -126,32 +134,30 @@ type Report struct {
 	Findings           []Finding `json:"findings"`
 }
 
-// Summary is the top-level counts block.
+// Summary is the SPEC §19.2 flat counts block. The first seven
+// fields are SPEC-canonical; OutsideAssignmentPaths and Findings are
+// additive operator-facing extras (documented at the package level).
 type Summary struct {
-	Counts Counts `json:"counts"`
-}
-
-// Counts captures the rollup numbers the verifier surfaces.
-type Counts struct {
 	ChangedPaths            int `json:"changed_paths"`
 	ClaimedPaths            int `json:"claimed_paths"`
 	UnclaimedPaths          int `json:"unclaimed_paths"`
 	ForbiddenPathViolations int `json:"forbidden_path_violations"`
-	OutsideAssignmentPaths  int `json:"outside_assignment_paths"`
 	ActiveConflicts         int `json:"active_conflicts"`
 	OpenIntents             int `json:"open_intents"`
 	StaleIntents            int `json:"stale_intents"`
-	Findings                int `json:"findings"`
+	// Additive extensions (not in SPEC §19.2):
+	OutsideAssignmentPaths int `json:"outside_assignment_paths"`
+	Findings               int `json:"findings"`
 }
 
-// Finding is one verification finding.
+// Finding is one verification finding (SPEC §19.2).
 type Finding struct {
-	Code     string         `json:"code"`
-	Severity string         `json:"severity"`
-	Message  string         `json:"message"`
-	Paths    []string       `json:"paths,omitempty"`
-	Details  map[string]any `json:"details,omitempty"`
-	Recovery string         `json:"recovery,omitempty"`
+	Code              string         `json:"code"`
+	Severity          string         `json:"severity"`
+	Message           string         `json:"message"`
+	Path              string         `json:"path,omitempty"`
+	Details           map[string]any `json:"details,omitempty"`
+	SuggestedRecovery string         `json:"suggested_recovery,omitempty"`
 }
 
 // Inputs control a verify run. All fields are optional unless noted.
@@ -180,9 +186,13 @@ type Inputs struct {
 
 // ExitCode maps r.Status to the SPEC §19.1 process exit code.
 //
-// Note: this is the verify-specific mapping. It does NOT use
-// internal/cli ExitStorageIO etc. See the package-level doc for the
-// rationale.
+// Note: SPEC §19.2 collapses configuration and storage problems into
+// a single status "error". To preserve the §19.1 exit-code split
+// (config=2, storage=3) we inspect the dominant finding code when
+// status==error.
+//
+// This is the verify-specific mapping. It does NOT use internal/cli
+// ExitStorageIO etc. See the package-level doc for the rationale.
 func (r *Report) ExitCode() int {
 	if r == nil {
 		return 1
@@ -192,12 +202,18 @@ func (r *Report) ExitCode() int {
 		return 0
 	case StatusFailed:
 		return 1
-	case StatusConfigError:
-		return 2
-	case StatusStorageError:
-		return 3
-	case StatusConflict:
+	case StatusNeedsDecision:
 		return 4
+	case StatusError:
+		for _, f := range r.Findings {
+			switch f.Code {
+			case CodeConfigError:
+				return 2
+			case CodeStorageError:
+				return 3
+			}
+		}
+		return 1
 	}
 	return 1
 }
@@ -215,7 +231,7 @@ func (r *Report) WriteText(w io.Writer) error {
 	if _, err := fmt.Fprintf(w, "agent-ledger verify (mode=%s status=%s)\n", r.Mode, r.Status); err != nil {
 		return err
 	}
-	c := r.Summary.Counts
+	c := r.Summary
 	if _, err := fmt.Fprintf(w, "  changed=%d claimed=%d unclaimed=%d forbidden=%d outside=%d conflicts=%d open=%d stale=%d findings=%d\n",
 		c.ChangedPaths, c.ClaimedPaths, c.UnclaimedPaths, c.ForbiddenPathViolations, c.OutsideAssignmentPaths, c.ActiveConflicts, c.OpenIntents, c.StaleIntents, c.Findings); err != nil {
 		return err
@@ -224,13 +240,13 @@ func (r *Report) WriteText(w io.Writer) error {
 		if _, err := fmt.Fprintf(w, "  [%s] %s: %s", f.Severity, f.Code, f.Message); err != nil {
 			return err
 		}
-		if len(f.Paths) > 0 {
-			if _, err := fmt.Fprintf(w, " paths=%v", f.Paths); err != nil {
+		if f.Path != "" {
+			if _, err := fmt.Fprintf(w, " path=%s", f.Path); err != nil {
 				return err
 			}
 		}
-		if f.Recovery != "" {
-			if _, err := fmt.Fprintf(w, "\n      recovery: %s", f.Recovery); err != nil {
+		if f.SuggestedRecovery != "" {
+			if _, err := fmt.Fprintf(w, "\n      suggested_recovery: %s", f.SuggestedRecovery); err != nil {
 				return err
 			}
 		}
@@ -262,7 +278,7 @@ func Run(ctx context.Context, in Inputs) (*Report, error) {
 	if root == "" {
 		cwd, err := os.Getwd()
 		if err != nil {
-			return errorReport(StatusConfigError, CodeConfigError, "could not determine working directory: "+err.Error(), now), nil
+			return errorReport(StatusError, CodeConfigError, "could not determine working directory: "+err.Error(), now), nil
 		}
 		root = cwd
 	}
@@ -284,19 +300,19 @@ func Run(ctx context.Context, in Inputs) (*Report, error) {
 		XDGStateHome:  getenv("XDG_STATE_HOME"),
 	})
 	if err != nil {
-		return errorReport(StatusConfigError, CodeConfigError, "project resolution failed: "+err.Error(), now), nil
+		return errorReport(StatusError, CodeConfigError, "project resolution failed: "+err.Error(), now), nil
 	}
 	if err := res.Validate(); err != nil {
-		return errorReport(StatusConfigError, CodeConfigError, "ledger directory could not be resolved: "+err.Error(), now), nil
+		return errorReport(StatusError, CodeConfigError, "ledger directory could not be resolved: "+err.Error(), now), nil
 	}
 
 	store, err := sqlite.Open(ctx, res.LedgerDir)
 	if err != nil {
-		return errorReport(StatusStorageError, CodeStorageError, "open ledger: "+err.Error(), now), nil
+		return errorReport(StatusError, CodeStorageError, "open ledger: "+err.Error(), now), nil
 	}
 	defer store.Close()
 	if err := store.Migrator().Up(ctx); err != nil {
-		return errorReport(StatusStorageError, CodeStorageError, "migrate ledger: "+err.Error(), now), nil
+		return errorReport(StatusError, CodeStorageError, "migrate ledger: "+err.Error(), now), nil
 	}
 	d := domain.New(store)
 
@@ -309,7 +325,7 @@ func Run(ctx context.Context, in Inputs) (*Report, error) {
 	changed, err := discoverChangedPaths(root, in.ChangedPathsOverride)
 	if err != nil {
 		// Treat as storage error; the verifier could not enumerate.
-		return errorReport(StatusStorageError, CodeStorageError, "discover changed paths: "+err.Error(), now), nil
+		return errorReport(StatusError, CodeStorageError, "discover changed paths: "+err.Error(), now), nil
 	}
 
 	// Compute changed-path hashes once; used for claim coverage.
@@ -328,18 +344,18 @@ func Run(ctx context.Context, in Inputs) (*Report, error) {
 		cps = append(cps, changedPath{Display: n.Display, Hash: n.PathHash})
 	}
 	sort.Slice(cps, func(i, j int) bool { return cps[i].Display < cps[j].Display })
-	r.Summary.Counts.ChangedPaths = len(cps)
+	r.Summary.ChangedPaths = len(cps)
 
 	// Build a set of claimed/recorded path hashes scoped to taskID
 	// when set; otherwise scoped to all active intents and recent
 	// changes.
 	claimedHashes, claimedDisplays, err := collectClaimedHashes(ctx, d, in.TaskID)
 	if err != nil {
-		return errorReport(StatusStorageError, CodeStorageError, "load claimed paths: "+err.Error(), now), nil
+		return errorReport(StatusError, CodeStorageError, "load claimed paths: "+err.Error(), now), nil
 	}
 	recordedHashes, err := collectRecordedHashes(ctx, d, in.TaskID)
 	if err != nil {
-		return errorReport(StatusStorageError, CodeStorageError, "load recorded paths: "+err.Error(), now), nil
+		return errorReport(StatusError, CodeStorageError, "load recorded paths: "+err.Error(), now), nil
 	}
 
 	// Resolve assignment for task mode (used for forbidden/outside).
@@ -348,14 +364,14 @@ func Run(ctx context.Context, in Inputs) (*Report, error) {
 		a, err := d.LatestActiveAssignmentForTask(ctx, in.TaskID)
 		if err != nil {
 			if !errors.Is(err, sql.ErrNoRows) {
-				return errorReport(StatusStorageError, CodeStorageError, "load assignment: "+err.Error(), now), nil
+				return errorReport(StatusError, CodeStorageError, "load assignment: "+err.Error(), now), nil
 			}
 			// No assignment: emit MISSING_ASSIGNMENT and continue.
 			r.Findings = append(r.Findings, Finding{
-				Code:     CodeMissingAssignment,
-				Severity: SevError,
-				Message:  fmt.Sprintf("no active assignment exists for task %q", in.TaskID),
-				Recovery: fmt.Sprintf("Run `agent-ledger assign --task %s --orchestrator <orchestrator-id> --agent <agent-id> --allow <path> --reason '...'` before claiming.", in.TaskID),
+				Code:              CodeMissingAssignment,
+				Severity:          SevError,
+				Message:           fmt.Sprintf("no active assignment exists for task %q", in.TaskID),
+				SuggestedRecovery: fmt.Sprintf("Run `agent-ledger assign --task %s --orchestrator <orchestrator-id> --agent <agent-id> --allow <path> --reason '...'` before claiming.", in.TaskID),
 			})
 		} else {
 			assignment = &a
@@ -370,39 +386,39 @@ func Run(ctx context.Context, in Inputs) (*Report, error) {
 		_, recorded := recordedSet[cp.Hash]
 		switch {
 		case claimed, recorded:
-			r.Summary.Counts.ClaimedPaths++
+			r.Summary.ClaimedPaths++
 		default:
-			r.Summary.Counts.UnclaimedPaths++
+			r.Summary.UnclaimedPaths++
 			r.Findings = append(r.Findings, Finding{
-				Code:     CodeUnclaimedChange,
-				Severity: SevError,
-				Message:  fmt.Sprintf("%s changed but no agent has claimed or recorded it", cp.Display),
-				Paths:    []string{cp.Display},
-				Recovery: fmt.Sprintf("Run `agent-ledger adopt %s --task <task> --reason 'Backfill missed claim found during verification'` or `agent-ledger claim %s --task <task> --reason '...'` before recording.", cp.Display, cp.Display),
+				Code:              CodeUnclaimedChange,
+				Severity:          SevError,
+				Message:           fmt.Sprintf("%s changed but no agent has claimed or recorded it", cp.Display),
+				Path:              cp.Display,
+				SuggestedRecovery: fmt.Sprintf("Run `agent-ledger adopt %s --task <task> --reason 'Backfill missed claim found during verification'` or `agent-ledger claim %s --task <task> --reason '...'` before recording.", cp.Display, cp.Display),
 			})
 		}
 		if assignment != nil {
 			if policy.MatchAny(assignment.ForbiddenPaths, cp.Display) {
-				r.Summary.Counts.ForbiddenPathViolations++
+				r.Summary.ForbiddenPathViolations++
 				r.Findings = append(r.Findings, Finding{
-					Code:     CodeForbiddenPath,
-					Severity: SevError,
-					Message:  fmt.Sprintf("%s changed but task %s forbids this path", cp.Display, assignment.TaskID),
-					Paths:    []string{cp.Display},
-					Details:  map[string]any{"task_id": assignment.TaskID, "forbidden_paths": assignment.ForbiddenPaths},
-					Recovery: fmt.Sprintf("Revert %s or route the change to the orchestrator (%s).", cp.Display, assignment.OrchestratorID),
+					Code:              CodeForbiddenPathChanged,
+					Severity:          SevError,
+					Message:           fmt.Sprintf("%s changed but task %s forbids this path", cp.Display, assignment.TaskID),
+					Path:              cp.Display,
+					Details:           map[string]any{"task_id": assignment.TaskID, "forbidden_paths": assignment.ForbiddenPaths},
+					SuggestedRecovery: fmt.Sprintf("Revert %s or route the change to the orchestrator (%s).", cp.Display, assignment.OrchestratorID),
 				})
 				continue
 			}
 			if !policy.MatchAny(assignment.AllowedPaths, cp.Display) {
-				r.Summary.Counts.OutsideAssignmentPaths++
+				r.Summary.OutsideAssignmentPaths++
 				r.Findings = append(r.Findings, Finding{
-					Code:     CodeOutsideAssignment,
-					Severity: SevError,
-					Message:  fmt.Sprintf("%s changed but task %s does not include this path in allowed paths", cp.Display, assignment.TaskID),
-					Paths:    []string{cp.Display},
-					Details:  map[string]any{"task_id": assignment.TaskID, "allowed_paths": assignment.AllowedPaths},
-					Recovery: fmt.Sprintf("Ask the orchestrator to extend assignment %s with `--allow %s`, or revert the change.", assignment.AssignmentID, cp.Display),
+					Code:              CodePathOutsideAssignment,
+					Severity:          SevError,
+					Message:           fmt.Sprintf("%s changed but task %s does not include this path in allowed paths", cp.Display, assignment.TaskID),
+					Path:              cp.Display,
+					Details:           map[string]any{"task_id": assignment.TaskID, "allowed_paths": assignment.AllowedPaths},
+					SuggestedRecovery: fmt.Sprintf("Ask the orchestrator to extend assignment %s with `--allow %s`, or revert the change.", assignment.AssignmentID, cp.Display),
 				})
 			}
 		}
@@ -412,17 +428,17 @@ func Run(ctx context.Context, in Inputs) (*Report, error) {
 	// Active conflicts.
 	confs, err := d.ListConflicts(ctx, in.TaskID, "detected")
 	if err != nil {
-		return errorReport(StatusStorageError, CodeStorageError, "list conflicts: "+err.Error(), now), nil
+		return errorReport(StatusError, CodeStorageError, "list conflicts: "+err.Error(), now), nil
 	}
-	r.Summary.Counts.ActiveConflicts = len(confs)
+	r.Summary.ActiveConflicts = len(confs)
 	for _, c := range confs {
 		r.Findings = append(r.Findings, Finding{
-			Code:     CodeActiveConflict,
-			Severity: SevError,
-			Message:  fmt.Sprintf("conflict %s on %s requires acknowledgement (policy=%s)", c.ConflictID, c.Path, c.Policy),
-			Paths:    []string{c.Path},
-			Details:  map[string]any{"conflict_id": c.ConflictID, "policy": c.Policy, "existing_intent_id": c.ExistingIntentID, "new_intent_id": c.NewIntentID},
-			Recovery: fmt.Sprintf("Run `agent-ledger conflicts acknowledge --conflict %s --reason '...'` or stop and route to the orchestrator.", c.ConflictID),
+			Code:              CodeActiveConflict,
+			Severity:          SevError,
+			Message:           fmt.Sprintf("conflict %s on %s requires acknowledgement (policy=%s)", c.ConflictID, c.Path, c.Policy),
+			Path:              c.Path,
+			Details:           map[string]any{"conflict_id": c.ConflictID, "policy": c.Policy, "existing_intent_id": c.ExistingIntentID, "new_intent_id": c.NewIntentID},
+			SuggestedRecovery: fmt.Sprintf("Run `agent-ledger conflicts acknowledge --conflict %s --reason '...'` or stop and route to the orchestrator.", c.ConflictID),
 		})
 	}
 
@@ -430,41 +446,41 @@ func Run(ctx context.Context, in Inputs) (*Report, error) {
 	// finding; project mode only reports stale).
 	intents, err := d.ListActiveIntents(ctx, in.TaskID)
 	if err != nil {
-		return errorReport(StatusStorageError, CodeStorageError, "list intents: "+err.Error(), now), nil
+		return errorReport(StatusError, CodeStorageError, "list intents: "+err.Error(), now), nil
 	}
 	for _, intent := range intents {
 		// Stale check.
 		if intent.HeartbeatExpiresAt != "" {
 			if exp, err := time.Parse(time.RFC3339Nano, intent.HeartbeatExpiresAt); err == nil {
 				if now.Sub(exp) > in.StaleAfter {
-					r.Summary.Counts.StaleIntents++
+					r.Summary.StaleIntents++
 					r.Findings = append(r.Findings, Finding{
-						Code:     CodeStaleIntent,
-						Severity: SevWarn,
-						Message:  fmt.Sprintf("intent %s last heartbeat expired at %s", intent.IntentID, intent.HeartbeatExpiresAt),
-						Details:  map[string]any{"intent_id": intent.IntentID, "task_id": intent.TaskID, "agent_id": intent.AgentID, "expired_at": intent.HeartbeatExpiresAt},
-						Recovery: fmt.Sprintf("Run `agent-ledger close --intent %s --outcome abandoned` or heartbeat the intent.", intent.IntentID),
+						Code:              CodeStaleIntent,
+						Severity:          SevWarning,
+						Message:           fmt.Sprintf("intent %s last heartbeat expired at %s", intent.IntentID, intent.HeartbeatExpiresAt),
+						Details:           map[string]any{"intent_id": intent.IntentID, "task_id": intent.TaskID, "agent_id": intent.AgentID, "expired_at": intent.HeartbeatExpiresAt},
+						SuggestedRecovery: fmt.Sprintf("Run `agent-ledger close --intent %s --outcome abandoned` or heartbeat the intent.", intent.IntentID),
 					})
 				}
 			}
 		}
 		if in.TaskID != "" && intent.TaskID == in.TaskID {
-			r.Summary.Counts.OpenIntents++
+			r.Summary.OpenIntents++
 			r.Findings = append(r.Findings, Finding{
-				Code:     CodeOpenIntent,
-				Severity: SevWarn,
-				Message:  fmt.Sprintf("intent %s is still active for task %s", intent.IntentID, intent.TaskID),
-				Details:  map[string]any{"intent_id": intent.IntentID, "agent_id": intent.AgentID},
-				Recovery: fmt.Sprintf("Close the intent with `agent-ledger close --intent %s --outcome completed` once work is done.", intent.IntentID),
+				Code:              CodeOpenIntent,
+				Severity:          SevWarning,
+				Message:           fmt.Sprintf("intent %s is still active for task %s", intent.IntentID, intent.TaskID),
+				Details:           map[string]any{"intent_id": intent.IntentID, "agent_id": intent.AgentID},
+				SuggestedRecovery: fmt.Sprintf("Close the intent with `agent-ledger close --intent %s --outcome completed` once work is done.", intent.IntentID),
 			})
 		}
 		if strings.TrimSpace(intent.Reason) == "" {
 			r.Findings = append(r.Findings, Finding{
-				Code:     CodeMissingReason,
-				Severity: SevWarn,
-				Message:  fmt.Sprintf("intent %s has no reason recorded", intent.IntentID),
-				Details:  map[string]any{"intent_id": intent.IntentID},
-				Recovery: "Re-open the intent with --reason or close and reclaim it with a non-empty reason.",
+				Code:              CodeMissingReason,
+				Severity:          SevWarning,
+				Message:           fmt.Sprintf("intent %s has no reason recorded", intent.IntentID),
+				Details:           map[string]any{"intent_id": intent.IntentID},
+				SuggestedRecovery: "Re-open the intent with --reason or close and reclaim it with a non-empty reason.",
 			})
 		}
 		// Review-only writes: any change row with this intent_id and
@@ -472,15 +488,15 @@ func Run(ctx context.Context, in Inputs) (*Report, error) {
 		if intent.AccessMode == domain.AccessReviewOnly || intent.AccessMode == domain.AccessRead {
 			has, err := intentHasChanges(ctx, store, intent.IntentID)
 			if err != nil {
-				return errorReport(StatusStorageError, CodeStorageError, "check intent changes: "+err.Error(), now), nil
+				return errorReport(StatusError, CodeStorageError, "check intent changes: "+err.Error(), now), nil
 			}
 			if has {
 				r.Findings = append(r.Findings, Finding{
-					Code:     CodeReviewOnlyWrite,
-					Severity: SevError,
-					Message:  fmt.Sprintf("intent %s is %s but recorded a change", intent.IntentID, intent.AccessMode),
-					Details:  map[string]any{"intent_id": intent.IntentID, "access_mode": intent.AccessMode},
-					Recovery: "Open a write-mode intent before recording changes, or annotate the access mode correctly.",
+					Code:              CodeReviewOnlyWrite,
+					Severity:          SevError,
+					Message:           fmt.Sprintf("intent %s is %s but recorded a change", intent.IntentID, intent.AccessMode),
+					Details:           map[string]any{"intent_id": intent.IntentID, "access_mode": intent.AccessMode},
+					SuggestedRecovery: "Open a write-mode intent before recording changes, or annotate the access mode correctly.",
 				})
 			}
 		}
@@ -497,17 +513,17 @@ func Run(ctx context.Context, in Inputs) (*Report, error) {
 	if in.TaskID != "" {
 		changes, err := d.ChangesForTask(ctx, in.TaskID)
 		if err != nil {
-			return errorReport(StatusStorageError, CodeStorageError, "load changes for task: "+err.Error(), now), nil
+			return errorReport(StatusError, CodeStorageError, "load changes for task: "+err.Error(), now), nil
 		}
 		if assignment != nil {
 			for _, c := range changes {
 				if c.AgentID != "" && assignment.AssignedAgentID != "" && c.AgentID != assignment.AssignedAgentID {
 					r.Findings = append(r.Findings, Finding{
-						Code:     CodeAgentMismatch,
-						Severity: SevError,
-						Message:  fmt.Sprintf("change %s recorded by %s but task %s is assigned to %s", c.ChangeID, c.AgentID, assignment.TaskID, assignment.AssignedAgentID),
-						Details:  map[string]any{"change_id": c.ChangeID, "agent_id": c.AgentID, "assigned_agent_id": assignment.AssignedAgentID},
-						Recovery: fmt.Sprintf("Reassign the task with `agent-ledger assign --task %s --agent %s ...` or have the assigned agent record the change.", assignment.TaskID, c.AgentID),
+						Code:              CodeAgentMismatch,
+						Severity:          SevError,
+						Message:           fmt.Sprintf("change %s recorded by %s but task %s is assigned to %s", c.ChangeID, c.AgentID, assignment.TaskID, assignment.AssignedAgentID),
+						Details:           map[string]any{"change_id": c.ChangeID, "agent_id": c.AgentID, "assigned_agent_id": assignment.AssignedAgentID},
+						SuggestedRecovery: fmt.Sprintf("Reassign the task with `agent-ledger assign --task %s --agent %s ...` or have the assigned agent record the change.", assignment.TaskID, c.AgentID),
 					})
 				}
 			}
@@ -517,7 +533,7 @@ func Run(ctx context.Context, in Inputs) (*Report, error) {
 	}
 
 	r.Status = decideStatus(r)
-	r.Summary.Counts.Findings = len(r.Findings)
+	r.Summary.Findings = len(r.Findings)
 	return r, nil
 }
 
@@ -533,14 +549,14 @@ func runSummary(ctx context.Context, in Inputs, root string, now time.Time) (*Re
 	}
 	raw, err := os.ReadFile(abs)
 	if err != nil {
-		return errorReport(StatusConfigError, CodeConfigError, "read summary file: "+err.Error(), now), nil
+		return errorReport(StatusError, CodeConfigError, "read summary file: "+err.Error(), now), nil
 	}
 	var doc summary.Document
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		return errorReport(StatusConfigError, CodeConfigError, "parse summary file: "+err.Error(), now), nil
+		return errorReport(StatusError, CodeConfigError, "parse summary file: "+err.Error(), now), nil
 	}
 	if doc.Schema != summary.Schema {
-		return errorReport(StatusConfigError, CodeConfigError, "unsupported summary schema: "+doc.Schema, now), nil
+		return errorReport(StatusError, CodeConfigError, "unsupported summary schema: "+doc.Schema, now), nil
 	}
 	r.TaskID = doc.Task.ID
 	r.ProjectID = doc.Project.ID
@@ -552,11 +568,11 @@ func runSummary(ctx context.Context, in Inputs, root string, now time.Time) (*Re
 		recomputed := recomputeAssignmentHash(doc.AssignmentSnapshot)
 		if recomputed != doc.AssignmentHash {
 			r.Findings = append(r.Findings, Finding{
-				Code:     CodeSummaryMismatch,
-				Severity: SevError,
-				Message:  "assignment_hash does not match assignment_snapshot",
-				Details:  map[string]any{"declared": doc.AssignmentHash, "recomputed": recomputed},
-				Recovery: "Regenerate the summary with `agent-ledger export-summary --task " + doc.Task.ID + " --output <path>`.",
+				Code:              CodeSummaryMismatch,
+				Severity:          SevError,
+				Message:           "assignment_hash does not match assignment_snapshot",
+				Details:           map[string]any{"declared": doc.AssignmentHash, "recomputed": recomputed},
+				SuggestedRecovery: "Regenerate the summary with `agent-ledger export-summary --task " + doc.Task.ID + " --output <path>`.",
 			})
 		}
 	}
@@ -568,55 +584,55 @@ func runSummary(ctx context.Context, in Inputs, root string, now time.Time) (*Re
 		actual, exists := pathHashAtRoot(root, ref.Path)
 		if !exists {
 			r.Findings = append(r.Findings, Finding{
-				Code:     CodeSummaryMismatch,
-				Severity: SevError,
-				Message:  fmt.Sprintf("summary references %s but the file does not exist in the checkout", ref.Path),
-				Paths:    []string{ref.Path},
-				Recovery: "Restore the file or regenerate the summary against the current tree.",
+				Code:              CodeSummaryMismatch,
+				Severity:          SevError,
+				Message:           fmt.Sprintf("summary references %s but the file does not exist in the checkout", ref.Path),
+				Path:              ref.Path,
+				SuggestedRecovery: "Restore the file or regenerate the summary against the current tree.",
 			})
 			continue
 		}
 		if actual != ref.PathHash {
 			r.Findings = append(r.Findings, Finding{
-				Code:     CodeSummaryMismatch,
-				Severity: SevError,
-				Message:  fmt.Sprintf("path_hash mismatch for %s", ref.Path),
-				Paths:    []string{ref.Path},
-				Details:  map[string]any{"declared": ref.PathHash, "recomputed": actual},
-				Recovery: fmt.Sprintf("Regenerate the summary with `agent-ledger export-summary --task %s --output %s`.", doc.Task.ID, in.SummaryFile),
+				Code:              CodeSummaryMismatch,
+				Severity:          SevError,
+				Message:           fmt.Sprintf("path_hash mismatch for %s", ref.Path),
+				Path:              ref.Path,
+				Details:           map[string]any{"declared": ref.PathHash, "recomputed": actual},
+				SuggestedRecovery: fmt.Sprintf("Regenerate the summary with `agent-ledger export-summary --task %s --output %s`.", doc.Task.ID, in.SummaryFile),
 			})
 		}
 	}
-	r.Summary.Counts.ChangedPaths = len(doc.ChangedPaths)
+	r.Summary.ChangedPaths = len(doc.ChangedPaths)
 
 	// Forbidden / outside-assignment checks against the snapshot.
 	a := doc.AssignmentSnapshot
 	for _, ref := range doc.ChangedPaths {
 		if policy.MatchAny(a.ForbiddenPaths, ref.Path) {
-			r.Summary.Counts.ForbiddenPathViolations++
+			r.Summary.ForbiddenPathViolations++
 			r.Findings = append(r.Findings, Finding{
-				Code:     CodeForbiddenPath,
-				Severity: SevError,
-				Message:  fmt.Sprintf("%s changed but task %s forbids this path", ref.Path, a.TaskID),
-				Paths:    []string{ref.Path},
-				Details:  map[string]any{"forbidden_paths": a.ForbiddenPaths},
-				Recovery: "Revert the file or route the change to the orchestrator.",
+				Code:              CodeForbiddenPathChanged,
+				Severity:          SevError,
+				Message:           fmt.Sprintf("%s changed but task %s forbids this path", ref.Path, a.TaskID),
+				Path:              ref.Path,
+				Details:           map[string]any{"forbidden_paths": a.ForbiddenPaths},
+				SuggestedRecovery: "Revert the file or route the change to the orchestrator.",
 			})
 		} else if !policy.MatchAny(a.AllowedPaths, ref.Path) {
-			r.Summary.Counts.OutsideAssignmentPaths++
+			r.Summary.OutsideAssignmentPaths++
 			r.Findings = append(r.Findings, Finding{
-				Code:     CodeOutsideAssignment,
-				Severity: SevError,
-				Message:  fmt.Sprintf("%s is not in the assignment allowed_paths", ref.Path),
-				Paths:    []string{ref.Path},
-				Details:  map[string]any{"allowed_paths": a.AllowedPaths},
-				Recovery: fmt.Sprintf("Extend assignment %s with `--allow %s` or revert.", a.AssignmentID, ref.Path),
+				Code:              CodePathOutsideAssignment,
+				Severity:          SevError,
+				Message:           fmt.Sprintf("%s is not in the assignment allowed_paths", ref.Path),
+				Path:              ref.Path,
+				Details:           map[string]any{"allowed_paths": a.AllowedPaths},
+				SuggestedRecovery: fmt.Sprintf("Extend assignment %s with `--allow %s` or revert.", a.AssignmentID, ref.Path),
 			})
 		}
 	}
 
 	r.Status = decideStatus(r)
-	r.Summary.Counts.Findings = len(r.Findings)
+	r.Summary.Findings = len(r.Findings)
 	_ = ctx
 	return r, nil
 }
@@ -627,12 +643,12 @@ func errorReport(status, code, message string, now time.Time) *Report {
 	r := newReport("", now)
 	r.Status = status
 	r.Findings = append(r.Findings, Finding{
-		Code:     code,
-		Severity: SevCritical,
-		Message:  message,
-		Recovery: "Run `agent-ledger doctor` to diagnose configuration and storage issues.",
+		Code:              code,
+		Severity:          SevFatal,
+		Message:           message,
+		SuggestedRecovery: "Run `agent-ledger doctor` to diagnose configuration and storage issues.",
 	})
-	r.Summary.Counts.Findings = len(r.Findings)
+	r.Summary.Findings = len(r.Findings)
 	return r
 }
 
@@ -654,13 +670,13 @@ func decideStatus(r *Report) string {
 	for _, f := range r.Findings {
 		switch f.Code {
 		case CodeConfigError:
-			return StatusConfigError
+			return StatusError
 		case CodeStorageError:
-			return StatusStorageError
+			return StatusError
 		case CodeActiveConflict:
 			hasConflict = true
 		}
-		if f.Severity == SevError || f.Severity == SevCritical {
+		if f.Severity == SevError || f.Severity == SevFatal {
 			hasError = true
 		}
 	}
@@ -668,7 +684,7 @@ func decideStatus(r *Report) string {
 	case hasError && !hasConflict:
 		return StatusFailed
 	case hasConflict && !hasError:
-		return StatusConflict
+		return StatusNeedsDecision
 	case hasError && hasConflict:
 		// Errors take precedence over conflicts for exit-code routing,
 		// since SPEC §19.1 conflict (4) is reserved for "needs decision"
@@ -836,11 +852,11 @@ func scanExclusiveLocks(ledgerDir string, intents []domain.Intent) []Finding {
 			continue
 		}
 		findings = append(findings, Finding{
-			Code:     CodeExclusiveLockHeld,
-			Severity: SevWarn,
-			Message:  fmt.Sprintf("lock sentinel %s present in %s without an active intent", name, dir),
-			Details:  map[string]any{"path_hash": hash, "lock_dir": dir},
-			Recovery: "Close or supersede the owning intent, or remove the stale sentinel after confirming no process holds it.",
+			Code:              CodeExclusiveLockHeld,
+			Severity:          SevWarning,
+			Message:           fmt.Sprintf("lock sentinel %s present in %s without an active intent", name, dir),
+			Details:           map[string]any{"path_hash": hash, "lock_dir": dir},
+			SuggestedRecovery: "Close or supersede the owning intent, or remove the stale sentinel after confirming no process holds it.",
 		})
 	}
 	return findings

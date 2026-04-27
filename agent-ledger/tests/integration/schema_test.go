@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"testing"
+
+	"github.com/ruminaider/agent-clis/agent-ledger/internal/verify"
 )
 
 // verifyTopLevelKeys is the canonical key set the Phase 1 verify
@@ -18,7 +20,9 @@ var verifyTopLevelKeys = []string{
 	"findings",
 }
 
-var verifyCountsKeys = []string{
+// verifySummaryKeys are the SPEC §19.2 canonical summary keys, plus
+// the additive fields the implementation documents on top.
+var verifySummaryKeys = []string{
 	"changed_paths",
 	"claimed_paths",
 	"unclaimed_paths",
@@ -28,6 +32,27 @@ var verifyCountsKeys = []string{
 	"open_intents",
 	"stale_intents",
 	"findings",
+}
+
+// verifyCanonicalCodes is the SPEC §19.3 finding-code registry
+// snapshotted into the integration suite. Adding or removing entries
+// from SPEC §19.3 must update this list in lock-step. Drift here
+// fails fast so future code rename regressions cannot ship silently.
+var verifyCanonicalCodes = []string{
+	"UNCLAIMED_CHANGE",
+	"FORBIDDEN_PATH_CHANGED",
+	"PATH_OUTSIDE_ASSIGNMENT",
+	"ACTIVE_CONFLICT",
+	"STALE_INTENT",
+	"OPEN_INTENT",
+	"MISSING_REASON",
+	"MISSING_ASSIGNMENT",
+	"AGENT_MISMATCH",
+	"REVIEW_ONLY_WRITE",
+	"EXCLUSIVE_LOCK_HELD",
+	"SUMMARY_MISMATCH",
+	"CONFIG_ERROR",
+	"STORAGE_ERROR",
 }
 
 var summaryTopLevelKeys = []string{
@@ -118,9 +143,10 @@ func TestSchema_VerifyJSON(t *testing.T) {
 	if rep["schema"] != "agent-ledger.verify.v1" {
 		t.Fatalf("schema = %v", rep["schema"])
 	}
+	// SPEC §19.2: passed | failed | needs-decision | error.
 	allowedStatus := map[string]bool{
-		"passed": true, "failed": true, "config_error": true,
-		"storage_error": true, "conflict": true,
+		"passed": true, "failed": true,
+		"needs-decision": true, "error": true,
 	}
 	if !allowedStatus[asStr(rep["status"])] {
 		t.Fatalf("unexpected status %v", rep["status"])
@@ -130,22 +156,57 @@ func TestSchema_VerifyJSON(t *testing.T) {
 		t.Fatalf("unexpected mode %v", rep["mode"])
 	}
 	assertHasKeys(t, "verify report", rep, verifyTopLevelKeys)
+	// SPEC §19.2: summary is flat. The legacy {"counts": {...}}
+	// wrapper is gone; counts live directly on summary.
 	sumObj, _ := rep["summary"].(map[string]any)
 	if sumObj == nil {
 		t.Fatalf("summary missing")
 	}
-	counts, _ := sumObj["counts"].(map[string]any)
-	if counts == nil {
-		t.Fatalf("counts missing")
+	if _, present := sumObj["counts"]; present {
+		t.Fatalf("summary.counts wrapper must be removed (SPEC §19.2)")
 	}
-	assertHasKeys(t, "verify counts", counts, verifyCountsKeys)
-	for _, k := range verifyCountsKeys {
-		if _, ok := counts[k].(float64); !ok {
-			t.Errorf("counts.%s should be number, got %T", k, counts[k])
+	assertHasKeys(t, "verify summary", sumObj, verifySummaryKeys)
+	for _, k := range verifySummaryKeys {
+		if _, ok := sumObj[k].(float64); !ok {
+			t.Errorf("summary.%s should be number, got %T", k, sumObj[k])
 		}
 	}
 	if _, ok := rep["findings"].([]any); !ok {
 		t.Fatalf("findings should be array, got %T", rep["findings"])
+	}
+}
+
+// TestSchema_VerifyCodeRegistry snapshots the SPEC §19.3 finding-code
+// list and asserts the in-tree verify package exposes exactly that
+// set as exported Code* constants. Adding a SPEC code without wiring
+// it (or renaming an in-tree constant away from SPEC) fails this
+// test, providing the tripwire required by remediation packet R-002
+// (finding wv1-f04).
+func TestSchema_VerifyCodeRegistry(t *testing.T) {
+	codes := map[string]bool{
+		verify.CodeUnclaimedChange:       true,
+		verify.CodeForbiddenPathChanged:  true,
+		verify.CodePathOutsideAssignment: true,
+		verify.CodeActiveConflict:        true,
+		verify.CodeStaleIntent:           true,
+		verify.CodeOpenIntent:            true,
+		verify.CodeMissingReason:         true,
+		verify.CodeMissingAssignment:     true,
+		verify.CodeAgentMismatch:         true,
+		verify.CodeReviewOnlyWrite:       true,
+		verify.CodeExclusiveLockHeld:     true,
+		verify.CodeSummaryMismatch:       true,
+		verify.CodeConfigError:           true,
+		verify.CodeStorageError:          true,
+	}
+	if len(codes) != len(verifyCanonicalCodes) {
+		t.Fatalf("verify package exports %d codes, SPEC §19.3 lists %d",
+			len(codes), len(verifyCanonicalCodes))
+	}
+	for _, want := range verifyCanonicalCodes {
+		if !codes[want] {
+			t.Errorf("SPEC §19.3 code %q is not exported by internal/verify", want)
+		}
 	}
 }
 

@@ -158,8 +158,8 @@ func TestVerify_HappyPath(t *testing.T) {
 	if rep.ExitCode() != 0 {
 		t.Fatalf("expected exit 0, got %d", rep.ExitCode())
 	}
-	if rep.Summary.Counts.ClaimedPaths != 1 {
-		t.Fatalf("expected 1 claimed, got %+v", rep.Summary.Counts)
+	if rep.Summary.ClaimedPaths != 1 {
+		t.Fatalf("expected 1 claimed, got %+v", rep.Summary)
 	}
 }
 
@@ -204,8 +204,8 @@ func TestVerify_ForbiddenPath(t *testing.T) {
 		t.Fatalf("expected failed, got %s", rep.Status)
 	}
 	codes := findingsByCode(rep)
-	if len(codes[verify.CodeForbiddenPath]) == 0 {
-		t.Fatalf("expected FORBIDDEN_PATH, findings=%+v", rep.Findings)
+	if len(codes[verify.CodeForbiddenPathChanged]) == 0 {
+		t.Fatalf("expected FORBIDDEN_PATH_CHANGED, findings=%+v", rep.Findings)
 	}
 }
 
@@ -222,8 +222,8 @@ func TestVerify_OutsideAssignment(t *testing.T) {
 		ChangedPathsOverride: []string{"elsewhere.txt"},
 	})
 	codes := findingsByCode(rep)
-	if len(codes[verify.CodeOutsideAssignment]) == 0 {
-		t.Fatalf("expected OUTSIDE_ASSIGNMENT, findings=%+v", rep.Findings)
+	if len(codes[verify.CodePathOutsideAssignment]) == 0 {
+		t.Fatalf("expected PATH_OUTSIDE_ASSIGNMENT, findings=%+v", rep.Findings)
 	}
 }
 
@@ -550,8 +550,8 @@ func TestVerify_StorageError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.Status != verify.StatusStorageError {
-		t.Fatalf("expected storage_error, got %s", rep.Status)
+	if rep.Status != verify.StatusError {
+		t.Fatalf("expected error, got %s", rep.Status)
 	}
 	if rep.ExitCode() != 3 {
 		t.Fatalf("expected exit 3, got %d", rep.ExitCode())
@@ -572,8 +572,8 @@ func TestVerify_ConfigError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.Status != verify.StatusConfigError {
-		t.Fatalf("expected config_error, got %s\n%+v", rep.Status, rep.Findings)
+	if rep.Status != verify.StatusError {
+		t.Fatalf("expected error, got %s\n%+v", rep.Status, rep.Findings)
 	}
 	if rep.ExitCode() != 2 {
 		t.Fatalf("expected exit 2, got %d", rep.ExitCode())
@@ -581,20 +581,25 @@ func TestVerify_ConfigError(t *testing.T) {
 }
 
 func TestVerify_ExitCodes(t *testing.T) {
+	// SPEC §19.2 collapses configuration and storage problems into
+	// status "error". The verify-specific ExitCode helper distinguishes
+	// 2 (config) vs 3 (storage) by inspecting the dominant finding
+	// code, so the table includes a finding seed where relevant.
 	cases := []struct {
-		status string
-		code   int
+		name     string
+		report   verify.Report
+		wantCode int
 	}{
-		{verify.StatusPassed, 0},
-		{verify.StatusFailed, 1},
-		{verify.StatusConfigError, 2},
-		{verify.StatusStorageError, 3},
-		{verify.StatusConflict, 4},
+		{"passed", verify.Report{Status: verify.StatusPassed}, 0},
+		{"failed", verify.Report{Status: verify.StatusFailed}, 1},
+		{"config_error", verify.Report{Status: verify.StatusError, Findings: []verify.Finding{{Code: verify.CodeConfigError}}}, 2},
+		{"storage_error", verify.Report{Status: verify.StatusError, Findings: []verify.Finding{{Code: verify.CodeStorageError}}}, 3},
+		{"needs_decision", verify.Report{Status: verify.StatusNeedsDecision}, 4},
 	}
 	for _, c := range cases {
-		r := &verify.Report{Status: c.status}
-		if r.ExitCode() != c.code {
-			t.Errorf("status=%s expected exit %d, got %d", c.status, c.code, r.ExitCode())
+		r := c.report
+		if r.ExitCode() != c.wantCode {
+			t.Errorf("%s: expected exit %d, got %d", c.name, c.wantCode, r.ExitCode())
 		}
 	}
 }

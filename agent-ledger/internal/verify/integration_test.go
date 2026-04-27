@@ -279,8 +279,8 @@ func TestVerify_Subprocess_ConfigError(t *testing.T) {
 	if c != 2 {
 		t.Fatalf("expected exit 2, got %d\nstdout=%s\nstderr=%s", c, o, e)
 	}
-	if !strings.Contains(o, "config_error") {
-		t.Fatalf("expected config_error, got %s", o)
+	if !strings.Contains(o, "CONFIG_ERROR") {
+		t.Fatalf("expected CONFIG_ERROR finding, got %s", o)
 	}
 }
 
@@ -303,8 +303,8 @@ func TestVerify_Subprocess_StorageError(t *testing.T) {
 	if c != 3 {
 		t.Fatalf("expected exit 3, got %d\nstdout=%s\nstderr=%s", c, o, e)
 	}
-	if !strings.Contains(o, "storage_error") {
-		t.Fatalf("expected storage_error, got %s", o)
+	if !strings.Contains(o, "STORAGE_ERROR") {
+		t.Fatalf("expected STORAGE_ERROR finding, got %s", o)
 	}
 }
 

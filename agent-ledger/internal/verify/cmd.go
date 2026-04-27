@@ -95,12 +95,10 @@ func statusCode(status string) string {
 		return "verify_passed"
 	case StatusFailed:
 		return "verify_failed"
-	case StatusConfigError:
-		return "verify_config_error"
-	case StatusStorageError:
-		return "verify_storage_error"
-	case StatusConflict:
-		return "verify_conflict"
+	case StatusError:
+		return "verify_error"
+	case StatusNeedsDecision:
+		return "verify_needs_decision"
 	}
 	return "verify_failed"
 }
