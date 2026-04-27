@@ -10,6 +10,8 @@ of the binary version.
 
 ## [Unreleased]
 
+## [0.2.0-rc1] - 2026-04-27
+
 ### Phase 2 adapters (scaffold)
 
 Deterministic, workflow-wrapped enforcement of `agent-ledger`
@@ -167,5 +169,6 @@ Code, and Babysitter adapters arrive in later phases.
   published `*_checksums.txt` file. A Homebrew tap with signed
   binaries is a Phase 5 deliverable.
 
-[Unreleased]: https://github.com/ruminaider/agent-clis/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ruminaider/agent-clis/compare/v0.2.0-rc1...HEAD
+[0.2.0-rc1]: https://github.com/ruminaider/agent-clis/releases/tag/v0.2.0-rc1
 [0.1.0]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.0
