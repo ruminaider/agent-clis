@@ -105,7 +105,8 @@ func TestResolve_GitCommonDirSharedAcrossWorktrees(t *testing.T) {
 	repo := t.TempDir()
 	runOrFatal(t, repo, "git", "init", "-q")
 	runOrFatal(t, repo, "git", "remote", "add", "origin", "https://example.com/foo/bar.git")
-	runOrFatal(t, repo, "git", "commit", "--allow-empty", "-m", "init", "--quiet")
+	runOrFatal(t, repo, "git", "-c", "user.email=t@t", "-c", "user.name=t",
+		"commit", "--allow-empty", "-m", "init", "--quiet")
 
 	wtParent := t.TempDir()
 	wt := filepath.Join(wtParent, "wt")

@@ -105,6 +105,14 @@ Code, and Babysitter adapters arrive in later phases.
   debugging. `AssertSafe` is pattern-based, not cryptographic; agents
   must not embed secrets in reason fields regardless of the guard.
   A scrubbing pass is on the Phase 5 backlog.
+- The `claim` command runs `conflicts.Resolve` outside the intent
+  insert transaction, so two concurrent claims on the same path under
+  `exclusive` can both pass the overlap check before either writes.
+  Exclusive claims serialized through one orchestrator are unaffected;
+  the bug surfaces only for true concurrent races. Tracked for v0.1.x;
+  the fix moves conflict detection inside a single `BEGIN IMMEDIATE`
+  transaction with the intent insert. The integration test
+  `TestConcurrent_ExclusivePolicy` is skipped with a TODO until then.
 - Release archives are unsigned. Verify downloads against the
   published `*_checksums.txt` file. A Homebrew tap with signed
   binaries is a Phase 5 deliverable.
