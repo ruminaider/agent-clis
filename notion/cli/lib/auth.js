@@ -35,7 +35,7 @@ export async function clearCredentials() {
 export async function getAccessToken() {
   const creds = await loadCredentials();
   if (!creds?.access_token) {
-    console.error("Not authenticated. Run: notion-cli auth login");
+    console.error("Not authenticated. Run: notion-cli auth");
     process.exit(1);
   }
 
@@ -45,7 +45,7 @@ export async function getAccessToken() {
       const refreshed = await refreshToken(creds);
       return refreshed.access_token;
     } catch (err) {
-      console.error(`Token refresh failed: ${err.message}. Run: notion-cli login`);
+      console.error(`Token refresh failed: ${err.message}. Run: notion-cli auth`);
       process.exit(1);
     }
   }
