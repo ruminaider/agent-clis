@@ -56,6 +56,44 @@ type runResult struct {
 	Stderr string
 }
 
+// mergeEnv merges base and override env slices so that for any key
+// present in override, the override value wins and all base entries
+// for that key are dropped. Base entries whose keys do not appear in
+// override are preserved with duplicates reduced to the first
+// occurrence. The result is base-first, overrides appended at the end.
+//
+// This is a pure function used by run() and tested directly by
+// TestMergeEnv_* to ensure the precedence logic cannot regress
+// silently. References: finding rv2-new-002, packet RV3-002.
+func mergeEnv(base, override []string) []string {
+	// Collect the set of keys the caller wants to override.
+	overrideKeys := make(map[string]struct{}, len(override))
+	for _, e := range override {
+		if idx := strings.IndexByte(e, '='); idx > 0 {
+			overrideKeys[e[:idx]] = struct{}{}
+		}
+	}
+	// Strip base entries whose key matches an override, and reduce
+	// any duplicate base keys to the first occurrence.
+	seen := make(map[string]struct{}, len(base))
+	filtered := make([]string, 0, len(base))
+	for _, e := range base {
+		key := e
+		if idx := strings.IndexByte(e, '='); idx >= 0 {
+			key = e[:idx]
+		}
+		if _, skip := overrideKeys[key]; skip {
+			continue
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		filtered = append(filtered, e)
+	}
+	return append(filtered, override...)
+}
+
 // run executes the agent-ledger binary in dir with the given args.
 // env entries are appended to os.Environ so callers can override
 // AGENT_ID/HOME/etc. without polluting other tests. The shared
@@ -71,29 +109,7 @@ func run(t *testing.T, dir string, env []string, args ...string) runResult {
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = dir
 
-	// Build a set of keys that the caller wants to override.
-	overrideKeys := make(map[string]struct{}, len(env))
-	for _, e := range env {
-		if idx := strings.IndexByte(e, '='); idx > 0 {
-			overrideKeys[e[:idx]] = struct{}{}
-		}
-	}
-
-	// Strip conflicting keys from the inherited environment, then
-	// append the caller-supplied overrides.
-	base := os.Environ()
-	filtered := make([]string, 0, len(base))
-	for _, e := range base {
-		key := e
-		if idx := strings.IndexByte(e, '='); idx >= 0 {
-			key = e[:idx]
-		}
-		if _, skip := overrideKeys[key]; skip {
-			continue
-		}
-		filtered = append(filtered, e)
-	}
-	cmd.Env = append(filtered, env...)
+	cmd.Env = mergeEnv(os.Environ(), env)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
