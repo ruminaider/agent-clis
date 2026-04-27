@@ -145,6 +145,12 @@ per-command quick reference and `docs/finding-codes.md` for the
 `verify` finding catalogue. For an end-to-end lifecycle walkthrough,
 see `docs/walkthrough.md`.
 
+For deterministic, workflow-wrapped enforcement (so agents do not
+have to remember to call the kernel) install one of the harness
+adapters: `adapters/pi/` for pi sessions or
+`adapters/babysitter/` for Babysitter processes. The cross-harness
+env var contract lives in `docs/adapters.md`.
+
 Phase 2+ adapters (pi, Claude Code, Babysitter) are planned but not yet
 shipped. Use the CLI directly for now.
 
