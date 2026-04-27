@@ -1,16 +1,18 @@
 // Command agent-ledger is the local coordination kernel CLI.
 //
-// See SPEC.md for the full design. This binary is the Phase 1 kernel-slice
-// scaffold: every subcommand is registered, but most still return exit code
-// 3 (not implemented).
+// See SPEC.md for the full design. cmd/agent-ledger wires Wave-1 and
+// Wave-2 commands together; later waves will continue to layer in
+// real handlers in place of internal/cli stubs.
 package main
 
 import (
 	"os"
 
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/cli"
+	"github.com/ruminaider/agent-clis/agent-ledger/internal/commands"
 )
 
 func main() {
-	os.Exit(cli.Execute(cli.DefaultIOStreams(), os.Args[1:]))
+	streams := cli.DefaultIOStreams()
+	os.Exit(commands.Execute(streams, os.Args[1:]))
 }
