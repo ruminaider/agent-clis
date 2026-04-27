@@ -1,0 +1,48 @@
+{
+  "agent": {
+    "execution": {
+      "model": "anthropic/claude-opus-4-7"
+    },
+    "name": "planner",
+    "outputSchema": {
+      "properties": {
+        "decisionPoints": {
+          "type": "array"
+        }
+      },
+      "required": [
+        "decisionPoints"
+      ],
+      "type": "object"
+    },
+    "prompt": {
+      "context": {
+        "topic": ""
+      },
+      "instructions": [
+        "For each decision point, list 2 to 4 options with summaries.",
+        "For each option, list pros, cons, and risks.",
+        "For each decision point, write a falsificationSignal: a concrete observable signal that would prove the recommendation wrong.",
+        "For each decision point, dispatch oracle async with the options and tradeoffs, capture devilsAdvocateNotes, then author the recommendation grounded in the critique.",
+        "Do NOT pin oracle's model. Oracle uses dynamic adversarial routing."
+      ],
+      "outputFormat": "JSON: { decisionPoints: [{id, category, question, options, tradeoffs, falsificationSignal, devilsAdvocateNotes, recommendation}] }",
+      "role": "hypothesis-driven planner",
+      "task": "Generate decision points for the unit of work. Each decision point must declare options, tradeoffs, and a falsificationSignal. Then dispatch oracle (dynamic routing, async) for a devil's-advocate critique on each decision point before locking the recommendation."
+    }
+  },
+  "io": {
+    "inputJsonPath": "tasks/01KQ6EXK5TSSJCDQB62QAA9BB0/input.json",
+    "outputJsonPath": "tasks/01KQ6EXK5TSSJCDQB62QAA9BB0/output.json"
+  },
+  "kind": "agent",
+  "title": "Hypothesis intake (decision points with falsificationSignal and devil's-advocate)",
+  "schemaVersion": "2026.01.tasks-v1",
+  "effectId": "01KQ6EXK5TSSJCDQB62QAA9BB0",
+  "taskId": "hypothesis-intake",
+  "invocationKey": "user/hdd-adversarial-cycle:S000001:hypothesis-intake",
+  "stepId": "S000001",
+  "inputs": {
+    "topic": ""
+  }
+}

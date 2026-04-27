@@ -1,0 +1,17 @@
+# Build outputs
+/agent-ledger
+/bin/
+/dist/
+
+# Local ledger pointer files (never commit; may reference user-specific paths)
+.agent-ledger.toml
+pointer.toml
+
+# Test temp directories
+/tmp/
+/.tmp/
+testdata/tmp/
+
+# Editor / OS
+.DS_Store
+*.swp

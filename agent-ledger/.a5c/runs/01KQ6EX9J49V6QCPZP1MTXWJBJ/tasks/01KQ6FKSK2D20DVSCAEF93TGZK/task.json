@@ -1,0 +1,164 @@
+{
+  "execution": {
+    "model": "anthropic/claude-sonnet-4-6"
+  },
+  "io": {
+    "inputJsonPath": "tasks/01KQ6FKSK2D20DVSCAEF93TGZK/input.json",
+    "outputJsonPath": "tasks/01KQ6FKSK2D20DVSCAEF93TGZK/output.json"
+  },
+  "kind": "skill",
+  "skill": {
+    "context": {
+      "instructions": [
+        "Return verdict READY or BLOCKED with itemized findings."
+      ],
+      "plan": {
+        "findingsFile": "tasks/agent-ledger-phase-1/findings.md",
+        "plan": {
+          "approachChosen": "dp-001 opt-c: amend incrementally (keep packet, layer addendum)",
+          "goal": "Execute the Phase 1 kernel slice of Agent Ledger (SPEC.md §32 Phase 1) by running the 12-task, 3-wave decomposition in tasks/phase-1-task-packet.md, layered with a tech-choices addendum that resolves dp-002 through dp-008.",
+          "ironLaw": {
+            "assumedAnswer": "Implement the 12-task packet with the addendum decisions from INIT, gated by gate-reviewer per task and wave-review-orchestrator per wave.",
+            "question": "Execute Phase 1 kernel of Agent Ledger."
+          },
+          "openQuestions": [
+            "Pure-Go SQLite under concurrent exclusive claims: validate via Task 010 subprocess tests; fall back to mattn behind build tag if falsification signal trips.",
+            "Cobra binary cold-start vs SPEC §27 sub-20ms claim: spot-check in Task 001.",
+            "CI runtime for subprocess integration tests: parallelize rather than skip if it grows.",
+            "Validation arg edge case (empty status after final colon) needs nailed-down behavior in Task 006."
+          ],
+          "successCriteria": [
+            "Two local agents can claim and record disjoint files.",
+            "Overlapping claims produce deterministic conflict output.",
+            "verify --json reports unclaimed and forbidden changes.",
+            "No full diff content is stored by default.",
+            "go test ./... and go test -race ./... pass from a clean checkout.",
+            "make build and goreleaser snapshot succeed for all four MVP targets without secrets."
+          ],
+          "techChoicesAddendum": {
+            "dp-002_language": "Go (per SPEC §7)",
+            "dp-003_sqliteDriver": "modernc.org/sqlite (pure Go, CGO_ENABLED=0); mattn/go-sqlite3 reserved as build-tag fallback",
+            "dp-004_cliFramework": "spf13/cobra (no viper)",
+            "dp-005_phase1Scope": "Full 15-command Phase 1 per SPEC §18.17; exec excluded as post-MVP",
+            "dp-006_exclusiveLocks": "DB state authoritative + best-effort flock advisory locks; surface result via EXCLUSIVE_LOCK_HELD finding",
+            "dp-007_testStrategy": "Layered: unit-heavy + targeted subprocess tests for SPEC §31.2 #1-3 and #6-7; subprocess tests not behind -short",
+            "dp-008_packaging": "GoReleaser snapshot config without publishing; CGO_ENABLED=0 cross-compile to darwin/linux × arm64/amd64; Homebrew tap and signing deferred to Phase 5"
+          },
+          "waves": [
+            {
+              "name": "Wave 1: Foundation",
+              "perTaskGate": "gate-reviewer",
+              "tasks": [
+                "001 Go CLI scaffold",
+                "002 Project/storage resolution + path normalization",
+                "003 SQLite migrations + audit mirror"
+              ],
+              "waveGate": "wave-review-orchestrator (Task 004)"
+            },
+            {
+              "name": "Wave 2: Command workflows",
+              "perTaskGate": "gate-reviewer",
+              "tasks": [
+                "005 Identity/assign/claim/conflicts/status",
+                "006 Record/adopt/export-summary",
+                "007 migrate/gc/doctor"
+              ],
+              "waveGate": "wave-review-orchestrator (Task 008)"
+            },
+            {
+              "name": "Wave 3: Verification, tests, packaging",
+              "perTaskGate": "gate-reviewer",
+              "tasks": [
+                "009 verify --json contract",
+                "010 Phase 1 test suite",
+                "011 Packaging basics"
+              ],
+              "waveGate": "wave-review-orchestrator (Task 012, final Phase 1 review)"
+            }
+          ],
+          "workerDecompositionSource": "tasks/phase-1-task-packet.md"
+        },
+        "planFile": "tasks/agent-ledger-phase-1/task_plan.md",
+        "progressFile": "tasks/agent-ledger-phase-1/progress.md"
+      }
+    },
+    "name": "reviewing-implementation-readiness"
+  },
+  "title": "Readiness gate (reviewing-implementation-readiness)",
+  "schemaVersion": "2026.01.tasks-v1",
+  "effectId": "01KQ6FKSK2D20DVSCAEF93TGZK",
+  "taskId": "readiness-gate",
+  "invocationKey": "user/hdd-adversarial-cycle:S000003:readiness-gate",
+  "stepId": "S000003",
+  "inputs": {
+    "plan": {
+      "findingsFile": "tasks/agent-ledger-phase-1/findings.md",
+      "plan": {
+        "approachChosen": "dp-001 opt-c: amend incrementally (keep packet, layer addendum)",
+        "goal": "Execute the Phase 1 kernel slice of Agent Ledger (SPEC.md §32 Phase 1) by running the 12-task, 3-wave decomposition in tasks/phase-1-task-packet.md, layered with a tech-choices addendum that resolves dp-002 through dp-008.",
+        "ironLaw": {
+          "assumedAnswer": "Implement the 12-task packet with the addendum decisions from INIT, gated by gate-reviewer per task and wave-review-orchestrator per wave.",
+          "question": "Execute Phase 1 kernel of Agent Ledger."
+        },
+        "openQuestions": [
+          "Pure-Go SQLite under concurrent exclusive claims: validate via Task 010 subprocess tests; fall back to mattn behind build tag if falsification signal trips.",
+          "Cobra binary cold-start vs SPEC §27 sub-20ms claim: spot-check in Task 001.",
+          "CI runtime for subprocess integration tests: parallelize rather than skip if it grows.",
+          "Validation arg edge case (empty status after final colon) needs nailed-down behavior in Task 006."
+        ],
+        "successCriteria": [
+          "Two local agents can claim and record disjoint files.",
+          "Overlapping claims produce deterministic conflict output.",
+          "verify --json reports unclaimed and forbidden changes.",
+          "No full diff content is stored by default.",
+          "go test ./... and go test -race ./... pass from a clean checkout.",
+          "make build and goreleaser snapshot succeed for all four MVP targets without secrets."
+        ],
+        "techChoicesAddendum": {
+          "dp-002_language": "Go (per SPEC §7)",
+          "dp-003_sqliteDriver": "modernc.org/sqlite (pure Go, CGO_ENABLED=0); mattn/go-sqlite3 reserved as build-tag fallback",
+          "dp-004_cliFramework": "spf13/cobra (no viper)",
+          "dp-005_phase1Scope": "Full 15-command Phase 1 per SPEC §18.17; exec excluded as post-MVP",
+          "dp-006_exclusiveLocks": "DB state authoritative + best-effort flock advisory locks; surface result via EXCLUSIVE_LOCK_HELD finding",
+          "dp-007_testStrategy": "Layered: unit-heavy + targeted subprocess tests for SPEC §31.2 #1-3 and #6-7; subprocess tests not behind -short",
+          "dp-008_packaging": "GoReleaser snapshot config without publishing; CGO_ENABLED=0 cross-compile to darwin/linux × arm64/amd64; Homebrew tap and signing deferred to Phase 5"
+        },
+        "waves": [
+          {
+            "name": "Wave 1: Foundation",
+            "perTaskGate": "gate-reviewer",
+            "tasks": [
+              "001 Go CLI scaffold",
+              "002 Project/storage resolution + path normalization",
+              "003 SQLite migrations + audit mirror"
+            ],
+            "waveGate": "wave-review-orchestrator (Task 004)"
+          },
+          {
+            "name": "Wave 2: Command workflows",
+            "perTaskGate": "gate-reviewer",
+            "tasks": [
+              "005 Identity/assign/claim/conflicts/status",
+              "006 Record/adopt/export-summary",
+              "007 migrate/gc/doctor"
+            ],
+            "waveGate": "wave-review-orchestrator (Task 008)"
+          },
+          {
+            "name": "Wave 3: Verification, tests, packaging",
+            "perTaskGate": "gate-reviewer",
+            "tasks": [
+              "009 verify --json contract",
+              "010 Phase 1 test suite",
+              "011 Packaging basics"
+            ],
+            "waveGate": "wave-review-orchestrator (Task 012, final Phase 1 review)"
+          }
+        ],
+        "workerDecompositionSource": "tasks/phase-1-task-packet.md"
+      },
+      "planFile": "tasks/agent-ledger-phase-1/task_plan.md",
+      "progressFile": "tasks/agent-ledger-phase-1/progress.md"
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "runId": "01KQ6EX9J49V6QCPZP1MTXWJBJ",
+  "request": "user/hdd-adversarial-cycle",
+  "processId": "user/hdd-adversarial-cycle",
+  "harness": "pi",
+  "entrypoint": {
+    "importPath": "../../../../../../.a5c/processes/hdd-adversarial-cycle/process.js",
+    "exportName": "process"
+  },
+  "processPath": "../../../../../../.a5c/processes/hdd-adversarial-cycle/process.js",
+  "layoutVersion": "2026.01-storage-preview",
+  "createdAt": "2026-04-27T03:14:45.456Z",
+  "prompt": "execute the implementation spec for agent clis in this directory",
+  "completionProof": "b6a0ecb50f73ecc3b13c8c5b36ee307c"
+}

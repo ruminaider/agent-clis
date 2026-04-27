@@ -1,0 +1,16 @@
+{
+  "type": "EFFECT_REQUESTED",
+  "recordedAt": "2026-04-27T03:33:03.599Z",
+  "data": {
+    "harness": "pi",
+    "effectId": "01KQ6FYSZ20XNW0MC3SEY9MJW6",
+    "invocationKey": "user/hdd-adversarial-cycle:S000004:executing",
+    "invocationHash": "833104ba364b351b6d3413f36302a67d8a772f54d890e0b3894ae4dd1fa628a1",
+    "stepId": "S000004",
+    "taskId": "executing",
+    "kind": "agent",
+    "label": "Executing (parallel worktree workers with quality pipeline and gate-reviewer)",
+    "taskDefRef": "tasks/01KQ6FYSZ20XNW0MC3SEY9MJW6/task.json"
+  },
+  "checksum": "68a484f36637fad54bdcf1ea71d4251e895945f2ceb5826b68311d56ccd9234e"
+}

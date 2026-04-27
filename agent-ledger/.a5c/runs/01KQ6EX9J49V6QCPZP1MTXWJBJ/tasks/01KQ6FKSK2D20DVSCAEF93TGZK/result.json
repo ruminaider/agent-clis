@@ -1,0 +1,107 @@
+{
+  "schemaVersion": "2026.01.results-v1",
+  "effectId": "01KQ6FKSK2D20DVSCAEF93TGZK",
+  "taskId": "readiness-gate",
+  "invocationKey": "user/hdd-adversarial-cycle:S000003:readiness-gate",
+  "status": "ok",
+  "result": {
+    "blockers": [],
+    "findings": [
+      {
+        "area": "Data Model Completeness",
+        "detail": "SPEC §9 lists config.toml inside the ledger-dir storage layout, but no section of SPEC, the packet, or the addendum defines its schema, required keys, or which command creates it. Task 003 says 'and config as needed,' leaving content entirely to the worker. A worker could create an empty file, skip it, or invent an incompatible schema. The content should be declared (even if empty) to prevent Wave 2 or Wave 3 workers from making conflicting assumptions about what the file holds.",
+        "location": "SPEC.md §9, tasks/phase-1-task-packet.md Task 003 Requirements",
+        "severity": "important"
+      },
+      {
+        "area": "Integration Inventory",
+        "detail": "The addendum specifies the SQLite driver (modernc.org/sqlite), CLI framework (cobra), and lock library (gofrs/flock), but does not name a ULID library. Task 003 and all domain-write tasks depend on the ULID format. Multiple conformant options exist (github.com/oklog/ulid/v2 is the de-facto standard; others differ in monotonic-clock behavior and API surface). Without a named library, the Task 003 worker improvises and a Wave 2 worker touching the same ID helpers may choose differently. Recommend adding an explicit line to dp-003: 'Use github.com/oklog/ulid/v2 for ULID generation.'",
+        "location": "tasks/agent-ledger-phase-1/task_plan.md §dp-003, tasks/phase-1-task-packet.md Task 003 Requirements",
+        "severity": "important"
+      },
+      {
+        "area": "Interface Specification",
+        "detail": "The init command behavior spans Task 002 (pointer creation, directory layout, cmd/agent-ledger wiring for init and doctor) and Task 003 (SQLite initialization, migrations, cmd/agent-ledger wiring for migrate and storage initialization). No interface contract or stub is pre-defined for the storage.Opener or storage.Initializer boundary that init must cross. The packet correctly states 'may run in parallel only after storage interfaces are agreed,' but provides nothing for them to agree against. If workers start before a shared stub exists, they may produce incompatible interfaces that require a mid-wave rebase.",
+        "location": "tasks/phase-1-task-packet.md Task 002 and Task 003 Dependencies and Allowed files, Recommended execution order",
+        "severity": "important"
+      },
+      {
+        "area": "Resolution / Error Paths",
+        "detail": "SPEC §27 #5 requires that audit JSONL writes not block SQLite commits, but no document specifies what to do when the audit write itself fails (full disk, permission denied, etc.). The worker must decide among: fail the command with exit code 3, log a warning to stderr and continue, or queue the write for a background retry. Without a declared behavior, the Task 003 worker and the Task 006 worker may make opposite choices, creating inconsistent error semantics across commands.",
+        "location": "SPEC.md §27 #5, tasks/phase-1-task-packet.md Task 003 Requirements",
+        "severity": "important"
+      },
+      {
+        "area": "Open Decision Resolution",
+        "detail": "findings.md item 3 flags a Cobra cold-start latency risk against SPEC §27's sub-20ms claim target, and recommends a quick benchmark in Task 001 acceptance. Task 001's acceptance criteria do not include any timing check. Adding a single measurement (e.g., 'time ./bin/agent-ledger help should complete in under 50ms') to Task 001 acceptance would surface a framework regression before Wave 2 builds on top of the scaffold.",
+        "location": "tasks/agent-ledger-phase-1/findings.md Open Questions #3, tasks/phase-1-task-packet.md Task 001 Acceptance criteria, SPEC.md §27",
+        "severity": "suggestion"
+      },
+      {
+        "area": "Open Decision Resolution",
+        "detail": "The --validation flag edge case (empty or malformed status string after the final colon in '<command>:<status>') is flagged in findings.md item 6 as unresolved and deferred to Task 006. Resolving it in the addendum now avoids a design decision landing inside a gate-review cycle. Suggested resolution: reject with exit code 1 if the parsed status token is not one of {passed, failed, skipped, unknown}; treat an empty token as a parse error rather than silently coercing it to unknown.",
+        "location": "tasks/agent-ledger-phase-1/findings.md Open Questions #6, SPEC.md §18.6, tasks/agent-ledger-phase-1/task_plan.md §Cross-cutting reminders",
+        "severity": "suggestion"
+      },
+      {
+        "area": "Open Decision Resolution",
+        "detail": "findings.md item 5 flags goreleaser snapshot artifact retention as unresolved ('Default: yes, 7-day retention. Confirm with user if storage cost matters'). Task 011's acceptance criteria do not include a retention policy. This does not block Wave 1, but the orchestrator should confirm the retention setting before dispatching Task 011 in Wave 3.",
+        "location": "tasks/agent-ledger-phase-1/findings.md Open Questions #5, tasks/phase-1-task-packet.md Task 011 Requirements",
+        "severity": "suggestion"
+      }
+    ],
+    "summary": "The plan, packet, and addendum together give a worker enough information to start Wave 1 immediately. SPEC §11 provides full DDL for every Phase 1 table; SPEC §16.1 enumerates every claim error path and exit code; decisions dp-002 through dp-008 resolve all major tech choices (Go, modernc.org/sqlite, cobra, gofrs/flock, GoReleaser). Four non-blocking gaps exist: the ledger-dir config.toml content is undefined, the ULID library is unspecified, the init command split across Task 002 and Task 003 lacks explicit interface stubs, and audit JSONL write failure behavior is unspecified. All four are derivable from spec context and acknowledged in the packet's coordination discipline. No finding requires an unresolved design decision before a Wave 1 worker can begin.",
+    "verdict": "READY"
+  },
+  "startedAt": "2026-04-27T03:33:02.842Z",
+  "finishedAt": "2026-04-27T03:33:02.842Z",
+  "value": {
+    "blockers": [],
+    "findings": [
+      {
+        "area": "Data Model Completeness",
+        "detail": "SPEC §9 lists config.toml inside the ledger-dir storage layout, but no section of SPEC, the packet, or the addendum defines its schema, required keys, or which command creates it. Task 003 says 'and config as needed,' leaving content entirely to the worker. A worker could create an empty file, skip it, or invent an incompatible schema. The content should be declared (even if empty) to prevent Wave 2 or Wave 3 workers from making conflicting assumptions about what the file holds.",
+        "location": "SPEC.md §9, tasks/phase-1-task-packet.md Task 003 Requirements",
+        "severity": "important"
+      },
+      {
+        "area": "Integration Inventory",
+        "detail": "The addendum specifies the SQLite driver (modernc.org/sqlite), CLI framework (cobra), and lock library (gofrs/flock), but does not name a ULID library. Task 003 and all domain-write tasks depend on the ULID format. Multiple conformant options exist (github.com/oklog/ulid/v2 is the de-facto standard; others differ in monotonic-clock behavior and API surface). Without a named library, the Task 003 worker improvises and a Wave 2 worker touching the same ID helpers may choose differently. Recommend adding an explicit line to dp-003: 'Use github.com/oklog/ulid/v2 for ULID generation.'",
+        "location": "tasks/agent-ledger-phase-1/task_plan.md §dp-003, tasks/phase-1-task-packet.md Task 003 Requirements",
+        "severity": "important"
+      },
+      {
+        "area": "Interface Specification",
+        "detail": "The init command behavior spans Task 002 (pointer creation, directory layout, cmd/agent-ledger wiring for init and doctor) and Task 003 (SQLite initialization, migrations, cmd/agent-ledger wiring for migrate and storage initialization). No interface contract or stub is pre-defined for the storage.Opener or storage.Initializer boundary that init must cross. The packet correctly states 'may run in parallel only after storage interfaces are agreed,' but provides nothing for them to agree against. If workers start before a shared stub exists, they may produce incompatible interfaces that require a mid-wave rebase.",
+        "location": "tasks/phase-1-task-packet.md Task 002 and Task 003 Dependencies and Allowed files, Recommended execution order",
+        "severity": "important"
+      },
+      {
+        "area": "Resolution / Error Paths",
+        "detail": "SPEC §27 #5 requires that audit JSONL writes not block SQLite commits, but no document specifies what to do when the audit write itself fails (full disk, permission denied, etc.). The worker must decide among: fail the command with exit code 3, log a warning to stderr and continue, or queue the write for a background retry. Without a declared behavior, the Task 003 worker and the Task 006 worker may make opposite choices, creating inconsistent error semantics across commands.",
+        "location": "SPEC.md §27 #5, tasks/phase-1-task-packet.md Task 003 Requirements",
+        "severity": "important"
+      },
+      {
+        "area": "Open Decision Resolution",
+        "detail": "findings.md item 3 flags a Cobra cold-start latency risk against SPEC §27's sub-20ms claim target, and recommends a quick benchmark in Task 001 acceptance. Task 001's acceptance criteria do not include any timing check. Adding a single measurement (e.g., 'time ./bin/agent-ledger help should complete in under 50ms') to Task 001 acceptance would surface a framework regression before Wave 2 builds on top of the scaffold.",
+        "location": "tasks/agent-ledger-phase-1/findings.md Open Questions #3, tasks/phase-1-task-packet.md Task 001 Acceptance criteria, SPEC.md §27",
+        "severity": "suggestion"
+      },
+      {
+        "area": "Open Decision Resolution",
+        "detail": "The --validation flag edge case (empty or malformed status string after the final colon in '<command>:<status>') is flagged in findings.md item 6 as unresolved and deferred to Task 006. Resolving it in the addendum now avoids a design decision landing inside a gate-review cycle. Suggested resolution: reject with exit code 1 if the parsed status token is not one of {passed, failed, skipped, unknown}; treat an empty token as a parse error rather than silently coercing it to unknown.",
+        "location": "tasks/agent-ledger-phase-1/findings.md Open Questions #6, SPEC.md §18.6, tasks/agent-ledger-phase-1/task_plan.md §Cross-cutting reminders",
+        "severity": "suggestion"
+      },
+      {
+        "area": "Open Decision Resolution",
+        "detail": "findings.md item 5 flags goreleaser snapshot artifact retention as unresolved ('Default: yes, 7-day retention. Confirm with user if storage cost matters'). Task 011's acceptance criteria do not include a retention policy. This does not block Wave 1, but the orchestrator should confirm the retention setting before dispatching Task 011 in Wave 3.",
+        "location": "tasks/agent-ledger-phase-1/findings.md Open Questions #5, tasks/phase-1-task-packet.md Task 011 Requirements",
+        "severity": "suggestion"
+      }
+    ],
+    "summary": "The plan, packet, and addendum together give a worker enough information to start Wave 1 immediately. SPEC §11 provides full DDL for every Phase 1 table; SPEC §16.1 enumerates every claim error path and exit code; decisions dp-002 through dp-008 resolve all major tech choices (Go, modernc.org/sqlite, cobra, gofrs/flock, GoReleaser). Four non-blocking gaps exist: the ledger-dir config.toml content is undefined, the ULID library is unspecified, the init command split across Task 002 and Task 003 lacks explicit interface stubs, and audit JSONL write failure behavior is unspecified. All four are derivable from spec context and acknowledged in the packet's coordination discipline. No finding requires an unresolved design decision before a Wave 1 worker can begin.",
+    "verdict": "READY"
+  }
+}
