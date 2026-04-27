@@ -62,6 +62,14 @@ const (
 	ConflictResolved     = "resolved"
 )
 
+// ErrUnsafeReason is returned by InsertAssignment and InsertIntent when
+// the provided reason string fails the privacy safety check (SPEC §17).
+// The CLI guard in assign.go and claim.go is the canonical enforcement
+// point; the domain check is defense-in-depth for programmatic callers
+// that bypass the CLI layer. Callers should detect this sentinel with
+// errors.Is and map it to ExitConfigError (2).
+var ErrUnsafeReason = errors.New("domain: unsafe reason")
+
 // ValidPolicy reports whether p is one of the allowed conflict policies.
 func ValidPolicy(p string) bool {
 	switch p {
@@ -271,11 +279,11 @@ func (s *Store) AgentExists(ctx context.Context, agentID string) (bool, error) {
 }
 
 // InsertAssignment writes an assignments row plus a task.assigned event.
-// It returns an error if a.Reason contains a known secret pattern
-// (privacy.AssertSafe, SPEC §17).
+// It returns ErrUnsafeReason (wrapped) if a.Reason contains a known
+// secret pattern (privacy.AssertSafe, SPEC §17).
 func (s *Store) InsertAssignment(ctx context.Context, a Assignment) (Assignment, error) {
 	if err := privacy.AssertSafe("assignment.reason", a.Reason); err != nil {
-		return a, err
+		return a, fmt.Errorf("%w: %s", ErrUnsafeReason, err)
 	}
 	if a.AssignmentID == "" {
 		nid, err := s.S.IDGen().New(id.PrefixAssignment)
@@ -365,11 +373,11 @@ func (s *Store) LatestActiveAssignmentForTask(ctx context.Context, taskID string
 
 // InsertIntent writes an intents row plus intent_paths plus an
 // intent.opened event in one transaction.
-// It returns an error if in.Reason contains a known secret pattern
-// (privacy.AssertSafe, SPEC §17).
+// It returns ErrUnsafeReason (wrapped) if in.Reason contains a known
+// secret pattern (privacy.AssertSafe, SPEC §17).
 func (s *Store) InsertIntent(ctx context.Context, in Intent, ipaths []IntentPath) (Intent, error) {
 	if err := privacy.AssertSafe("intent.reason", in.Reason); err != nil {
-		return in, err
+		return in, fmt.Errorf("%w: %s", ErrUnsafeReason, err)
 	}
 	if in.IntentID == "" {
 		nid, err := s.S.IDGen().New(id.PrefixIntent)

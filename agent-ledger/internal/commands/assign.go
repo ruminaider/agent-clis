@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -104,6 +105,12 @@ func runAssign(streams Streams, o *assignOpts) error {
 		Metadata:        map[string]any{"branch": o.branch},
 	})
 	if err != nil {
+		// The CLI guard above is canonical; the domain check is
+		// defense-in-depth. Map the sentinel so programmatic callers
+		// that bypass the CLI layer still get ExitConfigError.
+		if errors.Is(err, domain.ErrUnsafeReason) {
+			return cli.NewError(cli.ExitConfigError, "reason_unsafe", err.Error())
+		}
 		return cli.NewError(cli.ExitStorageIO, "assign_failed", err.Error())
 	}
 	if o.asJSON {

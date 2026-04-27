@@ -267,6 +267,12 @@ func runClaim(streams Streams, o *claimOpts, args []string) error {
 
 	created, err := d.InsertIntent(ctx, intent, ipaths)
 	if err != nil {
+		// The CLI guard above is canonical; the domain check is
+		// defense-in-depth. Map the sentinel so programmatic callers
+		// that bypass the CLI layer still get ExitConfigError.
+		if errors.Is(err, domain.ErrUnsafeReason) {
+			return cli.NewError(cli.ExitConfigError, "reason_unsafe", err.Error())
+		}
 		return cli.NewError(cli.ExitStorageIO, "intent_insert_failed", err.Error())
 	}
 
