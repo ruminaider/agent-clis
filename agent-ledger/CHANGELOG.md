@@ -71,11 +71,14 @@ Code, and Babysitter adapters arrive in later phases.
 - GoReleaser snapshot config for darwin/linux × arm64/amd64 archives.
   Local-only (no publishing, no secrets). Homebrew tap and signing
   deferred to Phase 5.
-- GitHub Actions workflows: `ci.yml` runs `make check` and a 4-target
-  cross-build matrix, plus a `go test -race` job.
-  `release-snapshot.yml` exercises GoReleaser on every pull request
-  without publishing. `release.yml` publishes a real GitHub Release
-  on `v*` tag push using the auto-provided `GITHUB_TOKEN`. No
+- GitHub Actions workflows at the monorepo root, name-prefixed
+  `agent-ledger-*` and `paths:`-scoped to `agent-ledger/`:
+  `agent-ledger-ci.yml` runs `make check`, a 4-target cross-build
+  matrix, and a `go test -race` job;
+  `agent-ledger-release-snapshot.yml` exercises GoReleaser on every
+  pull request without publishing;
+  `agent-ledger-release.yml` publishes a real GitHub Release on `v*`
+  tag push using the auto-provided `GITHUB_TOKEN`. No
   user-configured secrets are required at any stage.
 - Subprocess integration test suite under `tests/integration/`
   covering concurrent claims (disjoint, warn, exclusive), secret

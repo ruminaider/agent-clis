@@ -78,38 +78,49 @@ git tag -a v0.1.0 -m "Phase 1 kernel slice"
 git push origin v0.1.0
 ```
 
-The `release.yml` workflow runs goreleaser without `--snapshot`,
-publishes the four archives plus the SHA256 checksums file as the
-release assets, and includes a release body templated from
-`.goreleaser.yaml`. Users then download from
+The `agent-ledger-release.yml` workflow runs goreleaser without
+`--snapshot`, publishes the four archives plus the SHA256 checksums
+file as the release assets, and includes a release body templated
+from `.goreleaser.yaml`. Users then download from
 `https://github.com/ruminaider/agent-clis/releases/tag/v0.1.0`.
 
 Tags shaped like `v0.1.0-rc1` automatically publish as prereleases
 (see `release.prerelease: auto` in `.goreleaser.yaml`).
 
 To cut a release locally without pushing a tag, use the
-`workflow_dispatch` trigger on `release.yml` from the GitHub Actions
-UI.
+`workflow_dispatch` trigger on `agent-ledger-release.yml` from the
+GitHub Actions UI.
+
+Note: the parent monorepo also hosts `notion-cli` and `linear-cli`,
+which use prefixed tags (`notion-cli-v*`, `linear-cli-v*`). The
+`agent-ledger-release.yml` workflow fires only on plain `v*` tags,
+which are reserved for agent-ledger.
 
 ## CI workflows
 
-Three GitHub Actions workflows live under `.github/workflows/`:
+Three GitHub Actions workflows live at the monorepo root under
+`.github/workflows/`. Each is name-prefixed `agent-ledger-*` and
+scoped via a `paths:` filter so it only triggers when files under
+`agent-ledger/` (or the workflow itself) change. Sibling tools in the
+monorepo do not pay for irrelevant runs.
 
-1. `ci.yml`: runs on every push and pull request.
+1. `agent-ledger-ci.yml`: runs on push to `main` and on pull request.
    - `lint-and-test`: `make check` (gofmt, vet, test, build).
+   - `test-race`: `go test -race -count=1 ./...`.
    - `cross-build`: matrix build for the four supported targets.
-   - `race-test`: `go test -race -count=1 ./...`.
-2. `release-snapshot.yml`: runs on every pull request and on manual
-   `workflow_dispatch`. Executes `goreleaser release --snapshot --clean --skip=publish`
-   and uploads `dist/` as a workflow artifact. Publishes nothing.
-3. `release.yml`: runs on `v*` tag pushes and on manual
+2. `agent-ledger-release-snapshot.yml`: runs on every pull request
+   and on manual `workflow_dispatch`. Executes
+   `goreleaser release --snapshot --clean --skip=publish` and uploads
+   `dist/` as a workflow artifact. Publishes nothing.
+3. `agent-ledger-release.yml`: runs on `v*` tag pushes and on manual
    `workflow_dispatch`. Executes `goreleaser release --clean` and
    creates a GitHub Release with the four archives and checksum file
    attached.
 
-`ci.yml` and `release-snapshot.yml` reference no secrets. `release.yml`
-uses the auto-provided `${{ secrets.GITHUB_TOKEN }}` to create the
-release. No user-configured secrets are required at any stage.
+`agent-ledger-ci.yml` and `agent-ledger-release-snapshot.yml`
+reference no secrets. `agent-ledger-release.yml` uses the
+auto-provided `${{ secrets.GITHUB_TOKEN }}` to create the release. No
+user-configured secrets are required at any stage.
 
 ## Verifying an installation
 

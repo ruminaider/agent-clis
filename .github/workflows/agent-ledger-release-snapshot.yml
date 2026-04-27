@@ -1,10 +1,13 @@
-name: release-snapshot
+name: agent-ledger release-snapshot
 
-# Smoke-build the four-target snapshot on every pull request and on
-# manual dispatch, without publishing. Real releases live in
-# release.yml and trigger on v* tag pushes.
+# Smoke-build the four-target snapshot on every PR that touches
+# agent-ledger and on manual dispatch. Publishes nothing. Real
+# releases live in agent-ledger-release.yml on v* tag pushes.
 on:
   pull_request:
+    paths:
+      - "agent-ledger/**"
+      - ".github/workflows/agent-ledger-*.yml"
   workflow_dispatch:
 
 permissions:
@@ -14,9 +17,6 @@ jobs:
   snapshot:
     name: goreleaser snapshot
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: agent-ledger
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,6 +28,7 @@ jobs:
         with:
           go-version: "1.22"
           cache: true
+          cache-dependency-path: agent-ledger/go.sum
 
       - name: Run goreleaser (snapshot)
         uses: goreleaser/goreleaser-action@v6

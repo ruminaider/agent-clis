@@ -1,9 +1,14 @@
-name: release
+name: agent-ledger release
 
-# Publish a GitHub Release with darwin/linux x arm64/amd64 archives when a
-# v* tag is pushed. Tag the agent-ledger module with `v<semver>` (for
-# example v0.1.0). Snapshot smoke continues to run on every PR via
-# release-snapshot.yml; this workflow only fires for real releases.
+# Publish a GitHub Release with darwin/linux x arm64/amd64 archives
+# when an agent-ledger v* tag is pushed. Tag the kernel module with
+# `v<semver>` (e.g. v0.1.0). Snapshot smoke continues to run on every
+# PR via agent-ledger-release-snapshot.yml.
+#
+# Note on tag scope: the parent monorepo also hosts notion-cli and
+# linear-cli, which use their own tag prefixes (notion-cli-v*,
+# linear-cli-v*). This workflow only fires on plain v* tags, which we
+# reserve for agent-ledger releases.
 on:
   push:
     tags:
@@ -17,9 +22,6 @@ jobs:
   release:
     name: goreleaser publish
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: agent-ledger
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,6 +33,7 @@ jobs:
         with:
           go-version: "1.22"
           cache: true
+          cache-dependency-path: agent-ledger/go.sum
 
       - name: Run goreleaser
         uses: goreleaser/goreleaser-action@v6

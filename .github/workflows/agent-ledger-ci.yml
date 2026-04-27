@@ -1,11 +1,26 @@
-name: ci
+name: agent-ledger ci
 
+# Lint, test, race-detector, and cross-build for the agent-ledger CLI.
+# Triggers only on changes under agent-ledger/ or to this workflow itself,
+# so sibling tools in the monorepo do not pay for irrelevant runs.
 on:
   push:
+    branches: [main]
+    paths:
+      - "agent-ledger/**"
+      - ".github/workflows/agent-ledger-*.yml"
   pull_request:
+    paths:
+      - "agent-ledger/**"
+      - ".github/workflows/agent-ledger-*.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+defaults:
+  run:
+    working-directory: agent-ledger
 
 jobs:
   lint-and-test:
@@ -20,6 +35,7 @@ jobs:
         with:
           go-version: "1.22"
           cache: true
+          cache-dependency-path: agent-ledger/go.sum
 
       - name: Print Go version
         run: go version
@@ -41,6 +57,7 @@ jobs:
         with:
           go-version: "1.22"
           cache: true
+          cache-dependency-path: agent-ledger/go.sum
 
       - name: go test -race
         env:
@@ -72,6 +89,7 @@ jobs:
         with:
           go-version: "1.22"
           cache: true
+          cache-dependency-path: agent-ledger/go.sum
 
       - name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
         env:
