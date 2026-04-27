@@ -22,49 +22,111 @@ wrapper, future Claude Code hooks) implements the same shape.
 | `AGENT_LEDGER_AUTO_ASSIGN_POLICY` | operator | adapters | optional | Default conflict policy for auto-derived assignments: `warn` (default) or `exclusive`. |
 | `AGENT_LEDGER_AUTO_ASSIGN_ALLOW` | operator | adapters | optional | Glob list (colon-separated) for the auto-derived assignment's `--allow`. Defaults to `**` (permissive). |
 
+## Task id resolution
+
+At session bootstrap the adapter resolves a task id through this
+chain (first match wins):
+
+1. **`--task-id` flag** supplied by the orchestrator. Marked
+   `TASK_SOURCE=flag`. The bootstrap trusts the orchestrator already
+   wrote an assignment and skips the assign step.
+2. **`AGENT_LEDGER_TASK_ID` env var**. Marked `TASK_SOURCE=env`. Same
+   skip behavior as the flag.
+3. **PR detection** (opt-in via `--detect-pr 1` or
+   `AGENT_LEDGER_DETECT_PR=1`). If `gh pr view --json number` returns
+   a PR for the current branch, task id becomes `pr-<number>`. Marked
+   `TASK_SOURCE=pr`.
+4. **Git branch detection**. `git rev-parse --abbrev-ref HEAD` against
+   the cwd; the branch name (sanitized) becomes the task id. Marked
+   `TASK_SOURCE=branch`. Multiple sessions on the same branch share
+   one task id, which is the correct behavior for ongoing work.
+5. **Detached HEAD**. `detached/<short-sha>` from
+   `git rev-parse --short HEAD`. Marked `TASK_SOURCE=detached`.
+6. **Auto fallback** (last resort, outside any git repo).
+   `auto/<agent-slug>/<utc-timestamp>`. Marked `TASK_SOURCE=auto`.
+   This is the only path that triggers the adapter's warning toast,
+   because true context-less sessions are rare and worth flagging.
+
+Sources 1 and 2 are explicit; the bootstrap does not write an
+assignment. Sources 3-6 are derived; the bootstrap writes an
+assignment with a marker in the reason text so reviewers can audit
+how the task id was sourced.
+
+The pi extension passes `--cwd $(process.cwd())` and (when
+`AGENT_LEDGER_DETECT_PR=1`) `--detect-pr 1` to the bootstrap, then
+reads `AGENT_LEDGER_TASK_SOURCE` from the bootstrap output and only
+shows a UI warning when source=auto.
+
+Operators who want strict enforcement set
+`AGENT_LEDGER_REQUIRE_TASK=1`; the bootstrap then refuses to fall
+through to the auto path (sources 3-5 still satisfy the requirement).
+
 ## Auto-derived task ids: solving "the orchestrator forgot"
 
 The Phase 1 kernel only enforces what the operator tells it. When a
-worker is dispatched without `AGENT_LEDGER_TASK_ID` (orchestrator
-missed the assign step), the adapter must choose between:
+worker is dispatched without an explicit task id, the adapter must
+choose between:
 
 - **Fail closed**: block every edit until the orchestrator assigns.
   Safe but disruptive; punishes the worker for the orchestrator's
   miss.
 - **Fail open**: let the worker edit without attribution. Defeats the
   point.
-- **Auto-derive with audit trail (default)**: at session bootstrap,
-  the adapter generates a task id of the shape
-  `auto/<agent-slug>/<utc-timestamp>` and writes an assignment reason
-  that starts with `[auto-assigned`. The worker proceeds. Reviewers
-  filtering assignment reasons with that prefix see every session
-  where the orchestrator forgot.
+- **Derive from harness context (default)**: pull the task id from
+  the current PR or branch. Almost always meaningful, since the
+  branch name and PR number ARE the task in practice.
+- **Auto-fallback (last resort)**: synthetic
+  `auto/<agent-slug>/<utc-timestamp>` only when no harness context is
+  available (outside any git repo). This is the only path that
+  surfaces a UI warning, since true context-less sessions are rare
+  and worth flagging.
 
-Auto-derivation is the default because it solves the "subagent is
-useful even when the orchestrator forgot" requirement. Operators who
-want strict enforcement set `AGENT_LEDGER_REQUIRE_TASK=1` and accept
-the disruption.
+The derive-from-harness path is the default because the harness
+almost always knows what the human is working on. Operators who want
+strict enforcement (no derived task ids; require explicit
+`AGENT_LEDGER_TASK_ID`) set `AGENT_LEDGER_REQUIRE_TASK=1`.
 
 ### Audit trail in v0.1
 
 The v0.1 kernel does not yet have a `--metadata` flag on `assign`,
 so adapters encode the audit signal in the assignment's `reason`
-text as a leading bracketed marker:
+text as a leading bracketed marker. Two formats:
 
-```
-[auto-assigned by <source> auto-derived task=<task-id> parent=<parent-id> agent=<agent-id> effect=<effect-id>] <human reason>
-```
+- **Auto-fallback** (no harness context found):
 
-Reviewers find every auto-derived assignment with:
+  ```
+  [auto-assigned by <by> auto-derived task=<id> agent=<id>] <human reason>
+  ```
+
+- **Harness-derived** (task id sourced from PR, branch, or detached HEAD):
+
+  ```
+  [harness-derived by <by> source=<branch|pr|detached> task=<id> agent=<id>] <human reason>
+  ```
+
+Assignments without either prefix were supplied explicitly by an
+orchestrator (`--task-id` flag or `AGENT_LEDGER_TASK_ID` env var).
+
+Reviewers query the local SQLite directly today (the v0.2 kernel
+patch documented below adds a CLI surface):
 
 ```bash
-agent-ledger status --json \
-  | jq '.assignments[] | select(.reason | startswith("[auto-assigned"))'
+LEDGER=$(grep ledger_dir <project>/.agent-ledger.toml | cut -d'"' -f2)
+
+# True orchestrator-forgot cases (auto-fallback, no harness context):
+sqlite3 "$LEDGER/ledger.sqlite" \
+  "SELECT task_id, substr(reason,1,100) FROM assignments
+   WHERE reason LIKE '[auto-assigned%' ORDER BY created_at DESC"
+
+# Harness-derived sessions, grouped by source:
+sqlite3 "$LEDGER/ledger.sqlite" \
+  "SELECT task_id, reason FROM assignments
+   WHERE reason LIKE '[harness-derived%' ORDER BY created_at DESC"
 ```
 
 Verify emits a `MISSING_ASSIGNMENT` finding with severity `warning`
-(not error) for these tasks so CI can surface them without blocking
-the merge.
+(not error) for auto-fallback tasks so CI can surface them without
+blocking the merge.
 
 ### Audit trail in v0.2
 
@@ -87,16 +149,17 @@ Every adapter runs the same bootstrap once per session, idempotent:
    --harness <harness>` to register the identity. Operators who want a
    human-readable local identity can opt in with
    `AGENT_LEDGER_HUMAN_READABLE_AGENT_ID=1`.
-2. Resolve `AGENT_LEDGER_TASK_ID`. If unset:
-   - If `AGENT_LEDGER_REQUIRE_TASK=1`, error and exit non-zero.
-   - Else derive `auto/<agent-slug>/<session-start-utc>` and proceed.
-3. Resolve assignment for the task id. If
-   `agent-ledger status --task <id> --json` returns no assignment, run
-   `agent-ledger assign --task <id> --orchestrator "<adapter>" --agent
-   "$AGENT_ID" --policy "$AGENT_LEDGER_AUTO_ASSIGN_POLICY"` with one
-   `--allow` per colon-separated glob in
-   `$AGENT_LEDGER_AUTO_ASSIGN_ALLOW` and a reason that starts with the
-   v0.1 marker prefix above.
+2. Resolve `AGENT_LEDGER_TASK_ID` per the chain in "Task id resolution"
+   above. The bootstrap exposes the chosen source via
+   `AGENT_LEDGER_TASK_SOURCE`.
+3. For sources `pr`, `branch`, `detached`, and `auto`, write a fresh
+   assignment with `agent-ledger assign --task <id> --orchestrator
+   "<adapter>" --agent "$AGENT_ID" --policy
+   "$AGENT_LEDGER_AUTO_ASSIGN_POLICY"`, one `--allow` per
+   colon-separated glob in `$AGENT_LEDGER_AUTO_ASSIGN_ALLOW`, and a
+   reason that starts with the appropriate marker prefix from the
+   audit-trail section above. For sources `flag` and `env` the
+   bootstrap trusts the orchestrator already wrote the assignment.
 4. Export the resolved env vars for child processes. Shell callers use
    export lines; pi uses the helper's `--json` mode.
 

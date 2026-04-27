@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Shared auto-assignment marker helper.
+# Shared assignment-source marker helper. See marker.js for the
+# semantic contract; the two implementations must produce byte-identical
+# output for the same inputs.
 
 agent_ledger_sanitize_marker_token() {
   printf '%s' "$1" | tr -c 'A-Za-z0-9._:@/-' '-'
@@ -11,6 +13,7 @@ agent_ledger_auto_assigned_marker() {
   local task=""
   local agent=""
   local effect=""
+  local source="auto"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -19,6 +22,7 @@ agent_ledger_auto_assigned_marker() {
       --task) task="$2"; shift 2 ;;
       --agent) agent="$2"; shift 2 ;;
       --effect) effect="$2"; shift 2 ;;
+      --source) source="$2"; shift 2 ;;
       *) echo "marker.sh: unknown flag $1" >&2; return 2 ;;
     esac
   done
@@ -28,7 +32,19 @@ agent_ledger_auto_assigned_marker() {
     return 2
   fi
 
-  local marker="[auto-assigned by $(agent_ledger_sanitize_marker_token "$by") auto-derived"
+  local source_lower
+  source_lower="$(printf '%s' "$source" | tr 'A-Z' 'a-z')"
+
+  local marker
+  case "$source_lower" in
+    branch|pr|detached)
+      marker="[harness-derived by $(agent_ledger_sanitize_marker_token "$by") source=$(agent_ledger_sanitize_marker_token "$source_lower")"
+      ;;
+    *)
+      marker="[auto-assigned by $(agent_ledger_sanitize_marker_token "$by") auto-derived"
+      ;;
+  esac
+
   if [[ -n "$parent" ]]; then
     marker="${marker} parent=$(agent_ledger_sanitize_marker_token "$parent")"
   fi

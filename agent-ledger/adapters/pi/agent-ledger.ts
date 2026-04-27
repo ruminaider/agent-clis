@@ -34,10 +34,13 @@ interface IntentRef {
   paths: string[];
 }
 
+type TaskSource = "flag" | "env" | "pr" | "branch" | "detached" | "auto" | "";
+
 interface BootstrapState {
   bootstrapped: boolean;
   resolvedTaskId: string | null;
   resolvedAgentId: string | null;
+  resolvedTaskSource: TaskSource;
   autoAssigned: boolean;
   bootstrapPromise: Promise<void> | null;
   liveClaims: Map<string, IntentRef>;
@@ -106,12 +109,22 @@ async function bootstrapSession(state: BootstrapState, harness: string, agentKin
     if (!script) {
       throw new Error(`agent-ledger extension: session-bootstrap.sh not found in ${candidates.join(", ")}`);
     }
-    const args = ["--harness", harness, "--agent-kind", agentKind, "--orchestrator", "pi-extension", "--json"];
+    const args = [
+      "--harness", harness,
+      "--agent-kind", agentKind,
+      "--orchestrator", "pi-extension",
+      "--cwd", process.cwd(),
+      "--json",
+    ];
+    if (process.env.AGENT_LEDGER_DETECT_PR === "1") {
+      args.push("--detect-pr", "1");
+    }
     const r = await exec("bash", [script, ...args], { env: process.env, maxBuffer: 1024 * 1024 });
     const exported = parseBootstrapOutput(r.stdout);
     for (const [k, v] of Object.entries(exported)) process.env[k] = v;
     state.resolvedAgentId = process.env.AGENT_ID ?? null;
     state.resolvedTaskId = process.env.AGENT_LEDGER_TASK_ID ?? null;
+    state.resolvedTaskSource = (process.env.AGENT_LEDGER_TASK_SOURCE ?? "") as TaskSource;
     state.autoAssigned = process.env.AGENT_LEDGER_AUTO_ASSIGNED === "1";
     state.bootstrapped = true;
   })();
@@ -231,6 +244,7 @@ export default function (pi: ExtensionAPI) {
     bootstrapped: false,
     resolvedTaskId: null,
     resolvedAgentId: null,
+    resolvedTaskSource: "",
     autoAssigned: false,
     bootstrapPromise: null,
     liveClaims: new Map(),
@@ -245,8 +259,12 @@ export default function (pi: ExtensionAPI) {
     if (!state.bootstrapped) {
       try {
         await bootstrapSession(state, "pi", "worker");
-        if (state.autoAssigned && ctx.hasUI) {
-          ctx.ui.notify(`agent-ledger: orchestrator did not pre-assign; auto task=${state.resolvedTaskId}`, "warning");
+        // Notify only on the auto fallback path (no harness context
+        // found). Branch/PR/detached/explicit sources are normal and
+        // do not need a UI toast; the source is logged to stderr by
+        // the bootstrap script and exposed via AGENT_LEDGER_TASK_SOURCE.
+        if (state.resolvedTaskSource === "auto" && ctx.hasUI) {
+          ctx.ui.notify(`agent-ledger: no task context found; auto task=${state.resolvedTaskId}`, "warning");
         }
       } catch (err: any) {
         if (process.env.AGENT_LEDGER_REQUIRE_TASK === "1") {
