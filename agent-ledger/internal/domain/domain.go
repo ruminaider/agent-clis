@@ -19,6 +19,7 @@ import (
 
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/events"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/id"
+	"github.com/ruminaider/agent-clis/agent-ledger/internal/privacy"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/storage"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/storage/sqlite"
 )
@@ -270,7 +271,12 @@ func (s *Store) AgentExists(ctx context.Context, agentID string) (bool, error) {
 }
 
 // InsertAssignment writes an assignments row plus a task.assigned event.
+// It returns an error if a.Reason contains a known secret pattern
+// (privacy.AssertSafe, SPEC §17).
 func (s *Store) InsertAssignment(ctx context.Context, a Assignment) (Assignment, error) {
+	if err := privacy.AssertSafe("assignment.reason", a.Reason); err != nil {
+		return a, err
+	}
 	if a.AssignmentID == "" {
 		nid, err := s.S.IDGen().New(id.PrefixAssignment)
 		if err != nil {
@@ -359,7 +365,12 @@ func (s *Store) LatestActiveAssignmentForTask(ctx context.Context, taskID string
 
 // InsertIntent writes an intents row plus intent_paths plus an
 // intent.opened event in one transaction.
+// It returns an error if in.Reason contains a known secret pattern
+// (privacy.AssertSafe, SPEC §17).
 func (s *Store) InsertIntent(ctx context.Context, in Intent, ipaths []IntentPath) (Intent, error) {
+	if err := privacy.AssertSafe("intent.reason", in.Reason); err != nil {
+		return in, err
+	}
 	if in.IntentID == "" {
 		nid, err := s.S.IDGen().New(id.PrefixIntent)
 		if err != nil {

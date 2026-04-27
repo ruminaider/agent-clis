@@ -29,9 +29,16 @@ var secretFixtures = []struct {
 }
 
 // TestPrivacy_SecretsNotPersisted_DefaultPath drives a full
-// claim+record+close+export-summary flow with secret-laden reasons.
-// Reasons get hashed to sha256 in the summary; verbatim secrets
-// must never appear on disk.
+// claim+record+close+export-summary flow and asserts that verbatim
+// secrets never appear in the audit JSONL, exported summary, or blobs.
+//
+// Since R-006 (finding wv1-f05, SPEC §17), secrets in --reason are
+// rejected at the CLI layer before they reach the DB. This is a
+// stronger guarantee than the original hash-on-write approach:
+// no secret ever touches any storage surface at all. The test
+// therefore uses safe (non-secret) reasons and verifies the audit
+// and summary surfaces are clean. Secret rejection itself is covered
+// in the unit tests in internal/commands/privacy_reason_test.go.
 func TestPrivacy_SecretsNotPersisted_DefaultPath(t *testing.T) {
 	if testing.Short() {
 		t.Skip()
@@ -40,13 +47,10 @@ func TestPrivacy_SecretsNotPersisted_DefaultPath(t *testing.T) {
 	ledger := freshLedger(t)
 	writeFile(t, filepath.Join(root, "src", "x.go"), "package src\n")
 
-	// The reason fields below intentionally include each secret
-	// fixture so we can prove the hashing/scrubbing path keeps them
-	// off disk. The summary text on `record` is kept clean because
-	// SPEC §17 mandates an immediate-rejection privacy guard there;
-	// that rejection path is exercised in TestPrivacy_RecordRejectsSecretSummary.
-	leakyAssignReason := "needs " + secretFixtures[0].value + " to deploy"
-	leakyClaimReason := "edit " + secretFixtures[3].value
+	// Use safe reasons: secret-containing reasons are now rejected
+	// before they reach any storage layer (R-006, SPEC §17).
+	safeAssignReason := "deploy approved task packet TS"
+	safeClaimReason := "edit src/x.go per task spec"
 
 	mustZero(t, "assign", run(t, root, nil,
 		"assign", "--task", "TS",
@@ -54,14 +58,14 @@ func TestPrivacy_SecretsNotPersisted_DefaultPath(t *testing.T) {
 		"--agent", "pi.worker.sec",
 		"--allow", "src/**",
 		"--policy", "warn",
-		"--reason", leakyAssignReason,
+		"--reason", safeAssignReason,
 		"--ledger-dir", ledger,
 	))
 
 	cl := run(t, root, []string{"AGENT_ID=pi.worker.sec"},
 		"claim", "src/x.go",
 		"--task", "TS",
-		"--reason", leakyClaimReason,
+		"--reason", safeClaimReason,
 		"--json",
 		"--ledger-dir", ledger,
 	)
@@ -102,11 +106,10 @@ func TestPrivacy_SecretsNotPersisted_DefaultPath(t *testing.T) {
 	//   * blobs/sha256/  (only populated under --include-diff --yes)
 	//   * exported summary (§20, ships to CI)
 	//
-	// The local ledger.sqlite store is intentionally left out: it
-	// records raw reasons for the agent's own debugging notebook
-	// (§17 forbids diffs, env, headers, tokens; reasons are agent
-	// prose). Any leak into the audit mirror or the summary IS a
-	// privacy regression.
+	// Note: secrets in --reason are now rejected at the CLI layer
+	// (R-006, SPEC §17) so they never reach any storage surface.
+	// This scan confirms that the audit mirror and summary remain
+	// clean of any secret-shaped values.
 	scanForLeaks := func(p string) {
 		t.Helper()
 		data, err := os.ReadFile(p)

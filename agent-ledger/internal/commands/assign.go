@@ -8,6 +8,7 @@ import (
 
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/cli"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/domain"
+	"github.com/ruminaider/agent-clis/agent-ledger/internal/privacy"
 )
 
 type assignOpts struct {
@@ -59,6 +60,9 @@ func runAssign(streams Streams, o *assignOpts) error {
 	}
 	if strings.TrimSpace(o.reason) == "" {
 		return cli.NewError(cli.ExitUsage, "missing_flag", "--reason is required")
+	}
+	if err := privacy.AssertSafe("--reason", o.reason); err != nil {
+		return cli.NewError(cli.ExitConfigError, "reason_unsafe", err.Error())
 	}
 	if !domain.ValidPolicy(o.policy) {
 		return errf(cli.ExitUsage, "invalid_policy", "policy %q must be one of none|warn|exclusive", o.policy)

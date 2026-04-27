@@ -14,6 +14,7 @@ import (
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/domain"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/locks"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/paths"
+	"github.com/ruminaider/agent-clis/agent-ledger/internal/privacy"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/project"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/storage"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/storage/sqlite"
@@ -64,6 +65,9 @@ func runClaim(streams Streams, o *claimOpts, args []string) error {
 	}
 	if strings.TrimSpace(o.reason) == "" {
 		return cli.NewError(cli.ExitUsage, "missing_flag", "--reason is required")
+	}
+	if err := privacy.AssertSafe("--reason", o.reason); err != nil {
+		return cli.NewError(cli.ExitConfigError, "reason_unsafe", err.Error())
 	}
 	if !domain.ValidAccessMode(o.access) {
 		return errf(cli.ExitUsage, "invalid_access_mode", "--access-mode must be observe|read|write|review-only")
