@@ -882,9 +882,11 @@ func recomputeAssignmentHash(s summary.AssignmentSnapshot) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// pathHashAtRoot returns the path hash for a project-relative path
-// rooted at root. Returns (hash, exists). When the file does not
-// exist, exists is false.
+// pathHashAtRoot returns the portable path hash for a project-relative path
+// rooted at root. Returns (hash, exists). When the file does not exist, exists
+// is false. The hash is sha256(NFC(display)) so it matches the value written
+// by summary.Build regardless of the absolute realpath in any checkout.
+// SPEC §20.1, §32.
 func pathHashAtRoot(root, rel string) (string, bool) {
 	p := rel
 	if !filepath.IsAbs(p) {
@@ -893,9 +895,5 @@ func pathHashAtRoot(root, rel string) (string, bool) {
 	if _, err := os.Stat(p); err != nil {
 		return "", false
 	}
-	n, err := paths.Normalize(root, rel)
-	if err != nil {
-		return paths.Hash(p), true
-	}
-	return n.PathHash, true
+	return paths.PortableHash(rel), true
 }

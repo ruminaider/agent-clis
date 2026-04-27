@@ -23,6 +23,7 @@ import (
 	"sort"
 
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/domain"
+	"github.com/ruminaider/agent-clis/agent-ledger/internal/paths"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/project"
 )
 
@@ -163,7 +164,7 @@ func Build(ctx context.Context, in Inputs) (Document, error) {
 	}
 	pathSeen := map[string]PathRef{}
 	for _, c := range changes {
-		paths, err := in.Store.ChangePaths(ctx, c.ChangeID)
+		changePaths, err := in.Store.ChangePaths(ctx, c.ChangeID)
 		if err != nil {
 			return Document{}, fmt.Errorf("summary: load change paths: %w", err)
 		}
@@ -171,11 +172,15 @@ func Build(ctx context.Context, in Inputs) (Document, error) {
 		if v, ok := c.Metadata["retroactive"].(bool); ok {
 			retro = v
 		}
-		for _, p := range paths {
+		for _, p := range changePaths {
+			// Use the portable hash (sha256 of NFC-normalized relative path with
+			// forward slashes) so that verify --summary succeeds in any checkout
+			// regardless of the absolute realpath. SPEC §20.1, §32.
+			portableHash := paths.PortableHash(p.Path)
 			d.Changes = append(d.Changes, ChangeRef{
 				ChangeID:    c.ChangeID,
 				Path:        p.Path,
-				PathHash:    p.PathHash,
+				PathHash:    portableHash,
 				Status:      p.Status,
 				BeforeSHA:   p.BeforeSHA,
 				AfterSHA:    p.AfterSHA,
@@ -183,7 +188,7 @@ func Build(ctx context.Context, in Inputs) (Document, error) {
 				RecordedAt:  c.CreatedAt,
 				Retroactive: retro,
 			})
-			pathSeen[p.PathHash] = PathRef{Path: p.Path, PathHash: p.PathHash}
+			pathSeen[portableHash] = PathRef{Path: p.Path, PathHash: portableHash}
 		}
 	}
 	for _, ref := range pathSeen {

@@ -144,3 +144,12 @@ func Hash(p string) string {
 	sum := sha256.Sum256([]byte(norm.NFC.String(real)))
 	return hex.EncodeToString(sum[:])
 }
+
+// PortableHash returns sha256 hex of the NFC-normalized project-relative path
+// with forward slashes. Unlike [Hash], this value is stable across machines
+// because it depends only on the relative path, not on the absolute realpath.
+// Summaries must use this form so that verify --summary works in any checkout.
+func PortableHash(display string) string {
+	sum := sha256.Sum256([]byte(norm.NFC.String(display)))
+	return hex.EncodeToString(sum[:])
+}
