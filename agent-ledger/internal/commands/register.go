@@ -12,13 +12,16 @@ import (
 // remain unchanged.
 func Register(root *cobra.Command, streams Streams) {
 	replacements := map[string]func(Streams) *cobra.Command{
-		"identify":  NewIdentifyCommand,
-		"assign":    NewAssignCommand,
-		"claim":     NewClaimCommand,
-		"heartbeat": NewHeartbeatCommand,
-		"close":     NewCloseCommand,
-		"status":    NewStatusCommand,
-		"conflicts": NewConflictsCommand,
+		"identify":       NewIdentifyCommand,
+		"assign":         NewAssignCommand,
+		"claim":          NewClaimCommand,
+		"heartbeat":      NewHeartbeatCommand,
+		"close":          NewCloseCommand,
+		"status":         NewStatusCommand,
+		"conflicts":      NewConflictsCommand,
+		"record":         NewRecordCommand,
+		"adopt":          NewAdoptCommand,
+		"export-summary": NewExportSummaryCommand,
 	}
 	for _, child := range root.Commands() {
 		if build, ok := replacements[child.Name()]; ok {
