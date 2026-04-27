@@ -1,7 +1,7 @@
 package integration_test
 
 import (
-	"os"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -80,35 +80,47 @@ func TestMergeEnv_DuplicateBaseStripped(t *testing.T) {
 	}
 }
 
-// TestRunHelper_EnvOverrideWins is the original subprocess-level sanity check
-// confirming that the run() helper correctly applies the env override when
-// invoking the binary. It complements the unit tests above with an
-// end-to-end signal. References: finding rv2-new-002, packet RV3-002.
 func TestRunHelper_EnvOverrideWins(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short mode: skipping integration binary test")
 	}
 
-	// Arrange: place a sentinel in the parent environment.
-	t.Setenv("XDG_STATE_HOME", "/should-be-overridden")
+	parentXDG := t.TempDir()
+	overrideXDG := t.TempDir()
+	projectDir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", parentXDG)
 
-	dir := t.TempDir()
-	ledger := freshLedger(t)
+	r := run(t, projectDir, []string{"XDG_STATE_HOME=" + overrideXDG}, "doctor", "--json")
+	if r.Code != 0 {
+		t.Fatalf("doctor --json exited %d\nstdout=%s\nstderr=%s", r.Code, r.Stdout, r.Stderr)
+	}
 
-	// Override XDG_STATE_HOME to a writable temp dir so agent-ledger
-	// resolves cleanly. If the parent value wins, the path does not
-	// exist and commands fail with a config error.
-	overrideStateHome := os.TempDir()
-	result := run(t, dir,
-		[]string{
-			"XDG_STATE_HOME=" + overrideStateHome,
-			"AGENT_LEDGER_DIR=" + ledger,
-		},
-		"doctor",
-	)
-	// doctor exits 0 when config is valid. A non-zero exit means the
-	// XDG_STATE_HOME override was not applied (parent value leaked
-	// in as a duplicate and the last-wins heuristic did not help).
-	_ = result
-	_ = overrideStateHome
+	var rep struct {
+		Checks []struct {
+			Name    string         `json:"name"`
+			Status  string         `json:"status"`
+			Details map[string]any `json:"details"`
+		}
+	}
+	if err := json.Unmarshal([]byte(r.Stdout), &rep); err != nil {
+		t.Fatalf("parse doctor json: %v\nstdout=%s\nstderr=%s", err, r.Stdout, r.Stderr)
+	}
+
+	var ledgerPath string
+	for _, check := range rep.Checks {
+		if check.Name == "ledger_dir" {
+			if v, ok := check.Details["path"].(string); ok {
+				ledgerPath = v
+			}
+		}
+	}
+	if ledgerPath == "" {
+		t.Fatalf("ledger path not found in doctor json\nstdout=%s\nstderr=%s", r.Stdout, r.Stderr)
+	}
+	if !strings.HasPrefix(ledgerPath, overrideXDG) {
+		t.Fatalf("expected ledger path %q to be rooted under override %q", ledgerPath, overrideXDG)
+	}
+	if strings.HasPrefix(ledgerPath, parentXDG) {
+		t.Fatalf("expected ledger path %q not to be rooted under parent %q", ledgerPath, parentXDG)
+	}
 }
