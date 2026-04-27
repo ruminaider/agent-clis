@@ -1,0 +1,104 @@
+name: agent-ledger ci
+
+# Lint, test, race-detector, and cross-build for the agent-ledger CLI.
+# Triggers only on changes under agent-ledger/ or to this workflow itself,
+# so sibling tools in the monorepo do not pay for irrelevant runs.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "agent-ledger/**"
+      - ".github/workflows/agent-ledger-*.yml"
+  pull_request:
+    paths:
+      - "agent-ledger/**"
+      - ".github/workflows/agent-ledger-*.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: agent-ledger
+
+jobs:
+  lint-and-test:
+    name: lint and test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+          cache-dependency-path: agent-ledger/go.sum
+
+      - name: Print Go version
+        run: go version
+
+      - name: make check
+        env:
+          CGO_ENABLED: "0"
+        run: make check
+
+  test-race:
+    name: test (race detector)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+          cache-dependency-path: agent-ledger/go.sum
+
+      - name: go test -race
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race ./...
+
+  cross-build:
+    name: cross-build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: linux
+            goarch: amd64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+          cache-dependency-path: agent-ledger/go.sum
+
+      - name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: make build
+
+      - name: Show binary metadata
+        run: |
+          ls -la bin/
+          file bin/agent-ledger || true

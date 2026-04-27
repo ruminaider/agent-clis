@@ -1,0 +1,48 @@
+name: agent-ledger release-snapshot
+
+# Smoke-build the four-target snapshot on every PR that touches
+# agent-ledger and on manual dispatch. Publishes nothing. Real
+# releases live in agent-ledger-release.yml on v* tag pushes.
+on:
+  pull_request:
+    paths:
+      - "agent-ledger/**"
+      - ".github/workflows/agent-ledger-*.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    name: goreleaser snapshot
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+          cache-dependency-path: agent-ledger/go.sum
+
+      - name: Run goreleaser (snapshot)
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean --skip=publish
+          workdir: agent-ledger
+        env:
+          CGO_ENABLED: "0"
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-ledger-snapshot
+          path: agent-ledger/dist/*
+          if-no-files-found: error

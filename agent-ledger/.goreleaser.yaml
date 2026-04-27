@@ -1,0 +1,84 @@
+# Phase 1 goreleaser config for agent-ledger.
+#
+# Targets: darwin/arm64, darwin/amd64, linux/arm64, linux/amd64.
+# CGO disabled. The same config drives two flows:
+#
+#   - Local and PR snapshot: `goreleaser release --snapshot --clean --skip=publish`
+#     produces tar.gz archives plus a SHA256 checksums file under dist/
+#     and publishes nothing.
+#   - Tag release: `goreleaser release --clean` on a v* tag publishes the
+#     archives as a GitHub Release. The release workflow injects the
+#     auto-provided GITHUB_TOKEN; no user-configured secrets are needed.
+#
+# Phase 5 will add a Homebrew tap and signing. Until then archives are
+# unsigned.
+
+version: 2
+
+project_name: agent-ledger
+
+builds:
+  - id: agent-ledger
+    main: ./cmd/agent-ledger
+    binary: agent-ledger
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/ruminaider/agent-clis/agent-ledger/internal/version.Version={{.Version}}
+      - -X github.com/ruminaider/agent-clis/agent-ledger/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/ruminaider/agent-clis/agent-ledger/internal/version.BuildDate={{.Date}}
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: agent-ledger
+    ids:
+      - agent-ledger
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - SPEC.md
+      - docs/packaging.md
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "0.0.0-snapshot-{{ .ShortCommit }}"
+
+changelog:
+  disable: true
+
+release:
+  github:
+    owner: ruminaider
+    name: agent-clis
+  name_template: "agent-ledger {{ .Tag }}"
+  prerelease: auto  # tags like v0.1.0-rc1 publish as prereleases automatically
+  draft: false
+  header: |
+    `agent-ledger` {{ .Tag }} kernel slice release.
+
+    Static binaries built from commit `{{ .ShortCommit }}` for darwin and
+    linux on arm64 and amd64. Archives are unsigned snapshots; a signed
+    Homebrew tap is planned for Phase 5.
+  footer: |
+    Verify after extracting:
+
+    ```
+    ./agent-ledger --version
+    ./agent-ledger doctor
+    ```
+
+    See `docs/walkthrough.md` for a full lifecycle example.
