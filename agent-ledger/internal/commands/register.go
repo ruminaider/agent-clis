@@ -22,6 +22,9 @@ func Register(root *cobra.Command, streams Streams) {
 		"record":         NewRecordCommand,
 		"adopt":          NewAdoptCommand,
 		"export-summary": NewExportSummaryCommand,
+		"gc":             NewGCCommand,
+		"migrate":        NewMigrateCommand,
+		"doctor":         NewDoctorCommand,
 	}
 	for _, child := range root.Commands() {
 		if build, ok := replacements[child.Name()]; ok {
