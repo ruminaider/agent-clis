@@ -12,12 +12,13 @@ yet available.
 
 ## Status
 
-Phase 1 (kernel slice) is under active development. This repository
-holds the Go CLI, SQLite-backed storage, JSONL audit mirror, and the
-`agent-ledger.verify.v1` contract. See `SPEC.md` and
-`tasks/phase-1-task-packet.md` for the roadmap. Adapters for pi,
-Claude Code, and Babysitter are planned for later phases and are not
-shipped here.
+Phase 1 (kernel slice) is feature-complete and pending merge. This
+repository holds the Go CLI, SQLite-backed storage, JSONL audit mirror,
+and the `agent-ledger.verify.v1` contract. See `SPEC.md` and
+`tasks/phase-1-task-packet.md` for the roadmap, `CHANGELOG.md` for
+release notes, and `docs/walkthrough.md` for the full lifecycle.
+Adapters for pi, Claude Code, and Babysitter are planned for later
+phases and are not shipped here.
 
 ## Quick start
 
@@ -120,7 +121,10 @@ doctor         Run environment and storage diagnostics
 
 Add `--json` to any command to receive a machine-readable error envelope
 on failure (`{status, code, message, details}`). Exit codes are stable
-and defined in `SPEC.md` §19.1.
+and defined in `SPEC.md` §19.1; see `docs/exit-codes.md` for the
+per-command quick reference and `docs/finding-codes.md` for the
+`verify` finding catalogue. For an end-to-end lifecycle walkthrough,
+see `docs/walkthrough.md`.
 
 Phase 2+ adapters (pi, Claude Code, Babysitter) are planned but not yet
 shipped. Use the CLI directly for now.

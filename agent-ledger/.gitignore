@@ -15,3 +15,6 @@ testdata/tmp/
 # Editor / OS
 .DS_Store
 *.swp
+
+# Babysitter cycle run artifacts (local audit trail; not source)
+/.a5c/runs/
