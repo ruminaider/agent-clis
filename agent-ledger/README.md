@@ -58,9 +58,23 @@ project pointer file. Defaults follow the XDG Base Directory spec.
 
 | Variable           | Default                              | Purpose |
 | ------------------ | ------------------------------------ | ------- |
-| `AGENT_LEDGER_DIR` | `${XDG_DATA_HOME:-$HOME/.local/share}/agent-ledger` | Override the ledger directory. |
-| `XDG_DATA_HOME`    | `$HOME/.local/share`                 | Standard XDG override. |
-| `XDG_CONFIG_HOME`  | `$HOME/.config`                      | Standard XDG override. |
+| `AGENT_LEDGER_DIR` | `${XDG_STATE_HOME:-$HOME/.local/state}/agent-ledger` | Override the ledger root directory. |
+| `XDG_STATE_HOME`   | `$HOME/.local/state`                 | Standard XDG override for ledger storage (per SPEC §8). |
+
+Within the ledger root, each project's data lives under a per-repo
+subdirectory keyed by slug and fingerprint:
+
+```text
+$XDG_STATE_HOME/agent-ledger/repos/<project-slug>-<project-fingerprint>/
+```
+
+The `<project-slug>` is sanitized from the project id or git origin, and
+`<project-fingerprint>` is the 24-character SHA-256 prefix described in
+SPEC §8.1. Setting `AGENT_LEDGER_DIR` overrides the entire ledger root
+(the `repos/<slug>-<fingerprint>/` layout still applies beneath it).
+
+> Note: `XDG_CONFIG_HOME` is not consulted by `agent-ledger`; ledger
+> data follows `XDG_STATE_HOME` exclusively.
 
 ### Project pointer
 
