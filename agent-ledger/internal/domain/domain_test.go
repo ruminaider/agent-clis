@@ -57,9 +57,6 @@ func TestInsertAssignment_UnsafeReason(t *testing.T) {
 	if !errors.Is(err, domain.ErrUnsafeReason) {
 		t.Fatalf("expected errors.Is(err, domain.ErrUnsafeReason) to be true, got err=%v", err)
 	}
-	if strings.Contains(err.Error(), "\n") {
-		t.Fatalf("err.Error() should be single line, got %q", err.Error())
-	}
 }
 
 // TestInsertAssignment_UnsafeReason_PreservesPrivacyType asserts that the
@@ -81,6 +78,9 @@ func TestInsertAssignment_UnsafeReason_PreservesPrivacyType(t *testing.T) {
 		Reason:         unsafeReason,
 	})
 	assertUnsafeReasonError(t, err, "assignment.reason")
+	if strings.Contains(err.Error(), "\n") {
+		t.Fatalf("err.Error() should be single line, got %q", err.Error())
+	}
 }
 
 // TestInsertIntent_UnsafeReason mirrors TestInsertAssignment_UnsafeReason
