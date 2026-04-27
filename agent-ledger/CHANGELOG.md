@@ -10,6 +10,8 @@ of the binary version.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-04-27
+
 ### Phase 1 kernel slice
 
 The first complete kernel implementation. Harness-neutral: pi, Claude
@@ -117,4 +119,5 @@ Code, and Babysitter adapters arrive in later phases.
   published `*_checksums.txt` file. A Homebrew tap with signed
   binaries is a Phase 5 deliverable.
 
-[Unreleased]: https://github.com/ruminaider/agent-clis/compare/main...HEAD
+[Unreleased]: https://github.com/ruminaider/agent-clis/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.0
