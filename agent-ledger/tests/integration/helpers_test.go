@@ -59,8 +59,9 @@ type runResult struct {
 // mergeEnv merges base and override env slices so that for any key
 // present in override, the override value wins and all base entries
 // for that key are dropped. Base entries whose keys do not appear in
-// override are preserved with duplicates reduced to the first
-// occurrence. The result is base-first, overrides appended at the end.
+// override are preserved in original order, including non-overridden
+// duplicates, matching exec.Cmd.Env's documented last-wins-at-child-
+// level semantics. The result is base-first, overrides appended at the end.
 //
 // This is a pure function used by run() and tested directly by
 // TestMergeEnv_* to ensure the precedence logic cannot regress
@@ -73,9 +74,7 @@ func mergeEnv(base, override []string) []string {
 			overrideKeys[e[:idx]] = struct{}{}
 		}
 	}
-	// Strip base entries whose key matches an override, and reduce
-	// any duplicate base keys to the first occurrence.
-	seen := make(map[string]struct{}, len(base))
+	// Strip base entries whose key matches an override.
 	filtered := make([]string, 0, len(base))
 	for _, e := range base {
 		key := e
@@ -85,13 +84,30 @@ func mergeEnv(base, override []string) []string {
 		if _, skip := overrideKeys[key]; skip {
 			continue
 		}
-		if _, dup := seen[key]; dup {
-			continue
-		}
-		seen[key] = struct{}{}
 		filtered = append(filtered, e)
 	}
 	return append(filtered, override...)
+}
+
+func TestMergeEnv_PreservesNonOverriddenBaseDuplicates(t *testing.T) {
+	base := []string{"A=1", "X=keep1", "X=keep2", "B=2"}
+	override := []string{"A=99"}
+	result := mergeEnv(base, override)
+
+	if got := strings.Count(strings.Join(result, "\n"), "A=99"); got != 1 {
+		t.Fatalf("expected A=99 exactly once, got %d in result=%v", got, result)
+	}
+	for _, want := range []string{"X=keep1", "X=keep2", "B=2"} {
+		if !containsString(result, want) {
+			t.Fatalf("expected %q in result=%v", want, result)
+		}
+	}
+	if containsString(result, "A=1") {
+		t.Fatalf("expected A=1 to be dropped, result=%v", result)
+	}
+	if idx(result, "X=keep1") > idx(result, "X=keep2") {
+		t.Fatalf("expected X duplicates in original order, result=%v", result)
+	}
 }
 
 // run executes the agent-ledger binary in dir with the given args.
@@ -158,4 +174,22 @@ func freshLedger(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+func containsString(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
+}
+
+func idx(xs []string, want string) int {
+	for i, x := range xs {
+		if x == want {
+			return i
+		}
+	}
+	return -1
 }
