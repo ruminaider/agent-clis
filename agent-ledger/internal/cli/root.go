@@ -49,8 +49,10 @@ func NewRootCommand(streams IOStreams) *cobra.Command {
 
 	root.PersistentFlags().BoolVar(&flags.JSON, "json", false, "Render output as JSON where supported")
 
-	// Custom version template: just the version string plus newline.
-	root.SetVersionTemplate("{{.Version}}\n")
+	// Custom version template: full version line (Version, Commit, BuildDate)
+	// plus newline. The Version field on cobra is set above for completeness,
+	// but the rendered template uses the version package's canonical String().
+	root.SetVersionTemplate(version.String() + "\n")
 
 	realCommands := map[string]func(IOStreams, *rootFlags) *cobra.Command{
 		"init":    newInitCommand,

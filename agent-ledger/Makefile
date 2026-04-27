@@ -1,4 +1,4 @@
-.PHONY: fmt fmt-check vet test test-short test-race test-integration coverage build check clean
+.PHONY: fmt fmt-check vet test test-short test-race test-integration coverage build check clean release-snapshot
 
 PKG := ./...
 BIN_DIR := bin
@@ -6,8 +6,20 @@ BINARY := $(BIN_DIR)/agent-ledger
 CMD := ./cmd/agent-ledger
 
 # CGO disabled for static-friendly builds. Later tasks may re-enable for
-# SQLite via mattn/go-sqlite3, but Phase 1 Task 001 stays pure-Go.
+# SQLite via mattn/go-sqlite3, but Phase 1 stays pure-Go (modernc).
 export CGO_ENABLED ?= 0
+
+# Version metadata, injected via -ldflags. Falls back to "dev" / "unknown"
+# when git is unavailable (for example, in an extracted source tarball).
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+
+VERSION_PKG := github.com/ruminaider/agent-clis/agent-ledger/internal/version
+LDFLAGS := -s -w \
+	-X $(VERSION_PKG).Version=$(VERSION) \
+	-X $(VERSION_PKG).Commit=$(COMMIT) \
+	-X $(VERSION_PKG).BuildDate=$(DATE)
 
 fmt:
 	gofmt -w .
@@ -50,9 +62,15 @@ coverage:
 
 build:
 	@mkdir -p $(BIN_DIR)
-	go build -o $(BINARY) $(CMD)
+	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) $(CMD)
 
 check: fmt-check vet test build
+
+# release-snapshot builds the four-target Phase 1 archive set under dist/
+# without publishing. Requires goreleaser; see scripts/release-snapshot.sh
+# for installation steps.
+release-snapshot:
+	./scripts/release-snapshot.sh
 
 clean:
 	rm -rf $(BIN_DIR) dist

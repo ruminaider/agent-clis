@@ -1,0 +1,61 @@
+# Phase 1 snapshot-only goreleaser config for agent-ledger.
+#
+# Targets: darwin/arm64, darwin/amd64, linux/arm64, linux/amd64.
+# CGO disabled. No publishing: the Phase 1 release flow runs
+# `goreleaser release --snapshot --clean --skip-publish` to produce
+# tar.gz archives plus a SHA256 checksums file under dist/.
+#
+# Phase 5 will introduce a Homebrew tap and signing. Until then, the
+# archives are unsigned and the workflow requires no secrets.
+
+version: 2
+
+project_name: agent-ledger
+
+builds:
+  - id: agent-ledger
+    main: ./cmd/agent-ledger
+    binary: agent-ledger
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/ruminaider/agent-clis/agent-ledger/internal/version.Version={{.Version}}
+      - -X github.com/ruminaider/agent-clis/agent-ledger/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/ruminaider/agent-clis/agent-ledger/internal/version.BuildDate={{.Date}}
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: agent-ledger
+    ids:
+      - agent-ledger
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - SPEC.md
+      - docs/packaging.md
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "0.0.0-snapshot-{{ .ShortCommit }}"
+
+changelog:
+  disable: true
+
+# Phase 1 explicitly publishes nothing. Phase 5 will add a release block
+# and a Homebrew tap.
+release:
+  disable: true
