@@ -45,8 +45,8 @@ func TestRootVersionIsNonEmpty(t *testing.T) {
 }
 
 func TestStubCommandsReturnExit3(t *testing.T) {
-	// init and doctor are now wired; everything else is still stubbed.
-	wired := map[string]bool{"init": true, "doctor": true}
+	// init, doctor, and migrate are now wired; everything else is still stubbed.
+	wired := map[string]bool{"init": true, "doctor": true, "migrate": true}
 	for _, name := range Phase1Commands() {
 		if wired[name] {
 			continue

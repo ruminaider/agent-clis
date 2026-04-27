@@ -53,8 +53,9 @@ func NewRootCommand(streams IOStreams) *cobra.Command {
 	root.SetVersionTemplate("{{.Version}}\n")
 
 	realCommands := map[string]func(IOStreams, *rootFlags) *cobra.Command{
-		"init":   newInitCommand,
-		"doctor": newDoctorCommand,
+		"init":    newInitCommand,
+		"doctor":  newDoctorCommand,
+		"migrate": newMigrateCommand,
 	}
 	for _, name := range Phase1Commands() {
 		if build, ok := realCommands[name]; ok {
