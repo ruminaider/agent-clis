@@ -595,6 +595,10 @@ func TestVerify_ExitCodes(t *testing.T) {
 		{"config_error", verify.Report{Status: verify.StatusError, Findings: []verify.Finding{{Code: verify.CodeConfigError}}}, 2},
 		{"storage_error", verify.Report{Status: verify.StatusError, Findings: []verify.Finding{{Code: verify.CodeStorageError}}}, 3},
 		{"needs_decision", verify.Report{Status: verify.StatusNeedsDecision}, 4},
+		// RV2-006: StatusError without a typed code falls back to exit 2
+		// (ExitConfigError) per SPEC §19.1. An untyped error originates from
+		// misconfiguration that did not produce a CODE_ERROR finding.
+		{"error_no_code", verify.Report{Status: verify.StatusError}, 2},
 		// RV2-001: conflict + storage_error still routes to exit 3 via StatusError.
 		{"conflict_and_storage_error", verify.Report{
 			Status: verify.StatusError,

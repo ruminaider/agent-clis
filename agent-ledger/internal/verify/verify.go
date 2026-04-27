@@ -213,7 +213,12 @@ func (r *Report) ExitCode() int {
 				return 3
 			}
 		}
-		return 1
+		// No CONFIG_ERROR or STORAGE_ERROR finding is present. An
+		// untyped StatusError originates from a misconfiguration that
+		// did not produce a specific finding code (e.g. an unexpected
+		// error from a library). Map to ExitConfigError (2) so the
+		// caller has a stable, spec-defined signal. SPEC §19.1.
+		return 2
 	}
 	return 1
 }
