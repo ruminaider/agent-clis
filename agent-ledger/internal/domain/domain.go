@@ -279,11 +279,13 @@ func (s *Store) AgentExists(ctx context.Context, agentID string) (bool, error) {
 }
 
 // InsertAssignment writes an assignments row plus a task.assigned event.
-// It returns ErrUnsafeReason (wrapped) if a.Reason contains a known
-// secret pattern (privacy.AssertSafe, SPEC §17).
+// It returns ErrUnsafeReason joined with the original privacy error if
+// a.Reason contains a known secret pattern (privacy.AssertSafe, SPEC §17).
+// Both errors.Is(err, domain.ErrUnsafeReason) and
+// errors.As(err, &privacy.SecretError{}) succeed on the returned error.
 func (s *Store) InsertAssignment(ctx context.Context, a Assignment) (Assignment, error) {
 	if err := privacy.AssertSafe("assignment.reason", a.Reason); err != nil {
-		return a, fmt.Errorf("%w: %s", ErrUnsafeReason, err)
+		return a, errors.Join(ErrUnsafeReason, err)
 	}
 	if a.AssignmentID == "" {
 		nid, err := s.S.IDGen().New(id.PrefixAssignment)
@@ -373,11 +375,13 @@ func (s *Store) LatestActiveAssignmentForTask(ctx context.Context, taskID string
 
 // InsertIntent writes an intents row plus intent_paths plus an
 // intent.opened event in one transaction.
-// It returns ErrUnsafeReason (wrapped) if in.Reason contains a known
-// secret pattern (privacy.AssertSafe, SPEC §17).
+// It returns ErrUnsafeReason joined with the original privacy error if
+// in.Reason contains a known secret pattern (privacy.AssertSafe, SPEC §17).
+// Both errors.Is(err, domain.ErrUnsafeReason) and
+// errors.As(err, &privacy.SecretError{}) succeed on the returned error.
 func (s *Store) InsertIntent(ctx context.Context, in Intent, ipaths []IntentPath) (Intent, error) {
 	if err := privacy.AssertSafe("intent.reason", in.Reason); err != nil {
-		return in, fmt.Errorf("%w: %s", ErrUnsafeReason, err)
+		return in, errors.Join(ErrUnsafeReason, err)
 	}
 	if in.IntentID == "" {
 		nid, err := s.S.IDGen().New(id.PrefixIntent)
