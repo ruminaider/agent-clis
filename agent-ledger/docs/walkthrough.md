@@ -5,8 +5,10 @@ project init, identity, assignment, claim, change recording, close,
 verify, and clean-checkout summary verification. It is the canonical
 example for adapter authors and for new users evaluating the CLI.
 
-All commands assume `agent-ledger` is on your `PATH`. Replace it with
-`./bin/agent-ledger` when running from a source build.
+All commands assume `agent-ledger` is on your `PATH`. Install it with
+`go install github.com/ruminaider/agent-clis/agent-ledger/cmd/agent-ledger@latest`,
+from a tagged release archive on GitHub Releases, or from a source
+build (see `README.md`).
 
 ## 0. Prerequisites
 

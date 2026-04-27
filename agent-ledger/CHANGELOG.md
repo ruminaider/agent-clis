@@ -72,9 +72,11 @@ Code, and Babysitter adapters arrive in later phases.
   Local-only (no publishing, no secrets). Homebrew tap and signing
   deferred to Phase 5.
 - GitHub Actions workflows: `ci.yml` runs `make check` and a 4-target
-  cross-build matrix, plus a `go test -race` job. `release-snapshot.yml`
-  exercises GoReleaser on every pull request and on `v*` tags. No CI
-  workflow requires repository secrets.
+  cross-build matrix, plus a `go test -race` job.
+  `release-snapshot.yml` exercises GoReleaser on every pull request
+  without publishing. `release.yml` publishes a real GitHub Release
+  on `v*` tag push using the auto-provided `GITHUB_TOKEN`. No
+  user-configured secrets are required at any stage.
 - Subprocess integration test suite under `tests/integration/`
   covering concurrent claims (disjoint, warn, exclusive), secret
   fixture leak scans, stable verify and summary JSON schemas,
@@ -100,7 +102,8 @@ Code, and Babysitter adapters arrive in later phases.
   debugging. `AssertSafe` is pattern-based, not cryptographic; agents
   must not embed secrets in reason fields regardless of the guard.
   A scrubbing pass is on the Phase 5 backlog.
-- Release archives are unsigned snapshots. A Homebrew tap with signed
+- Release archives are unsigned. Verify downloads against the
+  published `*_checksums.txt` file. A Homebrew tap with signed
   binaries is a Phase 5 deliverable.
 
 [Unreleased]: https://github.com/ruminaider/agent-clis/compare/main...HEAD

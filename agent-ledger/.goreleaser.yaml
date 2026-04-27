@@ -1,12 +1,17 @@
-# Phase 1 snapshot-only goreleaser config for agent-ledger.
+# Phase 1 goreleaser config for agent-ledger.
 #
 # Targets: darwin/arm64, darwin/amd64, linux/arm64, linux/amd64.
-# CGO disabled. No publishing: the Phase 1 release flow runs
-# `goreleaser release --snapshot --clean --skip-publish` to produce
-# tar.gz archives plus a SHA256 checksums file under dist/.
+# CGO disabled. The same config drives two flows:
 #
-# Phase 5 will introduce a Homebrew tap and signing. Until then, the
-# archives are unsigned and the workflow requires no secrets.
+#   - Local and PR snapshot: `goreleaser release --snapshot --clean --skip=publish`
+#     produces tar.gz archives plus a SHA256 checksums file under dist/
+#     and publishes nothing.
+#   - Tag release: `goreleaser release --clean` on a v* tag publishes the
+#     archives as a GitHub Release. The release workflow injects the
+#     auto-provided GITHUB_TOKEN; no user-configured secrets are needed.
+#
+# Phase 5 will add a Homebrew tap and signing. Until then archives are
+# unsigned.
 
 version: 2
 
@@ -55,7 +60,25 @@ snapshot:
 changelog:
   disable: true
 
-# Phase 1 explicitly publishes nothing. Phase 5 will add a release block
-# and a Homebrew tap.
 release:
-  disable: true
+  github:
+    owner: ruminaider
+    name: agent-clis
+  name_template: "agent-ledger {{ .Tag }}"
+  prerelease: auto  # tags like v0.1.0-rc1 publish as prereleases automatically
+  draft: false
+  header: |
+    `agent-ledger` {{ .Tag }} kernel slice release.
+
+    Static binaries built from commit `{{ .ShortCommit }}` for darwin and
+    linux on arm64 and amd64. Archives are unsigned snapshots; a signed
+    Homebrew tap is planned for Phase 5.
+  footer: |
+    Verify after extracting:
+
+    ```
+    ./agent-ledger --version
+    ./agent-ledger doctor
+    ```
+
+    See `docs/walkthrough.md` for a full lifecycle example.

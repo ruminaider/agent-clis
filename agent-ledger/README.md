@@ -22,19 +22,37 @@ phases and are not shipped here.
 
 ## Quick start
 
-### Prebuilt binary
+### Install with `go install`
 
-Phase 1 ships unsigned snapshot archives for darwin/arm64, darwin/amd64,
-linux/arm64, and linux/amd64. Download an archive from your local
-snapshot build (see `docs/packaging.md`), extract it, then run:
+Requires Go 1.22 or newer.
 
 ```bash
-./agent-ledger --version
-./agent-ledger doctor
-./agent-ledger --help
+go install github.com/ruminaider/agent-clis/agent-ledger/cmd/agent-ledger@latest
+agent-ledger --version
 ```
 
-A signed Homebrew tap is planned for Phase 5.
+`go install` does not inject build metadata, so `--version` will print
+`0.0.0-dev` with empty commit and build-date fields. Functionally
+identical to a tagged build; cosmetic only.
+
+### Download a release archive
+
+Tagged releases (`v*`) publish unsigned tar.gz archives for darwin and
+linux on arm64 and amd64 to GitHub Releases. Download the archive for
+your platform, extract it, and place the binary on your `PATH`:
+
+```bash
+VERSION=v0.1.0
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')   # darwin or linux
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+curl -fL "https://github.com/ruminaider/agent-clis/releases/download/${VERSION}/agent-ledger_${VERSION}_${OS}_${ARCH}.tar.gz" \
+  | tar -xz
+mkdir -p "$HOME/.local/bin" && mv agent-ledger "$HOME/.local/bin/"
+agent-ledger --version
+```
+
+Verify the archive against `agent-ledger_${VERSION}_checksums.txt`
+from the same release. A signed Homebrew tap is planned for Phase 5.
 
 ### Build from source
 
@@ -44,7 +62,8 @@ Requires Go 1.22 or newer. Builds are CGO-free.
 git clone https://github.com/ruminaider/agent-clis.git
 cd agent-clis/agent-ledger
 make build
-./bin/agent-ledger --version
+cp bin/agent-ledger "$HOME/.local/bin/"
+agent-ledger --version
 ```
 
 `--version` prints `agent-ledger version <Version> commit <Commit> built <BuildDate>`,

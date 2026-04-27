@@ -67,19 +67,49 @@ If goreleaser is not installed, see `scripts/release-snapshot.sh` for
 install instructions (`go install github.com/goreleaser/goreleaser/v2@latest`
 or `brew install goreleaser`).
 
+## Tagged releases
+
+Real releases publish unsigned tar.gz archives for the four supported
+targets to GitHub Releases. The flow:
+
+```bash
+# From a clean working tree on a merged main:
+git tag -a v0.1.0 -m "Phase 1 kernel slice"
+git push origin v0.1.0
+```
+
+The `release.yml` workflow runs goreleaser without `--snapshot`,
+publishes the four archives plus the SHA256 checksums file as the
+release assets, and includes a release body templated from
+`.goreleaser.yaml`. Users then download from
+`https://github.com/ruminaider/agent-clis/releases/tag/v0.1.0`.
+
+Tags shaped like `v0.1.0-rc1` automatically publish as prereleases
+(see `release.prerelease: auto` in `.goreleaser.yaml`).
+
+To cut a release locally without pushing a tag, use the
+`workflow_dispatch` trigger on `release.yml` from the GitHub Actions
+UI.
+
 ## CI workflows
 
-Two GitHub Actions workflows live under `.github/workflows/`:
+Three GitHub Actions workflows live under `.github/workflows/`:
 
 1. `ci.yml`: runs on every push and pull request.
    - `lint-and-test`: `make check` (gofmt, vet, test, build).
    - `cross-build`: matrix build for the four supported targets.
-2. `release-snapshot.yml`: runs on tag pushes (`v*`) or via manual
+   - `race-test`: `go test -race -count=1 ./...`.
+2. `release-snapshot.yml`: runs on every pull request and on manual
    `workflow_dispatch`. Executes `goreleaser release --snapshot --clean --skip=publish`
-   and uploads `dist/` as a workflow artifact.
+   and uploads `dist/` as a workflow artifact. Publishes nothing.
+3. `release.yml`: runs on `v*` tag pushes and on manual
+   `workflow_dispatch`. Executes `goreleaser release --clean` and
+   creates a GitHub Release with the four archives and checksum file
+   attached.
 
-Neither workflow references any GitHub Actions secret. You can grep
-`.github/workflows/` for `secrets.` and confirm.
+`ci.yml` and `release-snapshot.yml` reference no secrets. `release.yml`
+uses the auto-provided `${{ secrets.GITHUB_TOKEN }}` to create the
+release. No user-configured secrets are required at any stage.
 
 ## Verifying an installation
 
@@ -100,7 +130,9 @@ The following are explicitly deferred to Phase 5:
 
 - Homebrew tap and `brew install agent-ledger` flow.
 - Code signing for darwin (notarization) and Linux (cosign / minisign).
-- Publishing GitHub releases with auto-generated changelogs.
+- Auto-generated changelogs in the release body (currently the body
+  is templated from `.goreleaser.yaml`'s `release.header` and
+  `release.footer`).
 
-The Phase 1 `.goreleaser.yaml` keeps `release.disable: true` so it is
-impossible to publish accidentally before those stages are designed.
+Until signing lands, release archives are unsigned. Users should
+verify downloads against the published `*_checksums.txt` file.

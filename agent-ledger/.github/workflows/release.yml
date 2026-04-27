@@ -1,0 +1,44 @@
+name: release
+
+# Publish a GitHub Release with darwin/linux x arm64/amd64 archives when a
+# v* tag is pushed. Tag the agent-ledger module with `v<semver>` (for
+# example v0.1.0). Snapshot smoke continues to run on every PR via
+# release-snapshot.yml; this workflow only fires for real releases.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # required for goreleaser to create the GitHub Release
+
+jobs:
+  release:
+    name: goreleaser publish
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent-ledger
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # goreleaser needs full history to derive the version
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+
+      - name: Run goreleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+          workdir: agent-ledger
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CGO_ENABLED: "0"

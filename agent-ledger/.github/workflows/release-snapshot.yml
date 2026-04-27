@@ -1,9 +1,9 @@
 name: release-snapshot
 
+# Smoke-build the four-target snapshot on every pull request and on
+# manual dispatch, without publishing. Real releases live in
+# release.yml and trigger on v* tag pushes.
 on:
-  push:
-    tags:
-      - "v*"
   pull_request:
   workflow_dispatch:
 
@@ -14,6 +14,9 @@ jobs:
   snapshot:
     name: goreleaser snapshot
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent-ledger
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -32,6 +35,7 @@ jobs:
           distribution: goreleaser
           version: "~> v2"
           args: release --snapshot --clean --skip=publish
+          workdir: agent-ledger
         env:
           CGO_ENABLED: "0"
 
@@ -39,5 +43,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: agent-ledger-snapshot
-          path: dist/*
+          path: agent-ledger/dist/*
           if-no-files-found: error
