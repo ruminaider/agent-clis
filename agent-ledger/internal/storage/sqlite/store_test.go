@@ -60,12 +60,23 @@ func TestMigrate_Idempotent(t *testing.T) {
 	if v1 != v2 {
 		t.Fatalf("schema version drifted on rerun: %d != %d", v1, v2)
 	}
-	var n int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
+	var countBefore int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&countBefore); err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 {
-		t.Fatalf("schema_migrations rows = %d, want 1", n)
+	if countBefore != v2 {
+		t.Fatalf("schema_migrations row count = %d, want %d (matches schema version)", countBefore, v2)
+	}
+	// Re-running Up must not insert duplicate schema_migrations rows.
+	if err := s.Migrator().Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var countAfter int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&countAfter); err != nil {
+		t.Fatal(err)
+	}
+	if countAfter != countBefore {
+		t.Fatalf("schema_migrations rows changed across reruns: %d -> %d", countBefore, countAfter)
 	}
 }
 

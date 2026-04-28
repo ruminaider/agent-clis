@@ -10,6 +10,68 @@ of the binary version.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-04-28
+
+### Kernel: structured audit + assignment invariant
+
+This is a kernel-only patch alongside the v0.2.0-rc2 adapters: it
+adds the structured audit surface and assignment uniqueness
+guarantee the adapters depend on. The adapter scaffold
+(v0.2.0-rc2) keeps working against v0.1.0 binaries via the existing
+reason-text marker fallback, but `agent-ledger >= 0.1.1` is
+recommended on the same machine that runs the pi extension.
+
+#### Added
+
+- `agent-ledger assign --metadata <json>`: optional JSON object
+  flag merged into the assignment's `metadata_json` column. Adapters
+  use this to write structured `auto_assigned`, `auto_assigned_by`,
+  `task_source`, and `parent_task` fields so reviewers can query
+  the audit trail without regex-matching the reason text.
+- `agent-ledger assignments [--task <id>] [--orchestrator <id>]
+  [--agent <id>] [--status active|superseded|closed|all] [--limit
+  <n>] [--json]`: new query command for the historical contract
+  surface. JSON output includes a `reason_marker` field that
+  classifies each row as `auto`, `harness-derived`, or `explicit`.
+- `internal/migrations/embed/0002_unique_active_assignment.sql`:
+  partial unique index on `assignments(task_id, assigned_agent_id)
+  WHERE status='active'`. Migration includes a deterministic
+  preflight that demotes pre-existing duplicate active rows to
+  `status='superseded'` (keeping the most-recent row active) so
+  ledgers carrying duplicates from the v0.1.0 F9 race upgrade
+  cleanly.
+
+#### Changed (breaking)
+
+- Plain `agent-ledger assign` is now strict: a second active
+  assignment for the same `(task_id, assigned_agent_id)` returns
+  `ExitConflict (4)` with code `assignment_exists`. Use
+  `--if-absent` for idempotent replay or close the prior assignment
+  first. This closes F9 from PR #8 and matches SPEC §16's intent
+  that an assignment is the orchestrator's contract for a task.
+- `--if-absent`'s replay predicate now compares
+  `(task, agent, orchestrator, policy, reason, allow, forbid,
+  metadata)` rather than just `(task, agent, policy, allow, forbid)`.
+  Audit-bearing metadata cannot be silently reused under a stale
+  older row that lacked it. Programmatic callers that depended on
+  the looser predicate must either supply matching metadata or
+  close the prior assignment.
+- `--if-absent` now retries its lookup if the unique index races it,
+  so true concurrent bootstraps reuse the winner's assignment
+  cleanly instead of one process exiting non-zero.
+
+#### Adapter changes (compatible with rc2)
+
+- `agent-ledger/adapters/shared/session-bootstrap.sh` probes
+  `agent-ledger assign --help` for `--metadata` support and writes
+  structured metadata when available. Falls back silently against
+  v0.1.0 kernels (reason marker only).
+- The bootstrap now passes `--if-absent` for harness-derived and
+  auto-fallback assignments so idempotent replays do not multiply
+  rows.
+- `agent-ledger/docs/adapters.md` audit-query examples switched
+  from raw SQLite reads to `agent-ledger assignments` invocations.
+
 ## [0.2.0-rc2] - 2026-04-27
 
 ### Phase 2 adapters: harness-aware task id resolution
@@ -231,7 +293,8 @@ Code, and Babysitter adapters arrive in later phases.
   published `*_checksums.txt` file. A Homebrew tap with signed
   binaries is a Phase 5 deliverable.
 
-[Unreleased]: https://github.com/ruminaider/agent-clis/compare/v0.2.0-rc2...HEAD
+[Unreleased]: https://github.com/ruminaider/agent-clis/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.1
 [0.2.0-rc2]: https://github.com/ruminaider/agent-clis/releases/tag/v0.2.0-rc2
 [0.2.0-rc1]: https://github.com/ruminaider/agent-clis/releases/tag/v0.2.0-rc1
 [0.1.0]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.0

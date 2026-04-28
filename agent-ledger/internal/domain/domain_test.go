@@ -11,6 +11,7 @@ import (
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/domain"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/privacy"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/storage/sqlite"
+	sqlitedrv "modernc.org/sqlite"
 )
 
 func openStore(t *testing.T) *sqlite.Store {
@@ -137,5 +138,53 @@ func assertUnsafeReasonError(t *testing.T, err error, wantLabel string) {
 	}
 	if typed.Label != wantLabel {
 		t.Fatalf("SecretError.Label=%q want %q", typed.Label, wantLabel)
+	}
+}
+
+func TestInsertAssignmentUniqueDetectionIsScopedToTaskAgentIndex(t *testing.T) {
+	s := openStore(t)
+	d := domain.New(s)
+	ctx := context.Background()
+
+	base := domain.Assignment{
+		AssignmentID:    "asg-1",
+		EventID:         "evt-1",
+		TaskID:          "task-1",
+		OrchestratorID:  "orch-1",
+		AssignedAgentID: "agent-1",
+		AllowedPaths:    []string{"src/**"},
+		ConflictPolicy:  domain.PolicyWarn,
+		Reason:          "ok",
+	}
+	if _, err := d.InsertAssignment(ctx, base); err != nil {
+		t.Fatalf("insert base: %v", err)
+	}
+
+	do := base
+	do.AssignmentID = "asg-2"
+	do.EventID = "evt-2"
+	if _, err := d.InsertAssignment(ctx, do); !errors.Is(err, domain.ErrAssignmentExists) {
+		t.Fatalf("expected ErrAssignmentExists for duplicate active task/agent, got %v", err)
+	}
+
+	var se *sqlitedrv.Error
+	if _, err := d.InsertAssignment(ctx, do); !errors.As(err, &se) || se.Code() != 2067 {
+		t.Fatalf("expected sqlite unique error 2067 for duplicate active row, got %v", err)
+	}
+
+	pk := domain.Assignment{
+		AssignmentID:    "asg-1",
+		EventID:         "evt-3",
+		TaskID:          "task-2",
+		OrchestratorID:  "orch-2",
+		AssignedAgentID: "agent-2",
+		AllowedPaths:    []string{"src/**"},
+		ConflictPolicy:  domain.PolicyWarn,
+		Reason:          "ok",
+	}
+	if _, err := d.InsertAssignment(ctx, pk); err == nil {
+		t.Fatal("expected primary-key collision")
+	} else if errors.Is(err, domain.ErrAssignmentExists) {
+		t.Fatalf("primary-key collision should not map to ErrAssignmentExists: %v", err)
 	}
 }

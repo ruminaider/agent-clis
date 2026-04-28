@@ -3,26 +3,46 @@ package commands_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ruminaider/agent-clis/agent-ledger/internal/migrations"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/storage/sqlite"
 )
 
-// TestMigrateStatusFlag verifies migrate --status reports schema_version
-// and is read-only (idempotent: running twice still reports schema_version=1).
+// highestEmbeddedMigrationVersion returns the version of the latest
+// embedded migration. Tests use this so they do not need to be edited
+// every time a new migration is added.
+func highestEmbeddedMigrationVersion(t *testing.T) int {
+	t.Helper()
+	migs, err := migrations.All()
+	if err != nil {
+		t.Fatalf("migrations.All: %v", err)
+	}
+	if len(migs) == 0 {
+		t.Fatal("no migrations registered")
+	}
+	return migs[len(migs)-1].Version
+}
+
+// TestMigrateStatusFlag verifies migrate --status reports the current
+// schema_version (matching the highest embedded migration) and is
+// read-only / idempotent across reruns.
 func TestMigrateStatusFlag(t *testing.T) {
 	_, ledger := tempLedger(t)
+	want := highestEmbeddedMigrationVersion(t)
+	wantToken := fmt.Sprintf("schema_version=%d", want)
 	// Apply migrations once via the migrate command itself.
 	code, out, errStr := runCmd(t, ledger, nil, "migrate")
 	if code != 0 {
 		t.Fatalf("migrate: %d %s %s", code, out, errStr)
 	}
-	if !strings.Contains(out, "schema_version=1") {
-		t.Fatalf("expected schema_version=1, got %q", out)
+	if !strings.Contains(out, wantToken) {
+		t.Fatalf("expected %s, got %q", wantToken, out)
 	}
 	// --status mode: read-only, JSON.
 	code, out, _ = runCmd(t, ledger, nil, "migrate", "--status", "--json")
@@ -33,8 +53,8 @@ func TestMigrateStatusFlag(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &resp); err != nil {
 		t.Fatalf("json: %v %s", err, out)
 	}
-	if v, _ := resp["schema_version"].(float64); int(v) != 1 {
-		t.Fatalf("schema_version = %v", resp["schema_version"])
+	if v, _ := resp["schema_version"].(float64); int(v) != want {
+		t.Fatalf("schema_version = %v, want %d", resp["schema_version"], want)
 	}
 	applied, ok := resp["applied"].([]any)
 	if !ok || len(applied) == 0 {
@@ -46,7 +66,7 @@ func TestMigrateStatusFlag(t *testing.T) {
 }
 
 // TestMigrateIdempotent runs migrate twice and confirms the second run
-// is a no-op (still reports schema_version=1, no error).
+// is a no-op (no error).
 func TestMigrateIdempotent(t *testing.T) {
 	_, ledger := tempLedger(t)
 	for i := 0; i < 2; i++ {

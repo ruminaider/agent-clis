@@ -217,6 +217,32 @@ if [[ "$EXPLICIT" == "0" ]]; then
     allow_args+=( "$arg" )
   done < <(split_allow_args "$allow")
 
+  # Build structured metadata for v0.1.1+ kernels. The reason marker
+  # stays as a forward-compatible audit signal; the metadata JSON is
+  # the canonical surface for programmatic queries via the
+  # agent-ledger assignments command.
+  metadata_json="{\"auto_assigned\":$([[ "$TASK_SOURCE" == "auto" ]] && echo true || echo false)"
+  metadata_json="${metadata_json},\"auto_assigned_by\":\"$(json_escape "${HARNESS}-adapter")\""
+  metadata_json="${metadata_json},\"task_source\":\"$(json_escape "$TASK_SOURCE")\""
+  if [[ -n "$parent" ]]; then
+    metadata_json="${metadata_json},\"parent_task\":\"$(json_escape "$parent")\""
+  fi
+  metadata_json="${metadata_json}}"
+
+  # v0.1.1+ kernels require --metadata. Treat missing support as a hard
+  # compatibility error rather than silently dropping structured data.
+  metadata_args=( --metadata "$metadata_json" )
+  if assign_help="$(agent-ledger assign --help 2>&1)"; then
+    if ! grep -q -- "--metadata" <<<"$assign_help"; then
+      echo "session-bootstrap: agent-ledger assign --help does not advertise required --metadata capability (kernel v0.1.1+ required)" >&2
+      exit 5
+    fi
+  else
+    echo "session-bootstrap: agent-ledger assign --help failed, cannot verify required --metadata capability (kernel v0.1.1+ required)" >&2
+    printf '%s\n' "$assign_help" >&2
+    exit 5
+  fi
+
   if ! agent-ledger assign \
       --task "$TASK_ID" \
       --orchestrator "$orch" \
@@ -225,6 +251,7 @@ if [[ "$EXPLICIT" == "0" ]]; then
       "${allow_args[@]+"${allow_args[@]}"}" \
       --if-absent \
       --reason "$reason" \
+      "${metadata_args[@]+"${metadata_args[@]}"}" \
       "${ledger_args[@]+"${ledger_args[@]}"}" >&2
   then
     echo "session-bootstrap: agent-ledger assign failed (task=$TASK_ID)" >&2

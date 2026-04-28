@@ -22,6 +22,7 @@ import (
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/privacy"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/storage"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/storage/sqlite"
+	sqlitedrv "modernc.org/sqlite"
 )
 
 // Conflict policies (SPEC §15).
@@ -69,6 +70,16 @@ const (
 // that bypass the CLI layer. Callers should detect this sentinel with
 // errors.Is and map it to ExitConfigError (2).
 var ErrUnsafeReason = errors.New("domain: unsafe reason")
+
+// ErrAssignmentExists is returned by InsertAssignment when the unique
+// index on (task_id, assigned_agent_id) WHERE status='active' rejects
+// the insert because another active assignment already exists for the
+// same pair. Callers detect this sentinel with errors.Is and map it
+// to ExitConflict (4) with code "assignment_exists". The lookup-then-
+// reuse path lives in --if-absent and is the only sanctioned replay
+// surface; plain assign returning this error forces orchestrators to
+// be intentional about reassignment.
+var ErrAssignmentExists = errors.New("domain: active assignment already exists for this (task, agent) pair")
 
 // ValidPolicy reports whether p is one of the allowed conflict policies.
 func ValidPolicy(p string) bool {
@@ -211,7 +222,9 @@ func decodeMeta(raw string) map[string]any {
 		return map[string]any{}
 	}
 	var m map[string]any
-	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&m); err != nil {
 		return map[string]any{}
 	}
 	return m
@@ -348,7 +361,29 @@ func (s *Store) InsertAssignment(ctx context.Context, a Assignment) (Assignment,
 		`, a.AssignmentID, a.EventID, a.TaskID, a.OrchestratorID, nullable(a.AssignedAgentID), allowed, forbid, a.ConflictPolicy, a.Reason, a.Status, a.CreatedAt, meta)
 		return ierr
 	})
+	if isActiveAssignmentUniqueViolation(err) {
+		// The partial unique index on (task_id, assigned_agent_id)
+		// WHERE status='active' (migration 0002) caught a duplicate.
+		// Surface as a typed sentinel so the CLI layer can map it to
+		// ExitConflict with the assignment_exists error code.
+		return a, fmt.Errorf("%w: %w", ErrAssignmentExists, err)
+	}
 	return a, err
+}
+
+func isActiveAssignmentUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	var se *sqlitedrv.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	if se.Code() != 2067 {
+		return false
+	}
+	return strings.Contains(err.Error(), "assignments.task_id, assignments.assigned_agent_id") ||
+		strings.Contains(err.Error(), "idx_assignments_active_task_agent")
 }
 
 // LatestActiveAssignmentForTask returns the most recent active
@@ -393,6 +428,79 @@ func (s *Store) LatestActiveAssignmentForTaskAndAgent(ctx context.Context, taskI
 	a.ForbiddenPaths = decodePaths(forbid)
 	a.Metadata = decodeMeta(meta)
 	return a, nil
+}
+
+// AssignmentFilter narrows ListAssignments. Empty fields are no-ops.
+type AssignmentFilter struct {
+	TaskID         string
+	OrchestratorID string
+	AgentID        string
+	// Status accepts "active", "superseded", "closed", or "all".
+	// Empty string means "active" by default.
+	Status string
+	Limit  int
+}
+
+// ListAssignments returns assignments matching filter, ordered by
+// created_at DESC. Used by the agent-ledger assignments query command
+// so reviewers can find auto-assigned, harness-derived, or explicit
+// assignments without reading SQLite directly.
+func (s *Store) ListAssignments(ctx context.Context, filter AssignmentFilter) ([]Assignment, error) {
+	var (
+		where []string
+		args  []any
+	)
+	if filter.TaskID != "" {
+		where = append(where, "task_id = ?")
+		args = append(args, filter.TaskID)
+	}
+	if filter.OrchestratorID != "" {
+		where = append(where, "orchestrator_id = ?")
+		args = append(args, filter.OrchestratorID)
+	}
+	if filter.AgentID != "" {
+		where = append(where, "COALESCE(assigned_agent_id, '') = ?")
+		args = append(args, filter.AgentID)
+	}
+	status := filter.Status
+	if status == "" {
+		status = "active"
+	}
+	if status != "all" {
+		where = append(where, "status = ?")
+		args = append(args, status)
+	}
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	args = append(args, limit)
+	query := `
+		SELECT assignment_id, event_id, task_id, orchestrator_id, COALESCE(assigned_agent_id, ''),
+		       allowed_paths_json, forbidden_paths_json, conflict_policy, reason, status, created_at, metadata_json
+		FROM assignments`
+	if len(where) > 0 {
+		query += "\n\t\tWHERE " + strings.Join(where, " AND ")
+	}
+	query += "\n\t\tORDER BY created_at DESC, assignment_id DESC\n\t\tLIMIT ?"
+	rows, err := s.S.DB().QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Assignment
+	for rows.Next() {
+		var a Assignment
+		var allowed, forbid, meta string
+		if err := rows.Scan(&a.AssignmentID, &a.EventID, &a.TaskID, &a.OrchestratorID, &a.AssignedAgentID, &allowed, &forbid, &a.ConflictPolicy, &a.Reason, &a.Status, &a.CreatedAt, &meta); err != nil {
+			return nil, err
+		}
+		a.AllowedPaths = decodePaths(allowed)
+		a.ForbiddenPaths = decodePaths(forbid)
+		a.Metadata = decodeMeta(meta)
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }
 
 // InsertIntent writes an intents row plus intent_paths plus an

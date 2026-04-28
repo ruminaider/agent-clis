@@ -104,22 +104,36 @@ text as a leading bracketed marker. Two formats:
 Assignments without either prefix were supplied explicitly by an
 orchestrator (`--task-id` flag or `AGENT_LEDGER_TASK_ID` env var).
 
-Reviewers query the local SQLite directly today (the v0.2 kernel
-patch documented below adds a CLI surface):
+Reviewers query the audit trail through the
+`agent-ledger assignments` command on v0.1.1+ kernels:
 
 ```bash
-LEDGER=$(grep ledger_dir <project>/.agent-ledger.toml | cut -d'"' -f2)
-
 # True orchestrator-forgot cases (auto-fallback, no harness context):
-sqlite3 "$LEDGER/ledger.sqlite" \
-  "SELECT task_id, substr(reason,1,100) FROM assignments
-   WHERE reason LIKE '[auto-assigned%' ORDER BY created_at DESC"
+agent-ledger assignments --status all --limit 200 --json \
+  | jq '.assignments[] | select(.reason_marker == "auto")'
 
 # Harness-derived sessions, grouped by source:
-sqlite3 "$LEDGER/ledger.sqlite" \
-  "SELECT task_id, reason FROM assignments
-   WHERE reason LIKE '[harness-derived%' ORDER BY created_at DESC"
+agent-ledger assignments --status all --limit 200 --json \
+  | jq '.assignments[] | select(.reason_marker == "harness-derived")
+        | {task_id, source: .metadata.task_source, agent: .assigned_agent}'
+
+# Live (active) auto-assigned tasks, the most common review query:
+agent-ledger assignments --status active --json \
+  | jq '.assignments[] | select(.reason_marker == "auto")'
 ```
+
+The v0.1.1 kernel additionally exposes structured metadata:
+`metadata.auto_assigned`, `metadata.auto_assigned_by`,
+`metadata.task_source`, and `metadata.parent_task` round-trip
+through the assignments query. Querying on `metadata.task_source`
+or `metadata.auto_assigned` is preferred over regex-matching the
+reason text since metadata is the canonical structured surface.
+
+Legacy ledgers from v0.1.0 (no metadata) and v0.2.0-rc2 (no
+structured metadata; reason marker only) remain queryable via the
+reason marker classifier (`reason_marker` field on each row) which
+classifies any reason starting with `[auto-assigned` or
+`[harness-derived` accordingly.
 
 Verify emits a `MISSING_ASSIGNMENT` finding with severity `warning`
 (not error) for auto-fallback tasks so CI can surface them without
@@ -209,32 +223,37 @@ install steps. Both adapters depend on the `agent-ledger` binary being
 on `PATH` and the project ledger having been initialized with
 `agent-ledger init --write-pointer`.
 
-## Kernel dependencies and v0.2 work
+## Kernel dependencies
 
-The adapters work end to end against the v0.1 kernel for the core
-claim / record / verify cycle. Two audit-trail features need v0.2
-kernel work:
+### v0.1.1: structured audit and concurrency hardening
 
-1. **`assign --metadata <json>`**: today's adapters encode the audit
-   signal in `--reason` text with a leading `[auto-assigned by ...]`
-   marker. v0.2 should add a `--metadata` flag (and likely matching
-   flags on `claim`, `record`, `adopt`) so adapters write structured
-   `metadata.auto_assigned = true`. The marker prefix stays as a
-   forward-compatible fallback.
-2. **Assignment query surface**: `agent-ledger status --task <id>
-   --json` does not include assignments today. Reviewers cannot
-   programmatically discover "every auto-assigned task in this
-   ledger" without reading SQLite directly. v0.2 should add either
-   `assignments` to the status output or a dedicated
-   `agent-ledger assignments [--task <id>] [--orchestrator <id>] --json`
-   command.
+v0.1.1 closed the audit-trail gap the rc1/rc2 adapters carried:
 
-Until those land, the bootstrap script avoids the missing query by
-only creating an assignment when it auto-derived the task id. When
-the orchestrator supplied a task id, the bootstrap trusts that the
-orchestrator already wrote the assignment and skips the assign step.
-Reviewers who need the audit trail today can query SQLite directly
-until the kernel surface lands.
+1. **`assign --metadata <json>`** is now a kernel flag. The bootstrap
+   probes `agent-ledger assign --help` for `--metadata` support; if
+   present, it writes structured `metadata.auto_assigned`,
+   `metadata.auto_assigned_by`, `metadata.task_source`, and
+   `metadata.parent_task`. The reason marker is still emitted for
+   forward-compatibility with older queries.
+2. **`agent-ledger assignments` query command** lists assignments by
+   `--task`, `--orchestrator`, `--agent`, `--status`, and `--limit`.
+   The classifier `reason_marker` distinguishes auto, harness-derived,
+   and explicit assignments without the operator regex-matching
+   reason text.
+3. **Partial unique index** on `(task_id, assigned_agent_id)` WHERE
+   `status='active'` closes the F9 race surfaced in v0.2.0-rc2.
+   Concurrent bootstraps cannot produce duplicate active rows; the
+   loser sees `assignment_exists` (ExitConflict) and the bootstrap's
+   `--if-absent` retry path catches it. Plain `assign` without
+   `--if-absent` is now strict: a duplicate fails fast with
+   `assignment_exists` instead of silently inserting a competing row.
+
+### Future kernel work
+
+- Concurrent claim race in `claim` (warn and exclusive policies).
+  Two integration tests are skipped pending the v0.1.2 kernel patch
+  that moves `conflicts.Resolve` inside the `InsertIntent` BEGIN
+  IMMEDIATE transaction.
 
 ## Stability
 
