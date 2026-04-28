@@ -258,6 +258,69 @@ func TestWriteDomainEvent_DomainFailureRollsBackEvent(t *testing.T) {
 	}
 }
 
+func TestWriteDomainEventImmediate_SerializesConcurrentReadThenWrite(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip in short mode")
+	}
+	s, cleanup := openTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	payload, err := events.MarshalPayload(map[string]any{"op": "immediate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const targetID = "agt_immediate_race"
+	firstRead := make(chan struct{}, 1)
+	secondRead := make(chan struct{}, 1)
+	release := make(chan struct{})
+	writer := func(kind string, readCh chan struct{}) func(context.Context, *sql.Conn) error {
+		return func(ctx context.Context, conn *sql.Conn) error {
+			var n int
+			if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents WHERE agent_id = ?`, targetID).Scan(&n); err != nil {
+				return err
+			}
+			select {
+			case readCh <- struct{}{}:
+			default:
+			}
+			<-release
+			if n == 0 {
+				_, err := conn.ExecContext(ctx, `INSERT INTO agents(agent_id, agent_kind, started_at) VALUES(?, ?, ?)`, targetID, kind, id.FormatTimestamp(s.Clock()()))
+				return err
+			}
+			return nil
+		}
+	}
+	ev1 := storage.Event{Type: "agent.identified", PayloadJSON: payload}
+	ev2 := storage.Event{Type: "agent.identified", PayloadJSON: payload}
+	done := make(chan error, 2)
+	go func() { done <- s.WriteDomainEventImmediate(ctx, ev1, writer("worker-1", firstRead)) }()
+	select {
+	case <-firstRead:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first immediate txn never reached the read step")
+	}
+	go func() { done <- s.WriteDomainEventImmediate(ctx, ev2, writer("worker-2", secondRead)) }()
+	select {
+	case <-secondRead:
+		t.Fatal("second immediate txn reached the read step before the first committed")
+	case <-time.After(250 * time.Millisecond):
+	}
+	close(release)
+	for i := 0; i < 2; i++ {
+		if err := <-done; err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM agents WHERE agent_id = ?`, targetID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("agent rows = %d, want 1", n)
+	}
+}
+
 func TestEventID_Shape(t *testing.T) {
 	s, cleanup := openTestStore(t)
 	defer cleanup()

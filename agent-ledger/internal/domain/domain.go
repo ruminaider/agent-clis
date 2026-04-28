@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ruminaider/agent-clis/agent-ledger/internal/conflicts"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/events"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/id"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/privacy"
@@ -591,6 +592,132 @@ func (s *Store) InsertIntent(ctx context.Context, in Intent, ipaths []IntentPath
 	return in, err
 }
 
+// ResolveAndInsertIntent is a claim-specific helper. It is not a
+// general transaction abstraction, it exists so claim.go can resolve
+// overlaps and insert the intent under one BEGIN IMMEDIATE lock.
+func (s *Store) ResolveAndInsertIntent(ctx context.Context, in Intent, ipaths []IntentPath, policy string, hasOverride bool, supersede string) (conflicts.Decision, []conflicts.Overlap, Intent, error) {
+	if err := privacy.AssertSafe("intent.reason", in.Reason); err != nil {
+		return conflicts.Allow, nil, in, fmt.Errorf("%w: %w", ErrUnsafeReason, err)
+	}
+	hashes := make([]string, 0, len(ipaths))
+	for _, p := range ipaths {
+		hashes = append(hashes, p.PathHash)
+	}
+	supersedeSet := map[string]bool{}
+	if supersede != "" {
+		supersedeSet[supersede] = true
+	}
+	conn, err := s.S.DB().Conn(ctx)
+	if err != nil {
+		return conflicts.Allow, nil, in, err
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return conflicts.Allow, nil, in, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+	rowHashes, err := activeIntentsByPathHashes(ctx, conn, hashes)
+	if err != nil {
+		return conflicts.Allow, nil, in, err
+	}
+	overlaps := make([]conflicts.Overlap, 0, len(rowHashes))
+	for _, row := range rowHashes {
+		display := row.Path
+		for _, p := range ipaths {
+			if p.PathHash == row.PathHash {
+				display = p.Path
+				break
+			}
+		}
+		overlaps = append(overlaps, conflicts.Overlap{NewPath: display, NewPathHash: row.PathHash, ExistingIntent: row.IntentID, ExistingPath: row.Path})
+	}
+	decision, filtered := conflicts.Resolve(policy, overlaps, hasOverride, supersedeSet)
+	if decision == conflicts.Block {
+		return decision, filtered, Intent{}, nil
+	}
+	if in.IntentID == "" {
+		nid, err := s.S.IDGen().New(id.PrefixIntent)
+		if err != nil {
+			return conflicts.Allow, nil, in, err
+		}
+		in.IntentID = nid
+	}
+	if in.EventID == "" {
+		nid, err := s.S.IDGen().New(id.PrefixEvent)
+		if err != nil {
+			return conflicts.Allow, nil, in, err
+		}
+		in.EventID = nid
+	}
+	if in.OpenedAt == "" {
+		in.OpenedAt = id.FormatTimestamp(s.S.Clock()())
+	}
+	if in.Status == "" {
+		in.Status = IntentActive
+	}
+	meta, err := encodeMeta(in.Metadata)
+	if err != nil {
+		return conflicts.Allow, nil, in, err
+	}
+	pathsForPayload := make([]map[string]any, 0, len(ipaths))
+	for i := range ipaths {
+		ipaths[i].IntentID = in.IntentID
+		pathsForPayload = append(pathsForPayload, map[string]any{"path": ipaths[i].Path, "path_hash": ipaths[i].PathHash})
+	}
+	payload, err := events.MarshalPayload(map[string]any{
+		"intent_id":       in.IntentID,
+		"task_id":         in.TaskID,
+		"assignment_id":   in.AssignmentID,
+		"access_mode":     in.AccessMode,
+		"conflict_policy": in.ConflictPolicy,
+		"reason_sha256":   sha256Hex(in.Reason),
+		"paths":           pathsForPayload,
+	})
+	if err != nil {
+		return conflicts.Allow, nil, in, err
+	}
+	if _, err := conn.ExecContext(ctx, `
+		INSERT INTO intents(intent_id, event_id, assignment_id, task_id, agent_id, access_mode, conflict_policy, reason, status, opened_at, last_heartbeat_at, heartbeat_expires_at, metadata_json)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, in.IntentID, in.EventID, nullable(in.AssignmentID), in.TaskID, in.AgentID, in.AccessMode, in.ConflictPolicy, in.Reason, in.Status, in.OpenedAt, nullable(in.LastHeartbeatAt), nullable(in.HeartbeatExpiresAt), meta); err != nil {
+		return conflicts.Allow, nil, in, err
+	}
+	for _, p := range ipaths {
+		if _, err := conn.ExecContext(ctx, `
+			INSERT INTO intent_paths(intent_id, path, realpath, path_hash, access_mode)
+			VALUES(?, ?, ?, ?, ?)
+		`, p.IntentID, p.Path, p.RealPath, p.PathHash, p.AccessMode); err != nil {
+			return conflicts.Allow, nil, in, err
+		}
+	}
+	if _, err := conn.ExecContext(ctx, `
+		INSERT INTO events(event_id, schema, event_type, created_at, agent_id, task_id, payload_json)
+		VALUES(?, ?, ?, ?, ?, ?, ?)
+	`, in.EventID, events.Schema, "intent.opened", in.OpenedAt, nullable(in.AgentID), nullable(in.TaskID), string(payload)); err != nil {
+		return conflicts.Allow, nil, in, err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		return conflicts.Allow, nil, in, err
+	}
+	committed = true
+	_ = s.S.Audit().Append(map[string]any{
+		"schema":     events.Schema,
+		"event_id":   in.EventID,
+		"event_type": "intent.opened",
+		"created_at": in.OpenedAt,
+		"agent_id":   in.AgentID,
+		"task_id":    in.TaskID,
+		"payload":    json.RawMessage(payload),
+	})
+	return decision, filtered, in, nil
+}
+
 // IntentByID loads a single intent.
 func (s *Store) IntentByID(ctx context.Context, intentID string) (Intent, error) {
 	row := s.S.DB().QueryRowContext(ctx, `
@@ -625,9 +752,17 @@ func (s *Store) IntentPaths(ctx context.Context, intentID string) ([]IntentPath,
 	return out, rows.Err()
 }
 
+type pathHashQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
 // ActiveIntentsByPathHashes returns active intents that overlap any of
 // pathHashes. Each result row is paired with the matching path hash.
 func (s *Store) ActiveIntentsByPathHashes(ctx context.Context, pathHashes []string) ([]IntentPath, error) {
+	return activeIntentsByPathHashes(ctx, s.S.DB(), pathHashes)
+}
+
+func activeIntentsByPathHashes(ctx context.Context, q pathHashQueryer, pathHashes []string) ([]IntentPath, error) {
 	if len(pathHashes) == 0 {
 		return nil, nil
 	}
@@ -637,13 +772,13 @@ func (s *Store) ActiveIntentsByPathHashes(ctx context.Context, pathHashes []stri
 	for _, h := range pathHashes {
 		args = append(args, h)
 	}
-	q := fmt.Sprintf(`
+	query := fmt.Sprintf(`
 		SELECT ip.intent_id, ip.path, ip.realpath, ip.path_hash, ip.access_mode
 		FROM intent_paths ip
 		JOIN intents i ON i.intent_id = ip.intent_id
 		WHERE i.status = 'active' AND ip.path_hash IN (%s)
 	`, placeholders)
-	rows, err := s.S.DB().QueryContext(ctx, q, args...)
+	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

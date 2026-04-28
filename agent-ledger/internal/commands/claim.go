@@ -145,39 +145,6 @@ func runClaim(streams Streams, o *claimOpts, args []string) error {
 		}
 	}
 
-	// Build supersede set if --supersede was given.
-	supersede := map[string]bool{}
-	if o.supersede != "" {
-		supersede[o.supersede] = true
-	}
-
-	// Detect overlaps (active intent paths).
-	hashes := make([]string, 0, len(requested))
-	for _, r := range requested {
-		hashes = append(hashes, r.hash)
-	}
-	overlapRows, err := d.ActiveIntentsByPathHashes(ctx, hashes)
-	if err != nil {
-		return cli.NewError(cli.ExitStorageIO, "overlap_lookup_failed", err.Error())
-	}
-	overlaps := make([]conflicts.Overlap, 0, len(overlapRows))
-	for _, row := range overlapRows {
-		// Find display path for this hash.
-		display := row.Path
-		for _, r := range requested {
-			if r.hash == row.PathHash {
-				display = r.display
-				break
-			}
-		}
-		overlaps = append(overlaps, conflicts.Overlap{
-			NewPath:        display,
-			NewPathHash:    row.PathHash,
-			ExistingIntent: row.IntentID,
-			ExistingPath:   row.Path,
-		})
-	}
-
 	// If override was supplied, validate it is acknowledged with override
 	// resolution and that the caller is the orchestrator.
 	hasOverride := false
@@ -197,7 +164,55 @@ func runClaim(streams Streams, o *claimOpts, args []string) error {
 		hasOverride = true
 	}
 
-	decision, filtered := conflicts.Resolve(policy, overlaps, hasOverride, supersede)
+	// SupersedeIntent still runs outside the immediate claim transaction.
+	// v0.1.2 closes the plain concurrent exclusive-claim race; the
+	// smaller supersede replacement window remains and is tracked for a
+	// later PR.
+	if o.supersede != "" {
+		if err := d.SupersedeIntent(ctx, o.supersede, "", agentID, store.Clock()()); err != nil {
+			return cli.NewError(cli.ExitStorageIO, "supersede_failed", err.Error())
+		}
+	}
+
+	// Build IntentPaths and path hashes.
+	ipaths := make([]domain.IntentPath, 0, len(requested))
+	hashes := make([]string, 0, len(requested))
+	for _, r := range requested {
+		ipaths = append(ipaths, domain.IntentPath{
+			Path:       r.display,
+			RealPath:   r.real,
+			PathHash:   r.hash,
+			AccessMode: o.access,
+		})
+		hashes = append(hashes, r.hash)
+	}
+
+	intent := domain.Intent{
+		AssignmentID:   assignment.AssignmentID,
+		TaskID:         assignment.TaskID,
+		AgentID:        agentID,
+		AccessMode:     o.access,
+		ConflictPolicy: policy,
+		Reason:         o.reason,
+		Metadata:       map[string]any{},
+	}
+	if o.supersede != "" {
+		intent.Metadata["superseded_intent_id"] = o.supersede
+	}
+	if hasOverride {
+		intent.Metadata["override_conflict_id"] = o.override
+	}
+
+	decision, filtered, created, err := d.ResolveAndInsertIntent(ctx, intent, ipaths, policy, hasOverride, o.supersede)
+	if err != nil {
+		// The CLI guard above is canonical; the domain check is
+		// defense-in-depth. Map the sentinel so programmatic callers
+		// that bypass the CLI layer still get ExitConfigError.
+		if errors.Is(err, domain.ErrUnsafeReason) {
+			return cli.NewError(cli.ExitConfigError, "reason_unsafe", err.Error())
+		}
+		return cli.NewError(cli.ExitStorageIO, "intent_insert_failed", err.Error())
+	}
 	if decision == conflicts.Block {
 		// SPEC §16.1 #7: write conflict.detected, exit 4, no intent.
 		// We synthesize a placeholder new_intent_id (empty) since the
@@ -228,57 +243,6 @@ func runClaim(streams Streams, o *claimOpts, args []string) error {
 		return cli.NewError(cli.ExitConflict, "exclusive_conflict",
 			fmt.Sprintf("exclusive policy blocks claim on %d overlapping path(s)", len(filtered))).
 			WithDetails(details)
-	}
-
-	// Build IntentPaths.
-	ipaths := make([]domain.IntentPath, 0, len(requested))
-	for _, r := range requested {
-		ipaths = append(ipaths, domain.IntentPath{
-			Path:       r.display,
-			RealPath:   r.real,
-			PathHash:   r.hash,
-			AccessMode: o.access,
-		})
-	}
-
-	intent := domain.Intent{
-		AssignmentID:   assignment.AssignmentID,
-		TaskID:         assignment.TaskID,
-		AgentID:        agentID,
-		AccessMode:     o.access,
-		ConflictPolicy: policy,
-		Reason:         o.reason,
-		Metadata:       map[string]any{},
-	}
-	if o.supersede != "" {
-		intent.Metadata["superseded_intent_id"] = o.supersede
-	}
-	if hasOverride {
-		intent.Metadata["override_conflict_id"] = o.override
-	}
-
-	// Supersede any old intent first so the new intent can record the
-	// chain in metadata. SPEC §18.4 requires both events.
-	if o.supersede != "" {
-		if err := d.SupersedeIntent(ctx, o.supersede, "", agentID, store.Clock()()); err != nil {
-			return cli.NewError(cli.ExitStorageIO, "supersede_failed", err.Error())
-		}
-	}
-
-	created, err := d.InsertIntent(ctx, intent, ipaths)
-	if err != nil {
-		// The CLI guard above is canonical; the domain check is
-		// defense-in-depth. Map the sentinel so programmatic callers
-		// that bypass the CLI layer still get ExitConfigError.
-		if errors.Is(err, domain.ErrUnsafeReason) {
-			return cli.NewError(cli.ExitConfigError, "reason_unsafe", err.Error())
-		}
-		return cli.NewError(cli.ExitStorageIO, "intent_insert_failed", err.Error())
-	}
-
-	// Patch supersede event with the new intent ID for traceability.
-	if o.supersede != "" {
-		_, _ = store.DB().ExecContext(ctx, `UPDATE intents SET metadata_json = json_set(COALESCE(metadata_json, '{}'), '$.superseded_by', ?) WHERE intent_id = ?`, created.IntentID, o.supersede)
 	}
 
 	// Warn-policy overlaps create conflict rows but the intent still

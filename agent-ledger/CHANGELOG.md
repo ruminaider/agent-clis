@@ -10,6 +10,14 @@ of the binary version.
 
 ## [Unreleased]
 
+### Kernel: claim race fix
+
+#### Changed
+
+- Fix concurrent claim race under exclusive policy: overlap lookup, conflict resolution, and intent insert now run inside a single BEGIN IMMEDIATE SQLite transaction.
+- Unskip TestConcurrent_ExclusivePolicy.
+- Known limitation: --supersede still calls SupersedeIntent outside the new transaction. Plain concurrent exclusive claims are now atomic; the smaller supersede atomic-replacement race remains and is tracked separately.
+
 ## [0.1.1] - 2026-04-28
 
 ### Kernel: structured audit + assignment invariant

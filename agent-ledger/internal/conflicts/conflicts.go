@@ -7,8 +7,12 @@
 // individual overlaps the caller should record as conflict rows.
 package conflicts
 
-import (
-	"github.com/ruminaider/agent-clis/agent-ledger/internal/domain"
+// Policy values are duplicated here to keep this package pure and
+// avoid a dependency cycle with internal/domain.
+const (
+	policyNone      = "none"
+	policyWarn      = "warn"
+	policyExclusive = "exclusive"
 )
 
 // Decision describes how a claim should proceed.
@@ -57,12 +61,12 @@ func Resolve(policy string, overlaps []Overlap, hasOverride bool, supersedeInten
 		return Allow, nil
 	}
 	switch policy {
-	case domain.PolicyExclusive:
+	case policyExclusive:
 		if hasOverride {
 			return Override, filtered
 		}
 		return Block, filtered
-	case domain.PolicyNone:
+	case policyNone:
 		return Allow, nil
 	default:
 		// warn (default)
