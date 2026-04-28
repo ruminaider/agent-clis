@@ -32,6 +32,11 @@ func Register(root *cobra.Command, streams Streams) {
 			root.AddCommand(build(streams))
 		}
 	}
+	// Phase 2 query surfaces. Not in SPEC §18.17 (which lists the 15
+	// kernel-slice commands), so they are added directly rather than
+	// stubbed in cli.Phase1Commands. Listed in --help by cobra's
+	// default discovery.
+	root.AddCommand(NewAssignmentsCommand(streams))
 }
 
 // Execute is the same entrypoint as cli.Execute but registers Wave-2

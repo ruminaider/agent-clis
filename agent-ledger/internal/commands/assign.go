@@ -2,8 +2,10 @@ package commands
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -23,6 +25,7 @@ type assignOpts struct {
 	policy       string
 	reason       string
 	branch       string
+	metadata     string
 	ifAbsent     bool
 	asJSON       bool
 }
@@ -50,6 +53,7 @@ func NewAssignCommand(streams Streams) *cobra.Command {
 	f.StringVar(&o.policy, "policy", domain.PolicyWarn, "Conflict policy (none|warn|exclusive)")
 	f.StringVar(&o.reason, "reason", "", "Assignment reason (required)")
 	f.StringVar(&o.branch, "branch", "", "Optional branch name")
+	f.StringVar(&o.metadata, "metadata", "", "Optional structured metadata as a JSON object (merged into assignment metadata_json)")
 	f.BoolVar(&o.ifAbsent, "if-absent", false, "Reuse an identical active assignment if present")
 	f.BoolVar(&o.asJSON, "json", false, "Render output as JSON")
 	return cmd
@@ -74,6 +78,10 @@ func runAssign(streams Streams, o *assignOpts) error {
 	if len(o.allow) == 0 {
 		return cli.NewError(cli.ExitUsage, "missing_flag", "--allow must list at least one path")
 	}
+	extraMetadata, err := parseMetadataFlag(o.metadata)
+	if err != nil {
+		return err
+	}
 
 	ctx := ctxFor(streams)
 	store, _, err := o.env.openStore(ctx)
@@ -88,6 +96,10 @@ func runAssign(streams Streams, o *assignOpts) error {
 		_ = d.UpsertAgent(ctx, domain.Agent{AgentID: o.agent, AgentKind: "worker"})
 	}
 
+	meta := map[string]any{"branch": o.branch}
+	for k, v := range extraMetadata {
+		meta[k] = v
+	}
 	assignment := domain.Assignment{
 		TaskID:          o.task,
 		OrchestratorID:  o.orchestrator,
@@ -97,7 +109,7 @@ func runAssign(streams Streams, o *assignOpts) error {
 		ConflictPolicy:  o.policy,
 		Reason:          o.reason,
 		Status:          "active",
-		Metadata:        map[string]any{"branch": o.branch},
+		Metadata:        meta,
 	}
 	reused := false
 	if o.ifAbsent {
@@ -114,7 +126,22 @@ func runAssign(streams Streams, o *assignOpts) error {
 				if errors.Is(err, domain.ErrUnsafeReason) {
 					return cli.NewError(cli.ExitConfigError, "reason_unsafe", err.Error())
 				}
-				return cli.NewError(cli.ExitStorageIO, "assign_failed", err.Error())
+				if errors.Is(err, domain.ErrAssignmentExists) {
+					// The unique index caught a row that the SELECT
+					// missed (concurrent winner committed between
+					// our LatestActive lookup and our INSERT). Retry
+					// the lookup; if it now matches, treat as reuse.
+					prev2, lerr := d.LatestActiveAssignmentForTaskAndAgent(ctx, o.task, o.agent)
+					if lerr == nil && sameAssignmentReplay(prev2, assignment) {
+						assignment = prev2
+						reused = true
+					} else {
+						return cli.NewError(cli.ExitConflict, "assignment_exists",
+							"an active assignment already exists for this (task, agent) pair; supply --if-absent to reuse identical assignments or close the prior one first")
+					}
+				} else {
+					return cli.NewError(cli.ExitStorageIO, "assign_failed", err.Error())
+				}
 			}
 		}
 	} else {
@@ -122,6 +149,10 @@ func runAssign(streams Streams, o *assignOpts) error {
 		if err != nil {
 			if errors.Is(err, domain.ErrUnsafeReason) {
 				return cli.NewError(cli.ExitConfigError, "reason_unsafe", err.Error())
+			}
+			if errors.Is(err, domain.ErrAssignmentExists) {
+				return cli.NewError(cli.ExitConflict, "assignment_exists",
+					"an active assignment already exists for this (task, agent) pair; supply --if-absent to reuse identical assignments or close the prior one first")
 			}
 			return cli.NewError(cli.ExitStorageIO, "assign_failed", err.Error())
 		}
@@ -140,8 +171,19 @@ func runAssign(streams Streams, o *assignOpts) error {
 	return nil
 }
 
+// sameAssignmentReplay reports whether b is byte-equivalent to a for
+// the purpose of --if-absent reuse. The predicate intentionally
+// compares every field a reviewer might care about: task, agent,
+// orchestrator, policy, reason, allowed/forbidden paths, and
+// metadata. This is tighter than the v0.2.0-rc2 predicate so that
+// callers carrying audit metadata cannot have their assignment
+// silently reused under a stale older row that lacked the metadata.
 func sameAssignmentReplay(a, b domain.Assignment) bool {
-	if a.TaskID != b.TaskID || a.AssignedAgentID != b.AssignedAgentID || a.ConflictPolicy != b.ConflictPolicy {
+	if a.TaskID != b.TaskID ||
+		a.AssignedAgentID != b.AssignedAgentID ||
+		a.OrchestratorID != b.OrchestratorID ||
+		a.ConflictPolicy != b.ConflictPolicy ||
+		a.Reason != b.Reason {
 		return false
 	}
 	if strings.Join(a.AllowedPaths, "\x00") != strings.Join(b.AllowedPaths, "\x00") {
@@ -150,5 +192,37 @@ func sameAssignmentReplay(a, b domain.Assignment) bool {
 	if strings.Join(a.ForbiddenPaths, "\x00") != strings.Join(b.ForbiddenPaths, "\x00") {
 		return false
 	}
-	return true
+	return metadataEqual(a.Metadata, b.Metadata)
+}
+
+// metadataEqual normalizes two metadata maps for replay comparison.
+// nil and empty are treated as equal so the existing
+// {"branch": ""} default does not block reuse against legacy rows.
+func metadataEqual(a, b map[string]any) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return true
+	}
+	return reflect.DeepEqual(a, b)
+}
+
+// parseMetadataFlag validates --metadata as a JSON object and returns
+// it as a map. Empty input returns nil. Top-level arrays, scalars,
+// and malformed JSON are rejected with ExitUsage so the caller fails
+// fast rather than writing a garbage metadata blob.
+func parseMetadataFlag(raw string) (map[string]any, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var v any
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&v); err != nil {
+		return nil, errf(cli.ExitUsage, "invalid_metadata", "--metadata must be valid JSON: %s", err.Error())
+	}
+	obj, ok := v.(map[string]any)
+	if !ok {
+		return nil, cli.NewError(cli.ExitUsage, "invalid_metadata",
+			"--metadata must be a JSON object (got non-object top-level value)")
+	}
+	return obj, nil
 }

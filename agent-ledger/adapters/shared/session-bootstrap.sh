@@ -217,6 +217,26 @@ if [[ "$EXPLICIT" == "0" ]]; then
     allow_args+=( "$arg" )
   done < <(split_allow_args "$allow")
 
+  # Build structured metadata for v0.1.1+ kernels. The reason marker
+  # stays as a forward-compatible audit signal; the metadata JSON is
+  # the canonical surface for programmatic queries via the
+  # agent-ledger assignments command.
+  metadata_json="{\"auto_assigned\":$([[ "$TASK_SOURCE" == "auto" ]] && echo true || echo false)"
+  metadata_json="${metadata_json},\"auto_assigned_by\":\"${HARNESS}-adapter\""
+  metadata_json="${metadata_json},\"task_source\":\"${TASK_SOURCE}\""
+  if [[ -n "$parent" ]]; then
+    metadata_json="${metadata_json},\"parent_task\":\"$(json_escape "$parent")\""
+  fi
+  metadata_json="${metadata_json}}"
+
+  # Older kernels (v0.1.0) do not understand --metadata. Probe once
+  # per call; if the flag is unsupported, retry without it. The reason
+  # marker is written either way so audits work across kernel versions.
+  metadata_args=( --metadata "$metadata_json" )
+  if ! agent-ledger assign --help 2>&1 | grep -q -- "--metadata"; then
+    metadata_args=()
+  fi
+
   if ! agent-ledger assign \
       --task "$TASK_ID" \
       --orchestrator "$orch" \
@@ -225,6 +245,7 @@ if [[ "$EXPLICIT" == "0" ]]; then
       "${allow_args[@]+"${allow_args[@]}"}" \
       --if-absent \
       --reason "$reason" \
+      "${metadata_args[@]+"${metadata_args[@]}"}" \
       "${ledger_args[@]+"${ledger_args[@]}"}" >&2
   then
     echo "session-bootstrap: agent-ledger assign failed (task=$TASK_ID)" >&2

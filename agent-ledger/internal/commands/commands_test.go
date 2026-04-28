@@ -333,7 +333,13 @@ func TestAssignIfAbsentDifferentAgentInsertsNew(t *testing.T) {
 	}
 }
 
-func TestAssignIfAbsentDifferentPolicyOrAllowInsertsNew(t *testing.T) {
+// TestAssignIfAbsentDifferentPolicyOrAllowFailsExclusive verifies the
+// v0.1.1 strict semantics: --if-absent reuse only succeeds when the new
+// request is byte-equivalent to the prior assignment. A non-match
+// surfaces as ExitConflict / assignment_exists rather than silently
+// inserting a competing active row, which the partial unique index on
+// (task_id, assigned_agent_id) WHERE status='active' now forbids.
+func TestAssignIfAbsentDifferentPolicyOrAllowFailsExclusive(t *testing.T) {
 	root, ledger := tempLedger(t)
 	if err := os.WriteFile(filepath.Join(root, "policy.md"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
@@ -341,30 +347,30 @@ func TestAssignIfAbsentDifferentPolicyOrAllowInsertsNew(t *testing.T) {
 	if code, _, e := runCmd(t, ledger, nil, "assign", "--task", "TP", "--orchestrator", "pi.main.test", "--agent", "pi.worker.test", "--allow", "policy.md", "--policy", "warn", "--reason", "same", "--if-absent"); code != 0 {
 		t.Fatalf("first assign: %d %s", code, e)
 	}
+	// Different policy: should fail with assignment_exists.
 	code, out, e := runCmd(t, ledger, nil, "assign", "--task", "TP", "--orchestrator", "pi.main.test", "--agent", "pi.worker.test", "--allow", "policy.md", "--policy", "exclusive", "--reason", "same", "--if-absent", "--json")
-	if code != 0 {
-		t.Fatalf("policy change assign: %d %s %s", code, out, e)
+	if code != 4 {
+		t.Fatalf("policy change assign expected ExitConflict (4), got %d: out=%s err=%s", code, out, e)
 	}
-	var resp map[string]any
-	if err := json.Unmarshal([]byte(out), &resp); err != nil {
-		t.Fatal(err)
+	var errResp map[string]any
+	if jerr := json.Unmarshal([]byte(e), &errResp); jerr == nil {
+		if errResp["code"] != "assignment_exists" {
+			t.Fatalf("expected code=assignment_exists, got %v", errResp["code"])
+		}
 	}
-	if reused, _ := resp["reused"].(bool); reused {
-		t.Fatalf("expected new insert on policy change, got reused")
-	}
+	// Different allow set: should fail with assignment_exists.
 	code, out, e = runCmd(t, ledger, nil, "assign", "--task", "TP", "--orchestrator", "pi.main.test", "--agent", "pi.worker.test", "--allow", "policy.md", "--allow", "other.md", "--policy", "warn", "--reason", "same", "--if-absent", "--json")
-	if code != 0 {
-		t.Fatalf("allow change assign: %d %s %s", code, out, e)
-	}
-	if err := json.Unmarshal([]byte(out), &resp); err != nil {
-		t.Fatal(err)
-	}
-	if reused, _ := resp["reused"].(bool); reused {
-		t.Fatalf("expected new insert on allow change, got reused")
+	if code != 4 {
+		t.Fatalf("allow change assign expected ExitConflict (4), got %d: out=%s err=%s", code, out, e)
 	}
 }
 
-func TestAssignWithoutIfAbsentAlwaysInserts(t *testing.T) {
+// TestAssignWithoutIfAbsentRejectsDuplicate verifies the v0.1.1
+// strict default: calling plain assign twice on the same active
+// (task, agent) pair fails with assignment_exists. Orchestrators
+// must use --if-absent for idempotent replay or close the prior
+// assignment first.
+func TestAssignWithoutIfAbsentRejectsDuplicate(t *testing.T) {
 	root, ledger := tempLedger(t)
 	if err := os.WriteFile(filepath.Join(root, "plain.md"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
@@ -373,14 +379,13 @@ func TestAssignWithoutIfAbsentAlwaysInserts(t *testing.T) {
 		t.Fatalf("first assign: %d %s", code, e)
 	}
 	code, out, e := runCmd(t, ledger, nil, "assign", "--task", "TN", "--orchestrator", "pi.main.test", "--agent", "pi.worker.test", "--allow", "plain.md", "--policy", "warn", "--reason", "same", "--json")
-	if code != 0 {
-		t.Fatalf("second assign: %d %s %s", code, out, e)
+	if code != 4 {
+		t.Fatalf("second assign expected ExitConflict (4), got %d: out=%s err=%s", code, out, e)
 	}
-	var resp map[string]any
-	if err := json.Unmarshal([]byte(out), &resp); err != nil {
-		t.Fatal(err)
-	}
-	if reused, _ := resp["reused"].(bool); reused {
-		t.Fatalf("expected reused false without flag, got %v", resp)
+	var errResp map[string]any
+	if jerr := json.Unmarshal([]byte(e), &errResp); jerr == nil {
+		if errResp["code"] != "assignment_exists" {
+			t.Fatalf("expected code=assignment_exists, got %v", errResp["code"])
+		}
 	}
 }
