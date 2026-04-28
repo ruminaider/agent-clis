@@ -164,16 +164,6 @@ func runClaim(streams Streams, o *claimOpts, args []string) error {
 		hasOverride = true
 	}
 
-	// SupersedeIntent still runs outside the immediate claim transaction.
-	// v0.1.2 closes the plain concurrent exclusive-claim race; the
-	// smaller supersede replacement window remains and is tracked for a
-	// later PR.
-	if o.supersede != "" {
-		if err := d.SupersedeIntent(ctx, o.supersede, "", agentID, store.Clock()()); err != nil {
-			return cli.NewError(cli.ExitStorageIO, "supersede_failed", err.Error())
-		}
-	}
-
 	// Build IntentPaths and path hashes.
 	ipaths := make([]domain.IntentPath, 0, len(requested))
 	hashes := make([]string, 0, len(requested))

@@ -283,20 +283,23 @@ func (s *Store) WriteDomainEvent(
 // WriteDomainEventImmediate mirrors WriteDomainEvent, but it pins a
 // connection and issues BEGIN IMMEDIATE explicitly so claim-specific
 // callers can acquire the writer lock before any read-then-write
-// overlap check. modernc.org/sqlite supports _txlock=immediate in the
-// DSN, but this helper keeps the opt-in local instead of changing the
-// whole pool's default transaction mode.
+// overlap check. It writes one or more event rows after the callback
+// succeeds. modernc.org/sqlite supports _txlock=immediate in the DSN,
+// but this helper keeps the opt-in local instead of changing the whole
+// pool's default transaction mode.
 func (s *Store) WriteDomainEventImmediate(
-	ctx context.Context,
-	ev storage.Event,
-	domainInsert func(ctx context.Context, conn *sql.Conn) error,
+	ctx context.Context, evs []storage.Event, domainInsert func(ctx context.Context, conn *sql.Conn) error,
 ) error {
-	if err := events.ValidatePayload(ev.PayloadJSON); err != nil {
-		return err
-	}
-	row, err := s.fillEventDefaults(ev)
-	if err != nil {
-		return err
+	rows := make([]storage.Event, 0, len(evs))
+	for _, ev := range evs {
+		if err := events.ValidatePayload(ev.PayloadJSON); err != nil {
+			return err
+		}
+		row, err := s.fillEventDefaults(ev)
+		if err != nil {
+			return err
+		}
+		rows = append(rows, row)
 	}
 	if err := s.withImmediateConn(ctx, func(ctx context.Context, conn *sql.Conn) error {
 		if domainInsert != nil {
@@ -304,14 +307,18 @@ func (s *Store) WriteDomainEventImmediate(
 				return err
 			}
 		}
-		if err := insertEvent(ctx, conn, row); err != nil {
-			return mapStorageError(err)
+		for _, row := range rows {
+			if err := insertEvent(ctx, conn, row); err != nil {
+				return mapStorageError(err)
+			}
 		}
 		return nil
 	}); err != nil {
 		return err
 	}
-	_ = s.mirrorEvent(row)
+	for _, row := range rows {
+		_ = s.mirrorEvent(row)
+	}
 	return nil
 }
 

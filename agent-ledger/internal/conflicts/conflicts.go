@@ -7,20 +7,19 @@
 // individual overlaps the caller should record as conflict rows.
 package conflicts
 
-// Policy values are duplicated here to keep this package pure and
-// avoid a dependency cycle with internal/domain.
-const (
-	policyNone      = "none"
-	policyWarn      = "warn"
-	policyExclusive = "exclusive"
-)
+import policynames "github.com/ruminaider/agent-clis/agent-ledger/internal/policy"
 
 // Decision describes how a claim should proceed.
+//
+// Unset is the zero value and is reserved for error returns from
+// higher-level helpers. Callers should only inspect Allow, Warn,
+// Block, or Override when err == nil.
 type Decision int
 
 const (
+	Unset Decision = iota
 	// Allow: no overlapping active intents detected. Open the intent.
-	Allow Decision = iota
+	Allow
 	// Warn: overlapping intents exist under warn policy. Open the
 	// intent but record a conflict row per overlap.
 	Warn
@@ -61,12 +60,12 @@ func Resolve(policy string, overlaps []Overlap, hasOverride bool, supersedeInten
 		return Allow, nil
 	}
 	switch policy {
-	case policyExclusive:
+	case policynames.Exclusive:
 		if hasOverride {
 			return Override, filtered
 		}
 		return Block, filtered
-	case policyNone:
+	case policynames.None:
 		return Allow, nil
 	default:
 		// warn (default)

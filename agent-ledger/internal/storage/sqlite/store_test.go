@@ -294,17 +294,17 @@ func TestWriteDomainEventImmediate_SerializesConcurrentReadThenWrite(t *testing.
 	ev1 := storage.Event{Type: "agent.identified", PayloadJSON: payload}
 	ev2 := storage.Event{Type: "agent.identified", PayloadJSON: payload}
 	done := make(chan error, 2)
-	go func() { done <- s.WriteDomainEventImmediate(ctx, ev1, writer("worker-1", firstRead)) }()
+	go func() { done <- s.WriteDomainEventImmediate(ctx, []storage.Event{ev1}, writer("worker-1", firstRead)) }()
 	select {
 	case <-firstRead:
 	case <-time.After(2 * time.Second):
 		t.Fatal("first immediate txn never reached the read step")
 	}
-	go func() { done <- s.WriteDomainEventImmediate(ctx, ev2, writer("worker-2", secondRead)) }()
+	go func() { done <- s.WriteDomainEventImmediate(ctx, []storage.Event{ev2}, writer("worker-2", secondRead)) }()
 	select {
 	case <-secondRead:
 		t.Fatal("second immediate txn reached the read step before the first committed")
-	case <-time.After(250 * time.Millisecond):
+	case <-time.After(2 * time.Second):
 	}
 	close(release)
 	for i := 0; i < 2; i++ {
