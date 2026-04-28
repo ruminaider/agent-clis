@@ -280,6 +280,74 @@ func (s *Store) WriteDomainEvent(
 	return nil
 }
 
+// WriteDomainEventImmediate mirrors WriteDomainEvent, but it pins a
+// connection and issues BEGIN IMMEDIATE explicitly so claim-specific
+// callers can acquire the writer lock before any read-then-write
+// overlap check. The callback returns the event rows to persist after
+// the domain work succeeds. modernc.org/sqlite supports
+// _txlock=immediate in the DSN, but this helper keeps the opt-in local
+// instead of changing the whole pool's default transaction mode.
+func (s *Store) WriteDomainEventImmediate(
+	ctx context.Context, fn func(ctx context.Context, conn *sql.Conn) ([]storage.Event, error),
+) error {
+	var rows []storage.Event
+	if err := s.withImmediateConn(ctx, func(ctx context.Context, conn *sql.Conn) error {
+		var err error
+		rows, err = fn(ctx, conn)
+		if err != nil {
+			return err
+		}
+		if rows == nil {
+			return nil
+		}
+		for i := range rows {
+			if err := events.ValidatePayload(rows[i].PayloadJSON); err != nil {
+				return err
+			}
+			row, err := s.fillEventDefaults(rows[i])
+			if err != nil {
+				return err
+			}
+			rows[i] = row
+			if err := insertEvent(ctx, conn, row); err != nil {
+				return mapStorageError(err)
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	for _, row := range rows {
+		_ = s.mirrorEvent(row)
+	}
+	return nil
+}
+
+func (s *Store) withImmediateConn(ctx context.Context, fn func(ctx context.Context, conn *sql.Conn) error) error {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return mapStorageError(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return mapStorageError(err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+	if err := fn(ctx, conn); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return mapStorageError(err)
+	}
+	committed = true
+	return nil
+}
+
 // fillEventDefaults assigns event_id and occurred_at when blank.
 func (s *Store) fillEventDefaults(ev storage.Event) (storage.Event, error) {
 	if ev.EventID == "" {
@@ -295,8 +363,12 @@ func (s *Store) fillEventDefaults(ev storage.Event) (storage.Event, error) {
 	return ev, nil
 }
 
-func insertEvent(ctx context.Context, tx *sql.Tx, ev storage.Event) error {
-	_, err := tx.ExecContext(ctx, `
+type sqlExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func insertEvent(ctx context.Context, exec sqlExecer, ev storage.Event) error {
+	_, err := exec.ExecContext(ctx, `
 		INSERT INTO events(event_id, schema, event_type, created_at, agent_id, task_id, payload_json)
 		VALUES(?, ?, ?, ?, ?, ?, ?)`,
 		ev.EventID,

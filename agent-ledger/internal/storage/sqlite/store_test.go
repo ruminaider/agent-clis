@@ -258,6 +258,68 @@ func TestWriteDomainEvent_DomainFailureRollsBackEvent(t *testing.T) {
 	}
 }
 
+func TestWriteDomainEventImmediate_BusyOnSecondImmediate(t *testing.T) {
+	s, cleanup := openTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	release := make(chan struct{})
+	gotLock := make(chan struct{}, 1)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- s.WriteDomainEventImmediate(ctx, func(ctx context.Context, conn *sql.Conn) ([]storage.Event, error) {
+			select {
+			case gotLock <- struct{}{}:
+			default:
+			}
+			<-release
+			return nil, nil
+		})
+	}()
+
+	select {
+	case <-gotLock:
+	case <-time.After(1 * time.Second):
+		t.Fatal("first immediate txn never acquired the lock")
+	}
+
+	secondConn, err := s.DB().Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondConn.Close()
+
+	if _, err := secondConn.ExecContext(ctx, `PRAGMA busy_timeout = 200`); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	_, err = secondConn.ExecContext(ctx, `BEGIN IMMEDIATE`)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected SQLITE_BUSY from second BEGIN IMMEDIATE")
+	}
+	if !strings.Contains(err.Error(), "SQLITE_BUSY") {
+		t.Fatalf("expected SQLITE_BUSY, got %v", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("BEGIN IMMEDIATE took %v, want well under 500ms", elapsed)
+	}
+
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("first immediate txn: %v", err)
+	}
+
+	if _, err := secondConn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		t.Fatalf("second BEGIN IMMEDIATE after release: %v", err)
+	}
+	if _, err := secondConn.ExecContext(ctx, `ROLLBACK`); err != nil {
+		t.Fatalf("rollback second conn: %v", err)
+	}
+}
+
 func TestEventID_Shape(t *testing.T) {
 	s, cleanup := openTestStore(t)
 	defer cleanup()

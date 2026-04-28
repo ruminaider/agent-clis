@@ -7,11 +7,12 @@
 // individual overlaps the caller should record as conflict rows.
 package conflicts
 
-import (
-	"github.com/ruminaider/agent-clis/agent-ledger/internal/domain"
-)
+import policynames "github.com/ruminaider/agent-clis/agent-ledger/internal/policy"
 
 // Decision describes how a claim should proceed.
+//
+// The zero value is Allow. Callers should only inspect Allow, Warn,
+// Block, or Override when err == nil.
 type Decision int
 
 const (
@@ -57,12 +58,12 @@ func Resolve(policy string, overlaps []Overlap, hasOverride bool, supersedeInten
 		return Allow, nil
 	}
 	switch policy {
-	case domain.PolicyExclusive:
+	case policynames.Exclusive:
 		if hasOverride {
 			return Override, filtered
 		}
 		return Block, filtered
-	case domain.PolicyNone:
+	case policynames.None:
 		return Allow, nil
 	default:
 		// warn (default)

@@ -2,12 +2,14 @@ package domain_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/ruminaider/agent-clis/agent-ledger/internal/conflicts"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/domain"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/privacy"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/storage/sqlite"
@@ -138,6 +140,156 @@ func assertUnsafeReasonError(t *testing.T, err error, wantLabel string) {
 	}
 	if typed.Label != wantLabel {
 		t.Fatalf("SecretError.Label=%q want %q", typed.Label, wantLabel)
+	}
+}
+
+func TestResolveAndInsertIntent_SupersedeBackReference(t *testing.T) {
+	s := openStore(t)
+	d := domain.New(s)
+	ctx := context.Background()
+
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: "agent-old", AgentKind: "worker"}); err != nil {
+		t.Fatalf("upsert old agent: %v", err)
+	}
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: "agent-new", AgentKind: "worker"}); err != nil {
+		t.Fatalf("upsert new agent: %v", err)
+	}
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: "agent-blocked", AgentKind: "worker"}); err != nil {
+		t.Fatalf("upsert blocked agent: %v", err)
+	}
+
+	path := domain.IntentPath{Path: "src/app.go", RealPath: "/tmp/src/app.go", PathHash: "hash-app", AccessMode: domain.AccessWrite}
+	oldIntent, err := d.InsertIntent(ctx, domain.Intent{
+		TaskID:         "task-1",
+		AgentID:        "agent-old",
+		AccessMode:     domain.AccessWrite,
+		ConflictPolicy: domain.PolicyExclusive,
+		Reason:         "old claim",
+	}, []domain.IntentPath{path})
+	if err != nil {
+		t.Fatalf("insert old intent: %v", err)
+	}
+
+	res, err := d.ResolveAndInsertIntent(ctx, domain.Intent{
+		TaskID:         "task-1",
+		AgentID:        "agent-new",
+		AccessMode:     domain.AccessWrite,
+		ConflictPolicy: domain.PolicyExclusive,
+		Reason:         "replace claim",
+		Metadata: map[string]any{
+			"superseded_intent_id": oldIntent.IntentID,
+		},
+	}, []domain.IntentPath{path}, domain.PolicyExclusive, false, oldIntent.IntentID)
+	if err != nil {
+		t.Fatalf("resolve+insert: %v", err)
+	}
+	if res.Intent.IntentID == "" {
+		t.Fatal("missing created intent")
+	}
+	if got, want := res.Intent.Metadata["superseded_intent_id"], oldIntent.IntentID; got != want {
+		t.Fatalf("new intent metadata superseded_intent_id=%v want %v", got, want)
+	}
+
+	blocked, err := d.ResolveAndInsertIntent(ctx, domain.Intent{
+		TaskID:         "task-1",
+		AgentID:        "agent-blocked",
+		AccessMode:     domain.AccessWrite,
+		ConflictPolicy: domain.PolicyExclusive,
+		Reason:         "block path",
+	}, []domain.IntentPath{path}, domain.PolicyExclusive, false, "")
+	if err != nil {
+		t.Fatalf("blocked probe: %v", err)
+	}
+	if blocked.Decision != conflicts.Block || len(blocked.Overlaps) == 0 {
+		t.Fatalf("expected block on second active claim, got decision=%v overlaps=%d", blocked.Decision, len(blocked.Overlaps))
+	}
+
+	updatedOld, err := d.IntentByID(ctx, oldIntent.IntentID)
+	if err != nil {
+		t.Fatalf("load old intent: %v", err)
+	}
+	if updatedOld.Status != domain.IntentClosed || updatedOld.CloseOutcome != domain.OutcomeSuperseded {
+		t.Fatalf("old intent not superseded: status=%s outcome=%s", updatedOld.Status, updatedOld.CloseOutcome)
+	}
+	if got := updatedOld.Metadata["superseded_by"]; got != res.Intent.IntentID {
+		t.Fatalf("old intent metadata superseded_by=%v want %s", got, res.Intent.IntentID)
+	}
+
+	var count int
+	if err := s.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM events
+		WHERE event_type = 'intent.superseded'
+	`).Scan(&count); err != nil {
+		t.Fatalf("count supersede events: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("intent.superseded rows = %d, want 1", count)
+	}
+
+	var payload string
+	if err := s.DB().QueryRowContext(ctx, `
+		SELECT payload_json
+		FROM events
+		WHERE event_type = 'intent.superseded'
+		ORDER BY created_at DESC
+		LIMIT 1
+	`).Scan(&payload); err != nil {
+		t.Fatalf("load supersede event: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(payload), &got); err != nil {
+		t.Fatalf("decode supersede payload: %v", err)
+	}
+	if got["intent_id"] != oldIntent.IntentID {
+		t.Fatalf("supersede payload intent_id=%v want %s", got["intent_id"], oldIntent.IntentID)
+	}
+	if got["superseded_by"] != res.Intent.IntentID {
+		t.Fatalf("supersede payload superseded_by=%v want %s", got["superseded_by"], res.Intent.IntentID)
+	}
+}
+
+func TestResolveAndInsertIntent_SupersedeStaleTarget_ReturnsErrSupersedeNotActive(t *testing.T) {
+	s := openStore(t)
+	d := domain.New(s)
+	ctx := context.Background()
+
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: "agent-new", AgentKind: "worker"}); err != nil {
+		t.Fatalf("upsert new agent: %v", err)
+	}
+
+	var before int
+	if err := s.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE event_type = 'intent.superseded'`).Scan(&before); err != nil {
+		t.Fatalf("count before: %v", err)
+	}
+
+	newIntentID := "int_stale_target_new"
+	_, err := d.ResolveAndInsertIntent(ctx, domain.Intent{
+		IntentID:       newIntentID,
+		EventID:        "evt_stale_target_new",
+		TaskID:         "task-1",
+		AgentID:        "agent-new",
+		AccessMode:     domain.AccessWrite,
+		ConflictPolicy: domain.PolicyExclusive,
+		Reason:         "replace missing claim",
+	}, nil, domain.PolicyExclusive, false, "int_does_not_exist")
+	if !errors.Is(err, domain.ErrSupersedeNotActive) {
+		t.Fatalf("expected ErrSupersedeNotActive, got %v", err)
+	}
+
+	var after int
+	if err := s.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE event_type = 'intent.superseded'`).Scan(&after); err != nil {
+		t.Fatalf("count after: %v", err)
+	}
+	if after != before {
+		t.Fatalf("intent.superseded rows changed: before=%d after=%d", before, after)
+	}
+
+	if err := s.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM intents WHERE intent_id = ?`, newIntentID).Scan(&after); err != nil {
+		t.Fatalf("count new intent: %v", err)
+	}
+	if after != 0 {
+		t.Fatalf("new intent row written unexpectedly: %d", after)
 	}
 }
 
