@@ -10,6 +10,41 @@ of the binary version.
 
 ## [Unreleased]
 
+## [0.2.0-rc3] - 2026-04-28
+
+### Adapters: catch up with v0.1.1 kernel surface
+
+v0.2.0-rc3 labels the adapter source that has been tracking main
+since the v0.1.1 kernel landed. No new adapter functionality beyond
+rc2; this rc records the bootstrap and test changes that landed
+alongside the v0.1.1 kernel so dogfooders can pin a specific
+adapter cut against the current kernel.
+
+#### Changed
+
+- `agent-ledger/adapters/shared/session-bootstrap.sh` writes
+  structured metadata (`auto_assigned`, `auto_assigned_by`,
+  `task_source`, `parent_task`) via the v0.1.1+ `assign --metadata`
+  flag. Probe-and-fallback against v0.1.0 binaries: if the kernel
+  does not advertise `--metadata`, the bootstrap omits it and the
+  reason marker carries the audit signal as before.
+- `agent-ledger/adapters/shared/session-bootstrap.sh` calls
+  `assign --if-absent` for harness-derived and auto-fallback
+  sources so repeated pi launches on the same branch do not create
+  duplicate `task.assigned` events.
+- `agent-ledger/adapters/tests/run.sh` exercises both behaviours
+  end-to-end against a real (test-ledger) `agent-ledger` binary.
+- Documentation refresh in `docs/adapters.md` aligned with the
+  v0.1.1+ kernel surface.
+
+#### Compatibility
+
+Works against `agent-ledger` v0.1.0 (reason-marker-only audit) and
+v0.1.1+ (structured metadata + reason marker). Recommended pair is
+the latest stable kernel; current latest is `v0.1.3`.
+
+## [0.1.3] - 2026-04-28
+
 ### Kernel: typed metadata decode error
 
 - Assignment, intent, conflict, change, and validation readers in
@@ -360,7 +395,9 @@ Code, and Babysitter adapters arrive in later phases.
   published `*_checksums.txt` file. A Homebrew tap with signed
   binaries is a Phase 5 deliverable.
 
-[Unreleased]: https://github.com/ruminaider/agent-clis/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/ruminaider/agent-clis/compare/v0.1.3...HEAD
+[0.2.0-rc3]: https://github.com/ruminaider/agent-clis/releases/tag/v0.2.0-rc3
+[0.1.3]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.3
 [0.1.2]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.2
 [0.1.1]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.1
 [0.2.0-rc2]: https://github.com/ruminaider/agent-clis/releases/tag/v0.2.0-rc2
