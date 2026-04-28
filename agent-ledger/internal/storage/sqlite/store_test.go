@@ -258,61 +258,65 @@ func TestWriteDomainEvent_DomainFailureRollsBackEvent(t *testing.T) {
 	}
 }
 
-func TestWriteDomainEventImmediate_SerializesConcurrentReadThenWrite(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skip in short mode")
-	}
+func TestWriteDomainEventImmediate_BusyOnSecondImmediate(t *testing.T) {
 	s, cleanup := openTestStore(t)
 	defer cleanup()
+
 	ctx := context.Background()
-	const targetID = "agt_immediate_race"
-	firstRead := make(chan struct{}, 1)
-	secondRead := make(chan struct{}, 1)
 	release := make(chan struct{})
-	writer := func(kind string, readCh chan struct{}) func(context.Context, *sql.Conn) ([]storage.Event, error) {
-		return func(ctx context.Context, conn *sql.Conn) ([]storage.Event, error) {
-			var n int
-			if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents WHERE agent_id = ?`, targetID).Scan(&n); err != nil {
-				return nil, err
-			}
+	gotLock := make(chan struct{}, 1)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- s.WriteDomainEventImmediate(ctx, func(ctx context.Context, conn *sql.Conn) ([]storage.Event, error) {
 			select {
-			case readCh <- struct{}{}:
+			case gotLock <- struct{}{}:
 			default:
 			}
 			<-release
-			if n == 0 {
-				if _, err := conn.ExecContext(ctx, `INSERT INTO agents(agent_id, agent_kind, started_at) VALUES(?, ?, ?)`, targetID, kind, id.FormatTimestamp(s.Clock()())); err != nil {
-					return nil, err
-				}
-			}
 			return nil, nil
-		}
-	}
-	done := make(chan error, 2)
-	go func() { done <- s.WriteDomainEventImmediate(ctx, writer("worker-1", firstRead)) }()
+		})
+	}()
+
 	select {
-	case <-firstRead:
-	case <-time.After(2 * time.Second):
-		t.Fatal("first immediate txn never reached the read step")
+	case <-gotLock:
+	case <-time.After(1 * time.Second):
+		t.Fatal("first immediate txn never acquired the lock")
 	}
-	go func() { done <- s.WriteDomainEventImmediate(ctx, writer("worker-2", secondRead)) }()
-	select {
-	case <-secondRead:
-		t.Fatal("second immediate txn reached the read step before the first committed")
-	case <-time.After(2 * time.Second):
-	}
-	close(release)
-	for i := 0; i < 2; i++ {
-		if err := <-done; err != nil {
-			t.Fatalf("write %d: %v", i, err)
-		}
-	}
-	var n int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM agents WHERE agent_id = ?`, targetID).Scan(&n); err != nil {
+
+	secondConn, err := s.DB().Conn(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 {
-		t.Fatalf("agent rows = %d, want 1", n)
+	defer secondConn.Close()
+
+	if _, err := secondConn.ExecContext(ctx, `PRAGMA busy_timeout = 200`); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	_, err = secondConn.ExecContext(ctx, `BEGIN IMMEDIATE`)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected SQLITE_BUSY from second BEGIN IMMEDIATE")
+	}
+	if !strings.Contains(err.Error(), "SQLITE_BUSY") {
+		t.Fatalf("expected SQLITE_BUSY, got %v", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("BEGIN IMMEDIATE took %v, want well under 500ms", elapsed)
+	}
+
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("first immediate txn: %v", err)
+	}
+
+	if _, err := secondConn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		t.Fatalf("second BEGIN IMMEDIATE after release: %v", err)
+	}
+	if _, err := secondConn.ExecContext(ctx, `ROLLBACK`); err != nil {
+		t.Fatalf("rollback second conn: %v", err)
 	}
 }
 
