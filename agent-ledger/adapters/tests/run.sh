@@ -26,8 +26,11 @@ cat > "$tmp/bin/agent-ledger" <<'STUB'
 printf '%s\n' "$*" >> "$AGENT_LEDGER_STUB_LOG"
 case "$1" in
   identify) exit 0 ;;
-  assign) exit 0 ;;
-  *) exit 0 ;;
+  assign)
+    if [[ " $* " == *" --if-absent "* ]]; then
+      printf 'reused=true\n' >> "$AGENT_LEDGER_STUB_LOG"
+    fi
+    exit 0 ;;
 esac
 STUB
 chmod +x "$tmp/bin/agent-ledger"
@@ -130,5 +133,86 @@ const env = JSON.parse(process.argv[1].slice("AGENT_LEDGER_BOOTSTRAP_JSON=".leng
 if (env.AGENT_LEDGER_TASK_SOURCE !== "branch") throw new Error(`source=${env.AGENT_LEDGER_TASK_SOURCE}`);
 ' "$require_line"
 unset AGENT_LEDGER_REQUIRE_TASK
+
+# PR detection success: gh resolves to a PR number, so the bootstrap must
+# derive pr-42 and emit a harness-derived marker.
+: > "$AGENT_LEDGER_STUB_LOG"
+repo_pr="$tmp/repo-pr"
+mkdir -p "$repo_pr"
+git -C "$repo_pr" init -q
+git -C "$repo_pr" -c user.email=t@t -c user.name=t commit --allow-empty -qm init
+git -C "$repo_pr" checkout -q -b feature/pr-test
+mkdir -p "$tmp/bin-gh-pr"
+cat > "$tmp/bin-gh-pr/gh" <<'STUB'
+#!/usr/bin/env bash
+echo 42
+STUB
+chmod +x "$tmp/bin-gh-pr/gh"
+pr_line="$(PATH="$tmp/bin-gh-pr:$tmp/bin:$PATH" bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --orchestrator test --cwd "$repo_pr" --detect-pr 1 --json)"
+node -e '
+const env = JSON.parse(process.argv[1].slice("AGENT_LEDGER_BOOTSTRAP_JSON=".length));
+if (env.AGENT_LEDGER_TASK_ID !== "pr-42") throw new Error(`task=${env.AGENT_LEDGER_TASK_ID}`);
+if (env.AGENT_LEDGER_TASK_SOURCE !== "pr") throw new Error(`source=${env.AGENT_LEDGER_TASK_SOURCE}`);
+' "$pr_line"
+grep -q -- "\[harness-derived by pi-adapter source=pr task=pr-42" "$AGENT_LEDGER_STUB_LOG"
+
+# PR detection failure fallthrough: when gh exits non-zero, branch
+# detection must still work.
+: > "$AGENT_LEDGER_STUB_LOG"
+repo_pr_fall="$tmp/repo-pr-fall"
+mkdir -p "$repo_pr_fall"
+git -C "$repo_pr_fall" init -q
+git -C "$repo_pr_fall" -c user.email=t@t -c user.name=t commit --allow-empty -qm init
+git -C "$repo_pr_fall" checkout -q -b feature/pr-fallthrough
+mkdir -p "$tmp/bin-gh-fail"
+cat > "$tmp/bin-gh-fail/gh" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+chmod +x "$tmp/bin-gh-fail/gh"
+fall_line="$(PATH="$tmp/bin-gh-fail:$tmp/bin:$PATH" bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --orchestrator test --cwd "$repo_pr_fall" --detect-pr 1 --json)"
+node -e '
+const env = JSON.parse(process.argv[1].slice("AGENT_LEDGER_BOOTSTRAP_JSON=".length));
+if (env.AGENT_LEDGER_TASK_SOURCE !== "branch") throw new Error(`source=${env.AGENT_LEDGER_TASK_SOURCE}`);
+if (env.AGENT_LEDGER_TASK_ID !== "feature/pr-fallthrough") throw new Error(`task=${env.AGENT_LEDGER_TASK_ID}`);
+' "$fall_line"
+
+# Unborn branch: branch detection must resolve without any commits.
+: > "$AGENT_LEDGER_STUB_LOG"
+repo_unborn="$tmp/repo-unborn"
+mkdir -p "$repo_unborn"
+git -C "$repo_unborn" init -q
+git -C "$repo_unborn" checkout -q -b feature/no-commits
+unborn_line="$(bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --orchestrator test --cwd "$repo_unborn" --json)"
+node -e '
+const env = JSON.parse(process.argv[1].slice("AGENT_LEDGER_BOOTSTRAP_JSON=".length));
+if (env.AGENT_LEDGER_TASK_SOURCE !== "branch") throw new Error(`source=${env.AGENT_LEDGER_TASK_SOURCE}`);
+if (env.AGENT_LEDGER_TASK_ID !== "feature/no-commits") throw new Error(`task=${env.AGENT_LEDGER_TASK_ID}`);
+' "$unborn_line"
+
+# Idempotency replay: the assign call site must include --if-absent on
+# repeated bootstrap invocations.
+: > "$AGENT_LEDGER_STUB_LOG"
+repo_replay="$tmp/repo-replay"
+mkdir -p "$repo_replay"
+git -C "$repo_replay" init -q
+git -C "$repo_replay" -c user.email=t@t -c user.name=t commit --allow-empty -qm init
+git -C "$repo_replay" checkout -q -b feature/replay
+export AGENT_ID="test-agent-replay"
+bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --orchestrator test --cwd "$repo_replay" >/dev/null
+grep -q -- '--if-absent' "$AGENT_LEDGER_STUB_LOG"
+bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --orchestrator test --cwd "$repo_replay" >/dev/null
+grep -q -- '--if-absent' "$AGENT_LEDGER_STUB_LOG"
+unset AGENT_ID
+
+# Shell export must surface AUTO_ASSIGNED=0 for branch-derived tasks.
+: > "$AGENT_LEDGER_STUB_LOG"
+repo_shell="$tmp/repo-shell"
+mkdir -p "$repo_shell"
+git -C "$repo_shell" init -q
+git -C "$repo_shell" -c user.email=t@t -c user.name=t commit --allow-empty -qm init
+git -C "$repo_shell" checkout -q -b feature/shell-export
+shell_line="$(bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --orchestrator test --cwd "$repo_shell")"
+grep -q 'export AGENT_LEDGER_AUTO_ASSIGNED=0' <<<"$shell_line"
 
 printf 'adapter tests passed\n'

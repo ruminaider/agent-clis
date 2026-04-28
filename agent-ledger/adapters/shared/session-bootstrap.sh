@@ -133,7 +133,7 @@ if [[ -z "$TASK_ID" ]]; then
   # branch that has an open PR. Errors and missing tools are silent
   # so the chain falls through to branch detection.
   if [[ "$DETECT_PR" == "1" ]] && command -v gh >/dev/null 2>&1; then
-    pr_number="$(gh -R "$DETECT_CWD" pr view --json number --jq '.number' 2>/dev/null || true)"
+    pr_number="$( (cd "$DETECT_CWD" 2>/dev/null && gh pr view --json number --jq '.number' 2>/dev/null) || true )"
     if [[ -n "$pr_number" ]] && [[ "$pr_number" =~ ^[0-9]+$ ]]; then
       TASK_ID="pr-${pr_number}"
       TASK_SOURCE="pr"
@@ -142,7 +142,13 @@ if [[ -z "$TASK_ID" ]]; then
 fi
 
 if [[ -z "$TASK_ID" ]]; then
-  branch="$(git_in rev-parse --abbrev-ref HEAD || true)"
+  branch="$(git_in symbolic-ref --quiet --short HEAD || true)"
+  if [[ -z "$branch" ]]; then
+    branch="$(git_in branch --show-current || true)"
+  fi
+  if [[ -z "$branch" ]]; then
+    branch="$(git_in rev-parse --abbrev-ref HEAD || true)"
+  fi
   if [[ -n "$branch" ]] && [[ "$branch" != "HEAD" ]]; then
     TASK_ID="$(sanitize_task_token "$branch")"
     TASK_SOURCE="branch"
@@ -170,7 +176,6 @@ fi
 
 case "$TASK_SOURCE" in
   flag|env)
-    : "session-bootstrap: task id explicitly supplied via $TASK_SOURCE: $TASK_ID"
     echo "session-bootstrap: task id from $TASK_SOURCE: $TASK_ID" >&2
     ;;
   pr|branch|detached)
@@ -218,6 +223,7 @@ if [[ "$EXPLICIT" == "0" ]]; then
       --agent "$AGENT_ID" \
       --policy "$policy" \
       "${allow_args[@]+"${allow_args[@]}"}" \
+      --if-absent \
       --reason "$reason" \
       "${ledger_args[@]+"${ledger_args[@]}"}" >&2
   then
@@ -244,6 +250,8 @@ else
   printf 'export AGENT_LEDGER_TASK_SOURCE=%q\n' "$TASK_SOURCE"
   if [[ "$TASK_SOURCE" == "auto" ]]; then
     printf 'export AGENT_LEDGER_AUTO_ASSIGNED=1\n'
+  else
+    printf 'export AGENT_LEDGER_AUTO_ASSIGNED=0\n'
   fi
   parent_export="${PARENT_TASK_FLAG:-${AGENT_LEDGER_PARENT_TASK_ID:-}}"
   if [[ -n "$parent_export" ]]; then
