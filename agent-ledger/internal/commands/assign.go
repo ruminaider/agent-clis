@@ -120,7 +120,7 @@ func runAssign(streams Streams, o *assignOpts) error {
 	if o.ifAbsent {
 		prev, err := d.LatestActiveAssignmentForTaskAndAgent(ctx, o.task, o.agent)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return cli.NewError(cli.ExitStorageIO, "assign_lookup_failed", err.Error())
+			return mapAssignmentReadError(err, "assign_lookup_failed")
 		}
 		if err == nil && sameAssignmentReplay(prev, assignment) {
 			assignment = prev

@@ -83,11 +83,18 @@ The derive-from-harness path is the default because the harness
 almost always knows what the human is working on. Operators who want
 strict enforcement set `AGENT_LEDGER_REQUIRE_TASK=1`; the bootstrap then blocks only the auto fallback. PR, branch, and detached harness-derived sources still satisfy the requirement.
 
-### Audit trail in v0.1
+### Audit trail
 
-The v0.1 kernel does not yet have a `--metadata` flag on `assign`,
-so adapters encode the audit signal in the assignment's `reason`
-text as a leading bracketed marker. Two formats:
+Adapters write the audit signal in two complementary forms:
+
+1. The assignment's `metadata_json` column carries structured fields
+   (`auto_assigned`, `auto_assigned_by`, `task_source`,
+   `parent_task`). This is the canonical surface for programmatic
+   queries via `agent-ledger assignments --json` (kernel v0.1.1+).
+2. The assignment's `reason` text carries a leading bracketed marker
+   that the v0.1.0 kernel surfaces verbatim and that the v0.1.1+
+   kernel keeps for forward compatibility with legacy queries. Two
+   formats:
 
 - **Auto-fallback** (no harness context found):
 
@@ -101,8 +108,9 @@ text as a leading bracketed marker. Two formats:
   [harness-derived by <by> source=<branch|pr|detached> task=<id> agent=<id>] <human reason>
   ```
 
-Assignments without either prefix were supplied explicitly by an
-orchestrator (`--task-id` flag or `AGENT_LEDGER_TASK_ID` env var).
+Assignments without either marker prefix were supplied explicitly
+by an orchestrator (`--task-id` flag or `AGENT_LEDGER_TASK_ID` env
+var).
 
 Reviewers query the audit trail through the
 `agent-ledger assignments` command on v0.1.1+ kernels:
@@ -143,17 +151,15 @@ blocking the merge.
 
 Bootstrap calls `agent-ledger assign --if-absent` for non-explicit sources (pr, branch, detached, and auto), so repeated pi launches on the same branch do not create duplicate `task.assigned` events. Dedupe is scoped to `(task_id, assigned_agent_id)`: a genuinely new `AGENT_ID` for the same branch still creates a new assignment, which is correct because the agent is new. Changes to `--allow`, `--forbid`, or `--policy` always create a new assignment, so policy drift remains visible to reviewers. Explicit `--task-id` and `AGENT_LEDGER_TASK_ID` paths still skip bootstrap assignment entirely, because the orchestrator owns it.
 
-### Audit trail in v0.2
+### Future audit work
 
-v0.2 of the kernel will add `--metadata` to `assign` (and likely
-`claim`, `record`, `adopt`). Adapters will then write structured
-`metadata.auto_assigned = true` while keeping the reason marker for
-backwards compatibility. The `MISSING_ASSIGNMENT` finding will key
-on the structured metadata flag.
-
-This is a small kernel patch tracked under issue "agent-ledger v0.2:
---metadata on assign and friends". Until then the marker prefix is
-the public surface for adapter audit.
+The v0.1.1 kernel ships `--metadata`, the v0.1.2 kernel closes the
+concurrent claim race, and the v0.1.3 kernel surfaces metadata
+decode failures as a typed `MetadataDecodeError`. A future release
+should wire `verify`'s `MISSING_ASSIGNMENT` finding to key on
+`metadata.auto_assigned == true` directly rather than parsing the
+reason marker prefix. Until then `MISSING_ASSIGNMENT` continues to
+use the prefix-based detection it has always used.
 
 ## Session bootstrap
 
@@ -225,16 +231,14 @@ on `PATH` and the project ledger having been initialized with
 
 ## Kernel dependencies
 
-### v0.1.1: structured audit and concurrency hardening
+### v0.1.1: structured audit and assignment invariant
 
-v0.1.1 closed the audit-trail gap the rc1/rc2 adapters carried:
-
-1. **`assign --metadata <json>`** is now a kernel flag. The bootstrap
-   probes `agent-ledger assign --help` for `--metadata` support; if
-   present, it writes structured `metadata.auto_assigned`,
+1. **`assign --metadata <json>`** is a kernel flag. The bootstrap
+   passes structured `metadata.auto_assigned`,
    `metadata.auto_assigned_by`, `metadata.task_source`, and
-   `metadata.parent_task`. The reason marker is still emitted for
-   forward-compatibility with older queries.
+   `metadata.parent_task` directly. The reason marker is still
+   emitted for forward-compatibility with v0.1.0 ledgers and
+   pre-v0.1.1 queries.
 2. **`agent-ledger assignments` query command** lists assignments by
    `--task`, `--orchestrator`, `--agent`, `--status`, and `--limit`.
    The classifier `reason_marker` distinguishes auto, harness-derived,
@@ -248,12 +252,39 @@ v0.1.1 closed the audit-trail gap the rc1/rc2 adapters carried:
    `--if-absent` is now strict: a duplicate fails fast with
    `assignment_exists` instead of silently inserting a competing row.
 
+### v0.1.2: concurrent claim race fix
+
+The claim flow now runs overlap detection, conflict resolution,
+and intent insert inside a single SQLite `BEGIN IMMEDIATE`
+transaction. Concurrent claims under both `warn` and `exclusive`
+policies are now race-free; `tests/integration/concurrent_test`
+exercises this end-to-end.
+
+### v0.1.3: typed metadata decode error
+
+Assignment, intent, conflict, change, and validation readers now
+return a typed `*domain.MetadataDecodeError` when a row's
+`metadata_json` column does not parse, instead of silently
+replacing it with an empty map. CLI handlers map this to
+`ExitStorageIO` with code `metadata_decode_failed` and details
+pointing at the corrupted row. Programmatic callers can detect
+with `errors.As`.
+
+### Older kernels
+
+Legacy ledgers from v0.1.0 (no metadata flag, no assignments query,
+no unique index) and v0.2.0-rc2 (no structured metadata; reason
+marker only) remain queryable via the `reason_marker` classifier
+emitted by `agent-ledger assignments` once the kernel is upgraded
+to v0.1.1+. The reason marker prefix is forward-compatible across
+all versions.
+
 ### Future kernel work
 
-- Concurrent claim race in `claim` (warn and exclusive policies).
-  Two integration tests are skipped pending the v0.1.2 kernel patch
-  that moves `conflicts.Resolve` inside the `InsertIntent` BEGIN
-  IMMEDIATE transaction.
+Nothing kernel-blocking remains for the v0.2.0 adapter promotion.
+The `verify` command's `MISSING_ASSIGNMENT` finding could be
+tightened to key on `metadata.auto_assigned == true` rather than
+the reason marker prefix; tracked as future polish.
 
 ## Stability
 

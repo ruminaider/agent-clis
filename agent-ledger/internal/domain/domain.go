@@ -232,17 +232,63 @@ func encodeMeta(m map[string]any) (string, error) {
 	return string(raw), nil
 }
 
-func decodeMeta(raw string) map[string]any {
+// MetadataDecodeError is returned by metadata-decoding readers when
+// a row's metadata_json column contains a payload that does not
+// parse as a JSON object. Callers that want to read past corrupted
+// rows can detect the error with errors.As; callers that want to
+// fail loudly on ledger corruption can let it propagate and return
+// ExitStorageIO with code metadata_decode_failed.
+//
+// Field is the logical column path (table.column or table.row[id].column)
+// for diagnostics. Raw carries up to 200 bytes of the offending
+// payload so a reviewer reading the error knows what to repair.
+type MetadataDecodeError struct {
+	Field string
+	RowID string
+	Raw   string
+	Err   error
+}
+
+func (e *MetadataDecodeError) Error() string {
+	if e == nil {
+		return "<nil MetadataDecodeError>"
+	}
+	loc := e.Field
+	if e.RowID != "" {
+		loc = fmt.Sprintf("%s row=%s", e.Field, e.RowID)
+	}
+	return fmt.Sprintf("domain: metadata decode failed (%s): %v", loc, e.Err)
+}
+
+func (e *MetadataDecodeError) Unwrap() error { return e.Err }
+
+// decodeMeta parses a metadata_json column and returns either the
+// decoded map or a typed *MetadataDecodeError. Empty input returns
+// an empty map without error so unset metadata is never an error.
+//
+// Callers MUST pass field (e.g. "assignments.metadata_json") and
+// rowID (the row's primary key) so the error surface points
+// reviewers at the corrupted row.
+func decodeMeta(raw, field, rowID string) (map[string]any, error) {
 	if raw == "" {
-		return map[string]any{}
+		return map[string]any{}, nil
 	}
 	var m map[string]any
 	dec := json.NewDecoder(strings.NewReader(raw))
 	dec.UseNumber()
 	if err := dec.Decode(&m); err != nil {
-		return map[string]any{}
+		truncated := raw
+		if len(truncated) > 200 {
+			truncated = truncated[:200] + "..."
+		}
+		return nil, &MetadataDecodeError{
+			Field: field,
+			RowID: rowID,
+			Raw:   truncated,
+			Err:   err,
+		}
 	}
-	return m
+	return m, nil
 }
 
 func encodePaths(p []string) (string, error) {
@@ -419,7 +465,11 @@ func (s *Store) LatestActiveAssignmentForTask(ctx context.Context, taskID string
 	}
 	a.AllowedPaths = decodePaths(allowed)
 	a.ForbiddenPaths = decodePaths(forbid)
-	a.Metadata = decodeMeta(meta)
+	decoded, err := decodeMeta(meta, "assignments.metadata_json", a.AssignmentID)
+	if err != nil {
+		return Assignment{}, err
+	}
+	a.Metadata = decoded
 	return a, nil
 }
 
@@ -441,7 +491,11 @@ func (s *Store) LatestActiveAssignmentForTaskAndAgent(ctx context.Context, taskI
 	}
 	a.AllowedPaths = decodePaths(allowed)
 	a.ForbiddenPaths = decodePaths(forbid)
-	a.Metadata = decodeMeta(meta)
+	decoded, err := decodeMeta(meta, "assignments.metadata_json", a.AssignmentID)
+	if err != nil {
+		return Assignment{}, err
+	}
+	a.Metadata = decoded
 	return a, nil
 }
 
@@ -512,7 +566,11 @@ func (s *Store) ListAssignments(ctx context.Context, filter AssignmentFilter) ([
 		}
 		a.AllowedPaths = decodePaths(allowed)
 		a.ForbiddenPaths = decodePaths(forbid)
-		a.Metadata = decodeMeta(meta)
+		decoded, err := decodeMeta(meta, "assignments.metadata_json", a.AssignmentID)
+		if err != nil {
+			return nil, err
+		}
+		a.Metadata = decoded
 		out = append(out, a)
 	}
 	return out, rows.Err()
@@ -743,7 +801,11 @@ func (s *Store) IntentByID(ctx context.Context, intentID string) (Intent, error)
 	if err := row.Scan(&in.IntentID, &in.EventID, &in.AssignmentID, &in.TaskID, &in.AgentID, &in.AccessMode, &in.ConflictPolicy, &in.Reason, &in.Status, &in.OpenedAt, &in.LastHeartbeatAt, &in.HeartbeatExpiresAt, &in.ClosedAt, &in.CloseOutcome, &in.CloseReason, &meta); err != nil {
 		return Intent{}, err
 	}
-	in.Metadata = decodeMeta(meta)
+	decoded, err := decodeMeta(meta, "intents.metadata_json", in.IntentID)
+	if err != nil {
+		return Intent{}, err
+	}
+	in.Metadata = decoded
 	return in, nil
 }
 
@@ -1012,7 +1074,11 @@ func (s *Store) ConflictByID(ctx context.Context, conflictID string) (Conflict, 
 	if err := row.Scan(&c.ConflictID, &c.EventID, &c.Path, &c.PathHash, &c.ExistingIntentID, &c.NewIntentID, &c.Policy, &c.Status, &c.DetectedAt, &c.AcknowledgedAt, &c.AcknowledgedByAgentID, &c.Resolution, &meta); err != nil {
 		return Conflict{}, err
 	}
-	c.Metadata = decodeMeta(meta)
+	decoded, err := decodeMeta(meta, "conflicts.metadata_json", c.ConflictID)
+	if err != nil {
+		return Conflict{}, err
+	}
+	c.Metadata = decoded
 	return c, nil
 }
 
@@ -1052,7 +1118,11 @@ func (s *Store) ListConflicts(ctx context.Context, taskID, status string) ([]Con
 		if err := rows.Scan(&c.ConflictID, &c.EventID, &c.Path, &c.PathHash, &c.ExistingIntentID, &c.NewIntentID, &c.Policy, &c.Status, &c.DetectedAt, &c.AcknowledgedAt, &c.AcknowledgedByAgentID, &c.Resolution, &meta); err != nil {
 			return nil, err
 		}
-		c.Metadata = decodeMeta(meta)
+		decoded, err := decodeMeta(meta, "conflicts.metadata_json", c.ConflictID)
+		if err != nil {
+			return nil, err
+		}
+		c.Metadata = decoded
 		out = append(out, c)
 	}
 	return out, rows.Err()
@@ -1083,7 +1153,11 @@ func (s *Store) ListActiveIntents(ctx context.Context, taskID string) ([]Intent,
 		if err := rows.Scan(&in.IntentID, &in.EventID, &in.AssignmentID, &in.TaskID, &in.AgentID, &in.AccessMode, &in.ConflictPolicy, &in.Reason, &in.Status, &in.OpenedAt, &in.LastHeartbeatAt, &in.HeartbeatExpiresAt, &in.ClosedAt, &in.CloseOutcome, &in.CloseReason, &meta); err != nil {
 			return nil, err
 		}
-		in.Metadata = decodeMeta(meta)
+		decoded, err := decodeMeta(meta, "intents.metadata_json", in.IntentID)
+		if err != nil {
+			return nil, err
+		}
+		in.Metadata = decoded
 		out = append(out, in)
 	}
 	return out, rows.Err()
