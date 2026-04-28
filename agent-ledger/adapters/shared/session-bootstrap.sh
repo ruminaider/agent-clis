@@ -222,19 +222,25 @@ if [[ "$EXPLICIT" == "0" ]]; then
   # the canonical surface for programmatic queries via the
   # agent-ledger assignments command.
   metadata_json="{\"auto_assigned\":$([[ "$TASK_SOURCE" == "auto" ]] && echo true || echo false)"
-  metadata_json="${metadata_json},\"auto_assigned_by\":\"${HARNESS}-adapter\""
-  metadata_json="${metadata_json},\"task_source\":\"${TASK_SOURCE}\""
+  metadata_json="${metadata_json},\"auto_assigned_by\":\"$(json_escape "${HARNESS}-adapter")\""
+  metadata_json="${metadata_json},\"task_source\":\"$(json_escape "$TASK_SOURCE")\""
   if [[ -n "$parent" ]]; then
     metadata_json="${metadata_json},\"parent_task\":\"$(json_escape "$parent")\""
   fi
   metadata_json="${metadata_json}}"
 
-  # Older kernels (v0.1.0) do not understand --metadata. Probe once
-  # per call; if the flag is unsupported, retry without it. The reason
-  # marker is written either way so audits work across kernel versions.
+  # v0.1.1+ kernels require --metadata. Treat missing support as a hard
+  # compatibility error rather than silently dropping structured data.
   metadata_args=( --metadata "$metadata_json" )
-  if ! agent-ledger assign --help 2>&1 | grep -q -- "--metadata"; then
-    metadata_args=()
+  if assign_help="$(agent-ledger assign --help 2>&1)"; then
+    if ! grep -q -- "--metadata" <<<"$assign_help"; then
+      echo "session-bootstrap: agent-ledger assign --help does not advertise required --metadata capability (kernel v0.1.1+ required)" >&2
+      exit 5
+    fi
+  else
+    echo "session-bootstrap: agent-ledger assign --help failed, cannot verify required --metadata capability (kernel v0.1.1+ required)" >&2
+    printf '%s\n' "$assign_help" >&2
+    exit 5
   fi
 
   if ! agent-ledger assign \

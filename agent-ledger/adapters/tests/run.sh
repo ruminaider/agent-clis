@@ -27,6 +27,33 @@ printf '%s\n' "$*" >> "$AGENT_LEDGER_STUB_LOG"
 case "$1" in
   identify) exit 0 ;;
   assign)
+    if [[ "${2:-}" == "--help" ]]; then
+      case "${AGENT_LEDGER_STUB_ASSIGN_HELP_MODE:-ok}" in
+        fail)
+          printf 'assign help failed\n' >&2
+          exit 1
+          ;;
+        no-metadata)
+          printf 'usage: agent-ledger assign [--task] [--reason]\n'
+          exit 0
+          ;;
+        *)
+          printf 'usage: agent-ledger assign [--task] [--reason] [--metadata]\n'
+          exit 0
+          ;;
+      esac
+    fi
+    if [[ -n "${AGENT_LEDGER_STUB_METADATA_LOG:-}" ]]; then
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --metadata)
+            printf '%s\n' "$2" > "$AGENT_LEDGER_STUB_METADATA_LOG"
+            shift 2
+            ;;
+          *) shift ;;
+        esac
+      done
+    fi
     if [[ " $* " == *" --if-absent "* ]]; then
       printf 'reused=true\n' >> "$AGENT_LEDGER_STUB_LOG"
     fi
@@ -56,6 +83,47 @@ if (env.AGENT_LEDGER_AUTO_ASSIGNED !== "1") throw new Error("missing auto-assign
 ' "$json_line"
 grep -q -- "--allow src/\*\* --allow tests/\*\*" "$AGENT_LEDGER_STUB_LOG"
 grep -q -- "\[auto-assigned by pi-adapter auto-derived" "$AGENT_LEDGER_STUB_LOG"
+
+# Metadata JSON must survive a harness name containing a quote and the
+# assign stub must receive valid JSON.
+: > "$AGENT_LEDGER_STUB_LOG"
+quoted_metadata="$tmp/quoted-metadata.json"
+export AGENT_LEDGER_STUB_METADATA_LOG="$quoted_metadata"
+quoted_harness='claude"code'
+quoted_line="$(bash adapters/shared/session-bootstrap.sh --harness "$quoted_harness" --agent-kind worker --orchestrator test --cwd "$nogit" --json)"
+node -e '
+const env = JSON.parse(process.argv[1].slice("AGENT_LEDGER_BOOTSTRAP_JSON=".length));
+if (!env.AGENT_LEDGER_TASK_ID?.startsWith("auto/")) throw new Error(`task=${env.AGENT_LEDGER_TASK_ID}`);
+if (env.AGENT_LEDGER_TASK_SOURCE !== "auto") throw new Error(`source=${env.AGENT_LEDGER_TASK_SOURCE}`);
+' "$quoted_line"
+python3 - "$quoted_metadata" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding='utf-8') as fh:
+    meta = json.load(fh)
+if meta.get('auto_assigned_by') != 'claude"code-adapter':
+    raise SystemExit(meta.get('auto_assigned_by'))
+if meta.get('task_source') != 'auto':
+    raise SystemExit(meta.get('task_source'))
+if meta.get('parent_task') is not None:
+    raise SystemExit('unexpected parent_task')
+PY
+grep -q -- '^assign ' "$AGENT_LEDGER_STUB_LOG"
+unset AGENT_LEDGER_STUB_METADATA_LOG
+
+# Missing --metadata capability must fail loud when assign --help is
+# unavailable or does not advertise the flag.
+: > "$AGENT_LEDGER_STUB_LOG"
+for mode in fail no-metadata; do
+  export AGENT_LEDGER_STUB_ASSIGN_HELP_MODE="$mode"
+  if bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --orchestrator test --cwd "$nogit" >/dev/null 2>"$tmp/missing-metadata-$mode.err"; then
+    echo "expected bootstrap to fail when assign --help mode=$mode" >&2
+    exit 1
+  fi
+  grep -q -- '--metadata capability' "$tmp/missing-metadata-$mode.err"
+  grep -q -- 'kernel v0.1.1+ required' "$tmp/missing-metadata-$mode.err"
+done
+unset AGENT_LEDGER_STUB_ASSIGN_HELP_MODE
 
 # Branch-derived: inside a git repo on a feature branch the bootstrap
 # must use <branch> as the task id, mark TASK_SOURCE=branch, NOT set
