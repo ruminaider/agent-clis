@@ -29,18 +29,24 @@ const SUBAGENT_TOOLS = new Set(["subagent"]);
 const GIT_STATUS_MAX_BUFFER = 10 * 1024 * 1024;
 const GIT_STATUS_PATH_LIMIT = 1000;
 
+const KNOWN_TASK_SOURCES = new Set<TaskSource>(["flag", "env", "pr", "branch", "detached", "auto"]);
+function parseTaskSource(value: string | undefined): TaskSource | null {
+  if (!value) return null;
+  return KNOWN_TASK_SOURCES.has(value as TaskSource) ? (value as TaskSource) : null;
+}
+
 interface IntentRef {
   intentId: string;
   paths: string[];
 }
 
-type TaskSource = "flag" | "env" | "pr" | "branch" | "detached" | "auto" | "";
+type TaskSource = "flag" | "env" | "pr" | "branch" | "detached" | "auto";
 
 interface BootstrapState {
   bootstrapped: boolean;
   resolvedTaskId: string | null;
   resolvedAgentId: string | null;
-  resolvedTaskSource: TaskSource;
+  resolvedTaskSource: TaskSource | null;
   autoAssigned: boolean;
   bootstrapPromise: Promise<void> | null;
   liveClaims: Map<string, IntentRef>;
@@ -124,7 +130,7 @@ async function bootstrapSession(state: BootstrapState, harness: string, agentKin
     for (const [k, v] of Object.entries(exported)) process.env[k] = v;
     state.resolvedAgentId = process.env.AGENT_ID ?? null;
     state.resolvedTaskId = process.env.AGENT_LEDGER_TASK_ID ?? null;
-    state.resolvedTaskSource = (process.env.AGENT_LEDGER_TASK_SOURCE ?? "") as TaskSource;
+    state.resolvedTaskSource = parseTaskSource(process.env.AGENT_LEDGER_TASK_SOURCE);
     state.autoAssigned = process.env.AGENT_LEDGER_AUTO_ASSIGNED === "1";
     state.bootstrapped = true;
   })();
@@ -179,7 +185,7 @@ function sanitizeMarkerToken(value: string): string {
   return String(value).replace(/[^A-Za-z0-9._:@/-]/g, "-");
 }
 
-function buildAutoAssignedMarker({ by, parent, task, agent, effect }: { by: string; parent?: string | null; task?: string | null; agent?: string | null; effect?: string | null }): string {
+function buildAssignmentMarker({ by, parent, task, agent, effect }: { by: string; parent?: string | null; task?: string | null; agent?: string | null; effect?: string | null }): string {
   const parts = [`[auto-assigned by ${sanitizeMarkerToken(by)}`, "auto-derived"];
   if (parent) parts.push(`parent=${sanitizeMarkerToken(parent)}`);
   if (task) parts.push(`task=${sanitizeMarkerToken(task)}`);
@@ -244,7 +250,7 @@ export default function (pi: ExtensionAPI) {
     bootstrapped: false,
     resolvedTaskId: null,
     resolvedAgentId: null,
-    resolvedTaskSource: "",
+    resolvedTaskSource: null,
     autoAssigned: false,
     bootstrapPromise: null,
     liveClaims: new Map(),
@@ -290,7 +296,7 @@ export default function (pi: ExtensionAPI) {
         "--agent", childAgent,
         "--policy", policy,
         ...allowArgs,
-        "--reason", `${buildAutoAssignedMarker({ by: "pi-extension-subagent-hook", parent: state.resolvedTaskId, task: childTask, agent: childAgent })} subagent dispatch from ${state.resolvedAgentId ?? "pi"}`,
+        "--reason", `${buildAssignmentMarker({ by: "pi-extension-subagent-hook", parent: state.resolvedTaskId, task: childTask, agent: childAgent })} subagent dispatch from ${state.resolvedAgentId ?? "pi"}`,
       ]);
       if (assign.code !== 0) {
         return { block: true, reason: `agent-ledger refused subagent assignment: ${assign.stderr.trim() || `exit ${assign.code}`}` };
@@ -376,5 +382,6 @@ export {
   extractEditPaths,
   normalizeToolName,
   parseBootstrapOutput,
+  parseTaskSource,
   splitAllowGlobs,
 };

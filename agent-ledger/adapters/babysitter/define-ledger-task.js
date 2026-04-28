@@ -19,7 +19,7 @@
 // See agent-ledger/docs/adapters.md for the env var contract.
 
 import { defineTask } from "@a5c-ai/babysitter-sdk";
-import { buildAutoAssignedMarker } from "../shared/marker.js";
+import { buildAssignmentMarker } from "../shared/marker.js";
 
 /**
  * defineLedgerTask wraps a defineTask factory with assign/verify
@@ -89,7 +89,7 @@ export function defineLedgerTask(name, factory, options = {}) {
     const allowArgs = allow.flatMap((g) => ["--allow", g]);
     const isAutoDerived = !args?.[opts.taskIdField];
     const wrappedReason = isAutoDerived
-      ? `${buildAutoAssignedMarker({ by: "babysitter-wrapper", parent: parentTaskId, task: name, agent: agentId, effect: taskCtx.effectId })} ${reason}`
+      ? `${buildAssignmentMarker({ by: "babysitter-wrapper", parent: parentTaskId, task: name, agent: agentId, effect: taskCtx.effectId })} ${reason}`
       : reason;
 
     const assignCommand = [

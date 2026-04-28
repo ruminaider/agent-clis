@@ -19,8 +19,8 @@
 
 const HARNESS_DERIVED_SOURCES = new Set(["branch", "pr", "detached"]);
 
-export function buildAutoAssignedMarker({ by, parent, task, agent, effect, source } = {}) {
-  if (!by) throw new Error("buildAutoAssignedMarker: by is required");
+export function buildAssignmentMarker({ by, parent, task, agent, effect, source } = {}) {
+  if (!by) throw new Error("buildAssignmentMarker: by is required");
   const sourceTag = (source ?? "auto").toLowerCase();
   if (HARNESS_DERIVED_SOURCES.has(sourceTag)) {
     const parts = [`[harness-derived by ${sanitizeToken(by)}`, `source=${sanitizeToken(sourceTag)}`];

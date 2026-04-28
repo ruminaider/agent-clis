@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { buildAutoAssignedMarker } from "../shared/marker.js";
+import { buildAssignmentMarker } from "../shared/marker.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const markerSh = path.join(here, "../shared/marker.sh");
@@ -16,7 +16,7 @@ test("JS and shell marker helpers emit the same marker", () => {
     agent: "worker one",
     effect: "effect:two",
   };
-  const js = buildAutoAssignedMarker(input);
+  const js = buildAssignmentMarker(input);
   const sh = execFileSync("bash", [
     markerSh,
     "--by", input.by,
@@ -30,32 +30,32 @@ test("JS and shell marker helpers emit the same marker", () => {
 });
 
 test("marker helper requires by", () => {
-  assert.throws(() => buildAutoAssignedMarker({}), /by is required/);
+  assert.throws(() => buildAssignmentMarker({}), /by is required/);
 });
 
 test("harness-derived marker uses different prefix and source tag", () => {
-  const js = buildAutoAssignedMarker({ by: "pi-adapter", source: "branch", task: "chore/foo" });
+  const js = buildAssignmentMarker({ by: "pi-adapter", source: "branch", task: "chore/foo" });
   assert.equal(js, "[harness-derived by pi-adapter source=branch task=chore/foo]");
   const sh = execFileSync("bash", [markerSh, "--by", "pi-adapter", "--source", "branch", "--task", "chore/foo"], { encoding: "utf8" });
   assert.equal(sh, js);
 });
 
 test("harness-derived marker for pr source", () => {
-  const js = buildAutoAssignedMarker({ by: "pi-adapter", source: "pr", task: "pr-58" });
+  const js = buildAssignmentMarker({ by: "pi-adapter", source: "pr", task: "pr-58" });
   assert.equal(js, "[harness-derived by pi-adapter source=pr task=pr-58]");
 });
 
 test("harness-derived marker for detached source", () => {
-  const js = buildAutoAssignedMarker({ by: "pi-adapter", source: "detached", task: "detached/abc1234" });
+  const js = buildAssignmentMarker({ by: "pi-adapter", source: "detached", task: "detached/abc1234" });
   assert.equal(js, "[harness-derived by pi-adapter source=detached task=detached/abc1234]");
 });
 
 test("unknown source falls back to auto-assigned format", () => {
-  const js = buildAutoAssignedMarker({ by: "pi-adapter", source: "some-future-mode", task: "x" });
+  const js = buildAssignmentMarker({ by: "pi-adapter", source: "some-future-mode", task: "x" });
   assert(js.startsWith("[auto-assigned by pi-adapter auto-derived"), `got ${js}`);
 });
 
 test("explicit source=auto preserves the rc1 marker format", () => {
-  const js = buildAutoAssignedMarker({ by: "pi-adapter", source: "auto", task: "auto/x/y" });
+  const js = buildAssignmentMarker({ by: "pi-adapter", source: "auto", task: "auto/x/y" });
   assert.equal(js, "[auto-assigned by pi-adapter auto-derived task=auto/x/y]");
 });
