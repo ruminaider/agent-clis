@@ -45,3 +45,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CGO_ENABLED: "0"
+          # Pin the version goreleaser builds against so two tags on the
+          # same commit (e.g. a kernel-line v0.1.x and an adapter-line
+          # v0.2.0-rcN landing together) each produce their own release.
+          # Without this, `git describe --tags` is ambiguous and one
+          # workflow run uploads under the other tag's name, racing the
+          # second run into a 422 already_exists.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
