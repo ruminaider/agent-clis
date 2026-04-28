@@ -265,19 +265,15 @@ func TestWriteDomainEventImmediate_SerializesConcurrentReadThenWrite(t *testing.
 	s, cleanup := openTestStore(t)
 	defer cleanup()
 	ctx := context.Background()
-	payload, err := events.MarshalPayload(map[string]any{"op": "immediate"})
-	if err != nil {
-		t.Fatal(err)
-	}
 	const targetID = "agt_immediate_race"
 	firstRead := make(chan struct{}, 1)
 	secondRead := make(chan struct{}, 1)
 	release := make(chan struct{})
-	writer := func(kind string, readCh chan struct{}) func(context.Context, *sql.Conn) error {
-		return func(ctx context.Context, conn *sql.Conn) error {
+	writer := func(kind string, readCh chan struct{}) func(context.Context, *sql.Conn) ([]storage.Event, error) {
+		return func(ctx context.Context, conn *sql.Conn) ([]storage.Event, error) {
 			var n int
 			if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents WHERE agent_id = ?`, targetID).Scan(&n); err != nil {
-				return err
+				return nil, err
 			}
 			select {
 			case readCh <- struct{}{}:
@@ -285,22 +281,21 @@ func TestWriteDomainEventImmediate_SerializesConcurrentReadThenWrite(t *testing.
 			}
 			<-release
 			if n == 0 {
-				_, err := conn.ExecContext(ctx, `INSERT INTO agents(agent_id, agent_kind, started_at) VALUES(?, ?, ?)`, targetID, kind, id.FormatTimestamp(s.Clock()()))
-				return err
+				if _, err := conn.ExecContext(ctx, `INSERT INTO agents(agent_id, agent_kind, started_at) VALUES(?, ?, ?)`, targetID, kind, id.FormatTimestamp(s.Clock()())); err != nil {
+					return nil, err
+				}
 			}
-			return nil
+			return nil, nil
 		}
 	}
-	ev1 := storage.Event{Type: "agent.identified", PayloadJSON: payload}
-	ev2 := storage.Event{Type: "agent.identified", PayloadJSON: payload}
 	done := make(chan error, 2)
-	go func() { done <- s.WriteDomainEventImmediate(ctx, []storage.Event{ev1}, writer("worker-1", firstRead)) }()
+	go func() { done <- s.WriteDomainEventImmediate(ctx, writer("worker-1", firstRead)) }()
 	select {
 	case <-firstRead:
 	case <-time.After(2 * time.Second):
 		t.Fatal("first immediate txn never reached the read step")
 	}
-	go func() { done <- s.WriteDomainEventImmediate(ctx, []storage.Event{ev2}, writer("worker-2", secondRead)) }()
+	go func() { done <- s.WriteDomainEventImmediate(ctx, writer("worker-2", secondRead)) }()
 	select {
 	case <-secondRead:
 		t.Fatal("second immediate txn reached the read step before the first committed")

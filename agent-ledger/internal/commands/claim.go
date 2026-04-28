@@ -193,7 +193,7 @@ func runClaim(streams Streams, o *claimOpts, args []string) error {
 		intent.Metadata["override_conflict_id"] = o.override
 	}
 
-	decision, filtered, created, err := d.ResolveAndInsertIntent(ctx, intent, ipaths, policy, hasOverride, o.supersede)
+	claimRes, err := d.ResolveAndInsertIntent(ctx, intent, ipaths, policy, hasOverride, o.supersede)
 	if err != nil {
 		// The CLI guard above is canonical; the domain check is
 		// defense-in-depth. Map the sentinel so programmatic callers
@@ -201,9 +201,12 @@ func runClaim(streams Streams, o *claimOpts, args []string) error {
 		if errors.Is(err, domain.ErrUnsafeReason) {
 			return cli.NewError(cli.ExitConfigError, "reason_unsafe", err.Error())
 		}
+		if errors.Is(err, domain.ErrSupersedeNotActive) {
+			return cli.NewError(cli.ExitConflict, "supersede_target_not_active", err.Error())
+		}
 		return cli.NewError(cli.ExitStorageIO, "intent_insert_failed", err.Error())
 	}
-	if decision == conflicts.Block {
+	if claimRes.Blocked() {
 		// SPEC §16.1 #7: write conflict.detected, exit 4, no intent.
 		// We synthesize a placeholder new_intent_id (empty) since the
 		// claim is rejected.
@@ -212,9 +215,9 @@ func runClaim(streams Streams, o *claimOpts, args []string) error {
 			"finding":  "ACTIVE_CONFLICT",
 			"policy":   policy,
 			"task_id":  assignment.TaskID,
-			"overlaps": flattenOverlaps(filtered),
+			"overlaps": flattenOverlaps(claimRes.Overlaps),
 		}
-		for _, ov := range filtered {
+		for _, ov := range claimRes.Overlaps {
 			c, cerr := d.InsertConflict(ctx, domain.Conflict{
 				Path:             ov.NewPath,
 				PathHash:         ov.NewPathHash,
@@ -231,20 +234,20 @@ func runClaim(streams Streams, o *claimOpts, args []string) error {
 		}
 		details["conflict_id"] = firstID
 		return cli.NewError(cli.ExitConflict, "exclusive_conflict",
-			fmt.Sprintf("exclusive policy blocks claim on %d overlapping path(s)", len(filtered))).
+			fmt.Sprintf("exclusive policy blocks claim on %d overlapping path(s)", len(claimRes.Overlaps))).
 			WithDetails(details)
 	}
 
 	// Warn-policy overlaps create conflict rows but the intent still
 	// opens. We record one conflict per overlap.
 	conflictIDs := []string{}
-	if decision == conflicts.Warn {
-		for _, ov := range filtered {
+	if claimRes.Decision == conflicts.Warn {
+		for _, ov := range claimRes.Overlaps {
 			c, cerr := d.InsertConflict(ctx, domain.Conflict{
 				Path:             ov.NewPath,
 				PathHash:         ov.NewPathHash,
 				ExistingIntentID: ov.ExistingIntent,
-				NewIntentID:      created.IntentID,
+				NewIntentID:      claimRes.Intent.IntentID,
 				Policy:           policy,
 				Status:           domain.ConflictDetected,
 			})
@@ -263,10 +266,10 @@ func runClaim(streams Streams, o *claimOpts, args []string) error {
 
 	if o.asJSON {
 		out := map[string]any{
-			"intent_id":     created.IntentID,
-			"event_id":      created.EventID,
-			"assignment_id": created.AssignmentID,
-			"task_id":       created.TaskID,
+			"intent_id":     claimRes.Intent.IntentID,
+			"event_id":      claimRes.Intent.EventID,
+			"assignment_id": claimRes.Intent.AssignmentID,
+			"task_id":       claimRes.Intent.TaskID,
 			"agent_id":      agentID,
 			"access_mode":   o.access,
 			"policy":        policy,
@@ -275,16 +278,16 @@ func runClaim(streams Streams, o *claimOpts, args []string) error {
 		if len(conflictIDs) > 0 {
 			out["conflicts"] = conflictIDs
 		}
-		if decision == conflicts.Warn {
+		if claimRes.Decision == conflicts.Warn {
 			out["status"] = "warn"
 		} else {
 			out["status"] = "ok"
 		}
 		return printJSON(streams.Out, out)
 	}
-	fmt.Fprintf(streams.Out, "intent_id=%s task=%s policy=%s\n", created.IntentID, created.TaskID, policy)
-	if decision == conflicts.Warn {
-		fmt.Fprintf(streams.Err, "warning: %d overlapping intent(s); conflict(s) recorded: %s\n", len(filtered), strings.Join(conflictIDs, ","))
+	fmt.Fprintf(streams.Out, "intent_id=%s task=%s policy=%s\n", claimRes.Intent.IntentID, claimRes.Intent.TaskID, policy)
+	if claimRes.Decision == conflicts.Warn {
+		fmt.Fprintf(streams.Err, "warning: %d overlapping intent(s); conflict(s) recorded: %s\n", len(claimRes.Overlaps), strings.Join(conflictIDs, ","))
 	}
 	return nil
 }

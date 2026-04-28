@@ -73,6 +73,10 @@ const (
 // errors.Is and map it to ExitConfigError (2).
 var ErrUnsafeReason = errors.New("domain: unsafe reason")
 
+// ErrSupersedeNotActive is returned when a supersede target is no
+// longer active by the time the claim attempts to close it.
+var ErrSupersedeNotActive = errors.New("domain: supersede target not active")
+
 // ErrAssignmentExists is returned by InsertAssignment when the unique
 // index on (task_id, assigned_agent_id) WHERE status='active' rejects
 // the insert because another active assignment already exists for the
@@ -166,6 +170,15 @@ type IntentPath struct {
 	PathHash   string
 	AccessMode string
 }
+
+// ClaimResult summarizes the outcome of ResolveAndInsertIntent.
+type ClaimResult struct {
+	Decision conflicts.Decision
+	Overlaps []conflicts.Overlap
+	Intent   Intent
+}
+
+func (r ClaimResult) Blocked() bool { return r.Decision == conflicts.Block }
 
 // Conflict mirrors the conflicts table.
 type Conflict struct {
@@ -512,20 +525,33 @@ func (s *Store) ListAssignments(ctx context.Context, filter AssignmentFilter) ([
 // Both errors.Is(err, domain.ErrUnsafeReason) and
 // errors.As(err, &privacy.SecretError{}) succeed on the returned error.
 func (s *Store) InsertIntent(ctx context.Context, in Intent, ipaths []IntentPath) (Intent, error) {
+	prepared, ipaths, ev, meta, err := s.prepareIntentForInsert(in, ipaths)
+	if err != nil {
+		return prepared, err
+	}
+	if err := s.S.WriteDomainEvent(ctx, ev, func(ctx context.Context, tx *sql.Tx) error {
+		return insertIntentRows(ctx, tx, prepared, ipaths, meta)
+	}); err != nil {
+		return prepared, err
+	}
+	return prepared, nil
+}
+
+func (s *Store) prepareIntentForInsert(in Intent, ipaths []IntentPath) (Intent, []IntentPath, storage.Event, string, error) {
 	if err := privacy.AssertSafe("intent.reason", in.Reason); err != nil {
-		return in, fmt.Errorf("%w: %w", ErrUnsafeReason, err)
+		return in, nil, storage.Event{}, "", fmt.Errorf("%w: %w", ErrUnsafeReason, err)
 	}
 	if in.IntentID == "" {
 		nid, err := s.S.IDGen().New(id.PrefixIntent)
 		if err != nil {
-			return in, err
+			return in, nil, storage.Event{}, "", err
 		}
 		in.IntentID = nid
 	}
 	if in.EventID == "" {
 		nid, err := s.S.IDGen().New(id.PrefixEvent)
 		if err != nil {
-			return in, err
+			return in, nil, storage.Event{}, "", err
 		}
 		in.EventID = nid
 	}
@@ -537,17 +563,16 @@ func (s *Store) InsertIntent(ctx context.Context, in Intent, ipaths []IntentPath
 	}
 	meta, err := encodeMeta(in.Metadata)
 	if err != nil {
-		return in, err
+		return in, nil, storage.Event{}, "", err
 	}
-
 	pathsForPayload := make([]map[string]any, 0, len(ipaths))
-	for _, p := range ipaths {
+	for i := range ipaths {
+		ipaths[i].IntentID = in.IntentID
 		pathsForPayload = append(pathsForPayload, map[string]any{
-			"path":      p.Path,
-			"path_hash": p.PathHash,
+			"path":      ipaths[i].Path,
+			"path_hash": ipaths[i].PathHash,
 		})
 	}
-
 	payload, err := events.MarshalPayload(map[string]any{
 		"intent_id":       in.IntentID,
 		"task_id":         in.TaskID,
@@ -558,7 +583,7 @@ func (s *Store) InsertIntent(ctx context.Context, in Intent, ipaths []IntentPath
 		"paths":           pathsForPayload,
 	})
 	if err != nil {
-		return in, err
+		return in, nil, storage.Event{}, "", err
 	}
 	ev := storage.Event{
 		EventID:      in.EventID,
@@ -570,115 +595,57 @@ func (s *Store) InsertIntent(ctx context.Context, in Intent, ipaths []IntentPath
 		OccurredAt:   in.OpenedAt,
 		PayloadJSON:  payload,
 	}
+	return in, ipaths, ev, meta, nil
+}
+
+func insertIntentRows(ctx context.Context, exec sqlExecer, in Intent, ipaths []IntentPath, meta string) error {
 	for i := range ipaths {
 		ipaths[i].IntentID = in.IntentID
 	}
-	err = s.S.WriteDomainEvent(ctx, ev, func(ctx context.Context, tx *sql.Tx) error {
-		if _, ierr := tx.ExecContext(ctx, `
-			INSERT INTO intents(intent_id, event_id, assignment_id, task_id, agent_id, access_mode, conflict_policy, reason, status, opened_at, last_heartbeat_at, heartbeat_expires_at, metadata_json)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, in.IntentID, in.EventID, nullable(in.AssignmentID), in.TaskID, in.AgentID, in.AccessMode, in.ConflictPolicy, in.Reason, in.Status, in.OpenedAt, nullable(in.LastHeartbeatAt), nullable(in.HeartbeatExpiresAt), meta); ierr != nil {
-			return ierr
+	if _, err := exec.ExecContext(ctx, `
+		INSERT INTO intents(intent_id, event_id, assignment_id, task_id, agent_id, access_mode, conflict_policy, reason, status, opened_at, last_heartbeat_at, heartbeat_expires_at, metadata_json)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, in.IntentID, in.EventID, nullable(in.AssignmentID), in.TaskID, in.AgentID, in.AccessMode, in.ConflictPolicy, in.Reason, in.Status, in.OpenedAt, nullable(in.LastHeartbeatAt), nullable(in.HeartbeatExpiresAt), meta); err != nil {
+		return err
+	}
+	for _, p := range ipaths {
+		if _, err := exec.ExecContext(ctx, `
+			INSERT INTO intent_paths(intent_id, path, realpath, path_hash, access_mode)
+			VALUES(?, ?, ?, ?, ?)
+		`, p.IntentID, p.Path, p.RealPath, p.PathHash, p.AccessMode); err != nil {
+			return err
 		}
-		for _, p := range ipaths {
-			if _, ierr := tx.ExecContext(ctx, `
-				INSERT INTO intent_paths(intent_id, path, realpath, path_hash, access_mode)
-				VALUES(?, ?, ?, ?, ?)
-			`, p.IntentID, p.Path, p.RealPath, p.PathHash, p.AccessMode); ierr != nil {
-				return ierr
-			}
-		}
-		return nil
-	})
-	return in, err
+	}
+	return nil
 }
 
 // ResolveAndInsertIntent is a claim-specific helper. It is not a
 // general transaction abstraction, it exists so claim.go can resolve
 // overlaps and insert the intent under one BEGIN IMMEDIATE lock.
-//
-// On error, the returned decision is conflicts.Unset and the intent is
-// zero-valued. Callers should only inspect decision and overlaps when
-// err == nil.
-func (s *Store) ResolveAndInsertIntent(ctx context.Context, in Intent, ipaths []IntentPath, policy string, hasOverride bool, supersede string) (conflicts.Decision, []conflicts.Overlap, Intent, error) {
-	if err := privacy.AssertSafe("intent.reason", in.Reason); err != nil {
-		return conflicts.Unset, nil, Intent{}, fmt.Errorf("%w: %w", ErrUnsafeReason, err)
-	}
-	hashes := make([]string, 0, len(ipaths))
-	supersedeSet := map[string]bool{}
-	for _, p := range ipaths {
-		hashes = append(hashes, p.PathHash)
-	}
-	if supersede != "" {
-		supersedeSet[supersede] = true
-	}
-	if in.IntentID == "" {
-		nid, err := s.S.IDGen().New(id.PrefixIntent)
-		if err != nil {
-			return conflicts.Unset, nil, Intent{}, err
-		}
-		in.IntentID = nid
-	}
-	if in.EventID == "" {
-		nid, err := s.S.IDGen().New(id.PrefixEvent)
-		if err != nil {
-			return conflicts.Unset, nil, Intent{}, err
-		}
-		in.EventID = nid
-	}
-	if in.OpenedAt == "" {
-		in.OpenedAt = id.FormatTimestamp(s.S.Clock()())
-	}
-	if in.Status == "" {
-		in.Status = IntentActive
-	}
-	meta, err := encodeMeta(in.Metadata)
+func (s *Store) ResolveAndInsertIntent(ctx context.Context, in Intent, ipaths []IntentPath, conflictPolicy string, hasOverride bool, supersede string) (ClaimResult, error) {
+	prepared, ipaths, openedEvent, meta, err := s.prepareIntentForInsert(in, ipaths)
 	if err != nil {
-		return conflicts.Unset, nil, Intent{}, err
+		return ClaimResult{}, err
 	}
-	pathsForPayload := make([]map[string]any, 0, len(ipaths))
-	for i := range ipaths {
-		ipaths[i].IntentID = in.IntentID
-		pathsForPayload = append(pathsForPayload, map[string]any{"path": ipaths[i].Path, "path_hash": ipaths[i].PathHash})
-	}
-	openedPayload, err := events.MarshalPayload(map[string]any{
-		"intent_id":       in.IntentID,
-		"task_id":         in.TaskID,
-		"assignment_id":   in.AssignmentID,
-		"access_mode":     in.AccessMode,
-		"conflict_policy": in.ConflictPolicy,
-		"reason_sha256":   sha256Hex(in.Reason),
-		"paths":           pathsForPayload,
-	})
-	if err != nil {
-		return conflicts.Unset, nil, Intent{}, err
-	}
-	eventsToWrite := []storage.Event{{
-		EventID:      in.EventID,
-		Type:         "intent.opened",
-		AgentID:      in.AgentID,
-		TaskID:       in.TaskID,
-		IntentID:     in.IntentID,
-		AssignmentID: in.AssignmentID,
-		OccurredAt:   in.OpenedAt,
-		PayloadJSON:  openedPayload,
-	}}
+	var supersedeEvent storage.Event
 	if supersede != "" {
-		supersedeEvent, err := supersedeIntentEvent(supersede, in.IntentID, in.AgentID, in.OpenedAt)
+		supersedeEvent, err = supersedeIntentEvent(supersede, prepared.IntentID, prepared.AgentID, prepared.OpenedAt)
 		if err != nil {
-			return conflicts.Unset, nil, Intent{}, err
+			return ClaimResult{}, err
 		}
-		eventsToWrite = append([]storage.Event{supersedeEvent}, eventsToWrite...)
 	}
 	var (
-		decision conflicts.Decision = conflicts.Unset
+		decision conflicts.Decision
 		filtered []conflicts.Overlap
-		created  = in
 	)
-	err = s.S.WriteDomainEventImmediate(ctx, eventsToWrite, func(ctx context.Context, conn *sql.Conn) error {
+	if err := s.S.WriteDomainEventImmediate(ctx, func(ctx context.Context, conn *sql.Conn) ([]storage.Event, error) {
+		hashes := make([]string, 0, len(ipaths))
+		for _, p := range ipaths {
+			hashes = append(hashes, p.PathHash)
+		}
 		rowHashes, err := activeIntentsByPathHashes(ctx, conn, hashes)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		overlaps := make([]conflicts.Overlap, 0, len(rowHashes))
 		for _, row := range rowHashes {
@@ -691,45 +658,34 @@ func (s *Store) ResolveAndInsertIntent(ctx context.Context, in Intent, ipaths []
 			}
 			overlaps = append(overlaps, conflicts.Overlap{NewPath: display, NewPathHash: row.PathHash, ExistingIntent: row.IntentID, ExistingPath: row.Path})
 		}
-		decision, filtered = conflicts.Resolve(policy, overlaps, hasOverride, supersedeSet)
+		supersedeSet := map[string]bool{}
+		if supersede != "" {
+			supersedeSet[supersede] = true
+		}
+		decision, filtered = conflicts.Resolve(conflictPolicy, overlaps, hasOverride, supersedeSet)
 		if decision == conflicts.Block {
-			return errResolveBlocked
+			return nil, nil
 		}
 		if supersede != "" {
-			if err := supersedeIntentTx(ctx, conn, supersede, in.IntentID, in.OpenedAt); err != nil {
-				return err
+			if err := supersedeIntentTx(ctx, conn, supersede, prepared.IntentID, prepared.OpenedAt); err != nil {
+				return nil, err
 			}
-		}
-		if _, err := conn.ExecContext(ctx, `
-			INSERT INTO intents(intent_id, event_id, assignment_id, task_id, agent_id, access_mode, conflict_policy, reason, status, opened_at, last_heartbeat_at, heartbeat_expires_at, metadata_json)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, in.IntentID, in.EventID, nullable(in.AssignmentID), in.TaskID, in.AgentID, in.AccessMode, in.ConflictPolicy, in.Reason, in.Status, in.OpenedAt, nullable(in.LastHeartbeatAt), nullable(in.HeartbeatExpiresAt), meta); err != nil {
-			return err
-		}
-		for _, p := range ipaths {
-			if _, err := conn.ExecContext(ctx, `
-				INSERT INTO intent_paths(intent_id, path, realpath, path_hash, access_mode)
-				VALUES(?, ?, ?, ?, ?)
-			`, p.IntentID, p.Path, p.RealPath, p.PathHash, p.AccessMode); err != nil {
-				return err
+			if err := insertIntentRows(ctx, conn, prepared, ipaths, meta); err != nil {
+				return nil, err
 			}
+			return []storage.Event{supersedeEvent, openedEvent}, nil
 		}
-		created = in
-		return nil
-	})
-	if err != nil {
-		if errors.Is(err, errResolveBlocked) {
-			return conflicts.Block, filtered, Intent{}, nil
+		if err := insertIntentRows(ctx, conn, prepared, ipaths, meta); err != nil {
+			return nil, err
 		}
-		return conflicts.Unset, nil, Intent{}, err
+		return []storage.Event{openedEvent}, nil
+	}); err != nil {
+		return ClaimResult{}, err
 	}
-	return decision, filtered, created, nil
-}
-
-var errResolveBlocked = errors.New("domain: resolve blocked")
-
-type connExecer interface {
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	if decision == conflicts.Block {
+		return ClaimResult{Decision: decision, Overlaps: filtered}, nil
+	}
+	return ClaimResult{Decision: decision, Overlaps: filtered, Intent: prepared}, nil
 }
 
 func supersedeIntentEvent(oldID, newID, agentID, occurredAt string) (storage.Event, error) {
@@ -749,8 +705,12 @@ func supersedeIntentEvent(oldID, newID, agentID, occurredAt string) (storage.Eve
 	}, nil
 }
 
-func supersedeIntentTx(ctx context.Context, exec connExecer, oldID, newID, occurredAt string) error {
-	_, err := exec.ExecContext(ctx, `
+type sqlExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func supersedeIntentTx(ctx context.Context, exec sqlExecer, oldID, newID, occurredAt string) error {
+	res, err := exec.ExecContext(ctx, `
 		UPDATE intents
 		SET status = 'closed',
 		    closed_at = ?,
@@ -758,7 +718,17 @@ func supersedeIntentTx(ctx context.Context, exec connExecer, oldID, newID, occur
 		    metadata_json = json_set(COALESCE(metadata_json, '{}'), '$.superseded_by', ?)
 		WHERE intent_id = ? AND status = 'active'
 	`, occurredAt, newID, oldID)
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 && oldID != "" {
+		return ErrSupersedeNotActive
+	}
+	return nil
 }
 
 // IntentByID loads a single intent.
@@ -795,7 +765,7 @@ func (s *Store) IntentPaths(ctx context.Context, intentID string) ([]IntentPath,
 	return out, rows.Err()
 }
 
-type pathHashQueryer interface {
+type sqlQueryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
@@ -805,7 +775,7 @@ func (s *Store) ActiveIntentsByPathHashes(ctx context.Context, pathHashes []stri
 	return activeIntentsByPathHashes(ctx, s.S.DB(), pathHashes)
 }
 
-func activeIntentsByPathHashes(ctx context.Context, q pathHashQueryer, pathHashes []string) ([]IntentPath, error) {
+func activeIntentsByPathHashes(ctx context.Context, q sqlQueryer, pathHashes []string) ([]IntentPath, error) {
 	if len(pathHashes) == 0 {
 		return nil, nil
 	}
@@ -919,8 +889,11 @@ func (s *Store) SupersedeIntent(ctx context.Context, oldID, newID, agentID strin
 	if err != nil {
 		return err
 	}
-	return s.S.WriteDomainEventImmediate(ctx, []storage.Event{ev}, func(ctx context.Context, conn *sql.Conn) error {
-		return supersedeIntentTx(ctx, conn, oldID, newID, occurred)
+	return s.S.WriteDomainEventImmediate(ctx, func(ctx context.Context, conn *sql.Conn) ([]storage.Event, error) {
+		if err := supersedeIntentTx(ctx, conn, oldID, newID, occurred); err != nil {
+			return nil, err
+		}
+		return []storage.Event{ev}, nil
 	})
 }
 

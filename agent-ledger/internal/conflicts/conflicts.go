@@ -11,15 +11,13 @@ import policynames "github.com/ruminaider/agent-clis/agent-ledger/internal/polic
 
 // Decision describes how a claim should proceed.
 //
-// Unset is the zero value and is reserved for error returns from
-// higher-level helpers. Callers should only inspect Allow, Warn,
+// The zero value is Allow. Callers should only inspect Allow, Warn,
 // Block, or Override when err == nil.
 type Decision int
 
 const (
-	Unset Decision = iota
 	// Allow: no overlapping active intents detected. Open the intent.
-	Allow
+	Allow Decision = iota
 	// Warn: overlapping intents exist under warn policy. Open the
 	// intent but record a conflict row per overlap.
 	Warn
