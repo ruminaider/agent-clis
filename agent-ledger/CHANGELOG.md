@@ -61,6 +61,17 @@ blocked-by-require) gives reviewers a clean audit query:
 `reason LIKE '[harness-derived%'` finds normal harness-managed
 sessions and groups them by source.
 
+### Review remediation (PR #8)
+- F1: PR detection now scopes `gh pr view` to the target cwd; `gh -R <path>` was misusing the repo flag.
+- F2: shell-export mode emits `AGENT_LEDGER_AUTO_ASSIGNED=0|1` to match JSON mode.
+- F3: adapter tests cover PR detection success and failure fallthrough.
+- F4: branch detection uses `git symbolic-ref` first so unborn branches resolve.
+- F5: clarified that `AGENT_LEDGER_REQUIRE_TASK=1` blocks only the auto fallback.
+- F6: tightened `TaskSource` union and added tolerant `parseTaskSource`.
+- F7: removed dead no-op in the explicit task source case.
+- F8: renamed `buildAutoAssignedMarker` to `buildAssignmentMarker`.
+- F9: added `agent-ledger assign --if-absent` and routed bootstrap through it for harness-derived sources.
+
 ## [0.2.0-rc1] - 2026-04-27
 
 ### Phase 2 adapters (scaffold)

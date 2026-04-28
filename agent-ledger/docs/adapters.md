@@ -57,9 +57,7 @@ The pi extension passes `--cwd $(process.cwd())` and (when
 reads `AGENT_LEDGER_TASK_SOURCE` from the bootstrap output and only
 shows a UI warning when source=auto.
 
-Operators who want strict enforcement set
-`AGENT_LEDGER_REQUIRE_TASK=1`; the bootstrap then refuses to fall
-through to the auto path (sources 3-5 still satisfy the requirement).
+Operators who want strict enforcement set `AGENT_LEDGER_REQUIRE_TASK=1`; the bootstrap then blocks only the auto fallback. PR, branch, and detached harness-derived sources still satisfy the requirement.
 
 ## Auto-derived task ids: solving "the orchestrator forgot"
 
@@ -83,8 +81,7 @@ choose between:
 
 The derive-from-harness path is the default because the harness
 almost always knows what the human is working on. Operators who want
-strict enforcement (no derived task ids; require explicit
-`AGENT_LEDGER_TASK_ID`) set `AGENT_LEDGER_REQUIRE_TASK=1`.
+strict enforcement set `AGENT_LEDGER_REQUIRE_TASK=1`; the bootstrap then blocks only the auto fallback. PR, branch, and detached harness-derived sources still satisfy the requirement.
 
 ### Audit trail in v0.1
 
@@ -127,6 +124,10 @@ sqlite3 "$LEDGER/ledger.sqlite" \
 Verify emits a `MISSING_ASSIGNMENT` finding with severity `warning`
 (not error) for auto-fallback tasks so CI can surface them without
 blocking the merge.
+
+### Replay idempotency
+
+Bootstrap calls `agent-ledger assign --if-absent` for non-explicit sources (pr, branch, detached, and auto), so repeated pi launches on the same branch do not create duplicate `task.assigned` events. Dedupe is scoped to `(task_id, assigned_agent_id)`: a genuinely new `AGENT_ID` for the same branch still creates a new assignment, which is correct because the agent is new. Changes to `--allow`, `--forbid`, or `--policy` always create a new assignment, so policy drift remains visible to reviewers. Explicit `--task-id` and `AGENT_LEDGER_TASK_ID` paths still skip bootstrap assignment entirely, because the orchestrator owns it.
 
 ### Audit trail in v0.2
 
