@@ -273,3 +273,114 @@ func TestExclusiveOverrideRequiresOrchestrator(t *testing.T) {
 	// The JSON envelope is on stderr; use the bytes there.
 	_ = out
 }
+
+func TestAssignIfAbsentReusesIdenticalReplay(t *testing.T) {
+	root, ledger := tempLedger(t)
+	if err := os.WriteFile(filepath.Join(root, "replay.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, e := runCmd(t, ledger, nil, "assign", "--task", "TR", "--orchestrator", "pi.main.test", "--agent", "pi.worker.test", "--allow", "replay.md", "--policy", "warn", "--reason", "replay", "--if-absent"); code != 0 {
+		t.Fatalf("first assign: %d %s", code, e)
+	}
+	code, out, e := runCmd(t, ledger, nil, "assign", "--task", "TR", "--orchestrator", "pi.main.test", "--agent", "pi.worker.test", "--allow", "replay.md", "--policy", "warn", "--reason", "replay", "--if-absent", "--json")
+	if code != 0 {
+		t.Fatalf("replay assign: %d %s %s", code, out, e)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("json: %v %s", err, out)
+	}
+	if reused, ok := resp["reused"].(bool); !ok || !reused {
+		t.Fatalf("expected reused true, got %v", resp["reused"])
+	}
+	if resp["assignment_id"] == "" {
+		t.Fatalf("expected assignment id, got %v", resp)
+	}
+	code, out, _ = runCmd(t, ledger, nil, "status", "--json", "--task", "TR")
+	if code != 0 {
+		t.Fatalf("status: %d %s", code, out)
+	}
+	var st map[string]any
+	if err := json.Unmarshal([]byte(out), &st); err != nil {
+		t.Fatal(err)
+	}
+	if active, ok := st["active_intents"].([]any); !ok || len(active) != 0 {
+		t.Fatalf("expected no intents from assignment replay, got %v", st["active_intents"])
+	}
+}
+
+func TestAssignIfAbsentDifferentAgentInsertsNew(t *testing.T) {
+	root, ledger := tempLedger(t)
+	if err := os.WriteFile(filepath.Join(root, "agent.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, e := runCmd(t, ledger, nil, "assign", "--task", "TA", "--orchestrator", "pi.main.test", "--agent", "pi.worker.a", "--allow", "agent.md", "--policy", "warn", "--reason", "same", "--if-absent"); code != 0 {
+		t.Fatalf("first assign: %d %s", code, e)
+	}
+	code, out, e := runCmd(t, ledger, nil, "assign", "--task", "TA", "--orchestrator", "pi.main.test", "--agent", "pi.worker.b", "--allow", "agent.md", "--policy", "warn", "--reason", "same", "--if-absent", "--json")
+	if code != 0 {
+		t.Fatalf("second assign: %d %s %s", code, out, e)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if reused, _ := resp["reused"].(bool); reused {
+		t.Fatalf("expected reused false, got %v", resp)
+	}
+	if resp["assignment_id"] == "" {
+		t.Fatalf("missing assignment id")
+	}
+}
+
+func TestAssignIfAbsentDifferentPolicyOrAllowInsertsNew(t *testing.T) {
+	root, ledger := tempLedger(t)
+	if err := os.WriteFile(filepath.Join(root, "policy.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, e := runCmd(t, ledger, nil, "assign", "--task", "TP", "--orchestrator", "pi.main.test", "--agent", "pi.worker.test", "--allow", "policy.md", "--policy", "warn", "--reason", "same", "--if-absent"); code != 0 {
+		t.Fatalf("first assign: %d %s", code, e)
+	}
+	code, out, e := runCmd(t, ledger, nil, "assign", "--task", "TP", "--orchestrator", "pi.main.test", "--agent", "pi.worker.test", "--allow", "policy.md", "--policy", "exclusive", "--reason", "same", "--if-absent", "--json")
+	if code != 0 {
+		t.Fatalf("policy change assign: %d %s %s", code, out, e)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if reused, _ := resp["reused"].(bool); reused {
+		t.Fatalf("expected new insert on policy change, got reused")
+	}
+	code, out, e = runCmd(t, ledger, nil, "assign", "--task", "TP", "--orchestrator", "pi.main.test", "--agent", "pi.worker.test", "--allow", "policy.md", "--allow", "other.md", "--policy", "warn", "--reason", "same", "--if-absent", "--json")
+	if code != 0 {
+		t.Fatalf("allow change assign: %d %s %s", code, out, e)
+	}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if reused, _ := resp["reused"].(bool); reused {
+		t.Fatalf("expected new insert on allow change, got reused")
+	}
+}
+
+func TestAssignWithoutIfAbsentAlwaysInserts(t *testing.T) {
+	root, ledger := tempLedger(t)
+	if err := os.WriteFile(filepath.Join(root, "plain.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, e := runCmd(t, ledger, nil, "assign", "--task", "TN", "--orchestrator", "pi.main.test", "--agent", "pi.worker.test", "--allow", "plain.md", "--policy", "warn", "--reason", "same"); code != 0 {
+		t.Fatalf("first assign: %d %s", code, e)
+	}
+	code, out, e := runCmd(t, ledger, nil, "assign", "--task", "TN", "--orchestrator", "pi.main.test", "--agent", "pi.worker.test", "--allow", "plain.md", "--policy", "warn", "--reason", "same", "--json")
+	if code != 0 {
+		t.Fatalf("second assign: %d %s %s", code, out, e)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if reused, _ := resp["reused"].(bool); reused {
+		t.Fatalf("expected reused false without flag, got %v", resp)
+	}
+}

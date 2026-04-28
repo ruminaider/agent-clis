@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -22,6 +23,7 @@ type assignOpts struct {
 	policy       string
 	reason       string
 	branch       string
+	ifAbsent     bool
 	asJSON       bool
 }
 
@@ -48,6 +50,7 @@ func NewAssignCommand(streams Streams) *cobra.Command {
 	f.StringVar(&o.policy, "policy", domain.PolicyWarn, "Conflict policy (none|warn|exclusive)")
 	f.StringVar(&o.reason, "reason", "", "Assignment reason (required)")
 	f.StringVar(&o.branch, "branch", "", "Optional branch name")
+	f.BoolVar(&o.ifAbsent, "if-absent", false, "Reuse an identical active assignment if present")
 	f.BoolVar(&o.asJSON, "json", false, "Render output as JSON")
 	return cmd
 }
@@ -80,20 +83,12 @@ func runAssign(streams Streams, o *assignOpts) error {
 	defer store.Close()
 	d := domain.New(store)
 
-	// Best-effort upsert of orchestrator agent so the assignment can
-	// reference it without requiring identify first.
-	_ = d.UpsertAgent(ctx, domain.Agent{
-		AgentID:   o.orchestrator,
-		AgentKind: "orchestrator",
-	})
+	_ = d.UpsertAgent(ctx, domain.Agent{AgentID: o.orchestrator, AgentKind: "orchestrator"})
 	if o.agent != "" {
-		_ = d.UpsertAgent(ctx, domain.Agent{
-			AgentID:   o.agent,
-			AgentKind: "worker",
-		})
+		_ = d.UpsertAgent(ctx, domain.Agent{AgentID: o.agent, AgentKind: "worker"})
 	}
 
-	a, err := d.InsertAssignment(ctx, domain.Assignment{
+	assignment := domain.Assignment{
 		TaskID:          o.task,
 		OrchestratorID:  o.orchestrator,
 		AssignedAgentID: o.agent,
@@ -103,24 +98,57 @@ func runAssign(streams Streams, o *assignOpts) error {
 		Reason:          o.reason,
 		Status:          "active",
 		Metadata:        map[string]any{"branch": o.branch},
-	})
-	if err != nil {
-		// The CLI guard above is canonical; the domain check is
-		// defense-in-depth. Map the sentinel so programmatic callers
-		// that bypass the CLI layer still get ExitConfigError.
-		if errors.Is(err, domain.ErrUnsafeReason) {
-			return cli.NewError(cli.ExitConfigError, "reason_unsafe", err.Error())
-		}
-		return cli.NewError(cli.ExitStorageIO, "assign_failed", err.Error())
 	}
+	reused := false
+	if o.ifAbsent {
+		prev, err := d.LatestActiveAssignmentForTaskAndAgent(ctx, o.task, o.agent)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return cli.NewError(cli.ExitStorageIO, "assign_lookup_failed", err.Error())
+		}
+		if err == nil && sameAssignmentReplay(prev, assignment) {
+			assignment = prev
+			reused = true
+		} else {
+			assignment, err = d.InsertAssignment(ctx, assignment)
+			if err != nil {
+				if errors.Is(err, domain.ErrUnsafeReason) {
+					return cli.NewError(cli.ExitConfigError, "reason_unsafe", err.Error())
+				}
+				return cli.NewError(cli.ExitStorageIO, "assign_failed", err.Error())
+			}
+		}
+	} else {
+		assignment, err = d.InsertAssignment(ctx, assignment)
+		if err != nil {
+			if errors.Is(err, domain.ErrUnsafeReason) {
+				return cli.NewError(cli.ExitConfigError, "reason_unsafe", err.Error())
+			}
+			return cli.NewError(cli.ExitStorageIO, "assign_failed", err.Error())
+		}
+	}
+
 	if o.asJSON {
 		return printJSON(streams.Out, map[string]any{
-			"assignment_id":   a.AssignmentID,
-			"event_id":        a.EventID,
-			"task_id":         a.TaskID,
-			"conflict_policy": a.ConflictPolicy,
+			"assignment_id":   assignment.AssignmentID,
+			"event_id":        assignment.EventID,
+			"task_id":         assignment.TaskID,
+			"conflict_policy": assignment.ConflictPolicy,
+			"reused":          reused,
 		})
 	}
-	fmt.Fprintf(streams.Out, "assignment_id=%s task=%s policy=%s\n", a.AssignmentID, a.TaskID, a.ConflictPolicy)
+	fmt.Fprintf(streams.Out, "assignment_id=%s task=%s policy=%s reused=%t\n", assignment.AssignmentID, assignment.TaskID, assignment.ConflictPolicy, reused)
 	return nil
+}
+
+func sameAssignmentReplay(a, b domain.Assignment) bool {
+	if a.TaskID != b.TaskID || a.AssignedAgentID != b.AssignedAgentID || a.ConflictPolicy != b.ConflictPolicy {
+		return false
+	}
+	if strings.Join(a.AllowedPaths, "\x00") != strings.Join(b.AllowedPaths, "\x00") {
+		return false
+	}
+	if strings.Join(a.ForbiddenPaths, "\x00") != strings.Join(b.ForbiddenPaths, "\x00") {
+		return false
+	}
+	return true
 }

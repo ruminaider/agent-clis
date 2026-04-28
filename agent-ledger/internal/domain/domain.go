@@ -373,6 +373,28 @@ func (s *Store) LatestActiveAssignmentForTask(ctx context.Context, taskID string
 	return a, nil
 }
 
+// LatestActiveAssignmentForTaskAndAgent returns the most recent active
+// assignment for taskID and agentID, or sql.ErrNoRows when none exists.
+func (s *Store) LatestActiveAssignmentForTaskAndAgent(ctx context.Context, taskID, agentID string) (Assignment, error) {
+	row := s.S.DB().QueryRowContext(ctx, `
+		SELECT assignment_id, event_id, task_id, orchestrator_id, COALESCE(assigned_agent_id, ''),
+		       allowed_paths_json, forbidden_paths_json, conflict_policy, reason, status, created_at, metadata_json
+		FROM assignments
+		WHERE task_id = ? AND status = 'active' AND COALESCE(assigned_agent_id, '') = ?
+		ORDER BY created_at DESC, assignment_id DESC
+		LIMIT 1
+	`, taskID, agentID)
+	var a Assignment
+	var allowed, forbid, meta string
+	if err := row.Scan(&a.AssignmentID, &a.EventID, &a.TaskID, &a.OrchestratorID, &a.AssignedAgentID, &allowed, &forbid, &a.ConflictPolicy, &a.Reason, &a.Status, &a.CreatedAt, &meta); err != nil {
+		return Assignment{}, err
+	}
+	a.AllowedPaths = decodePaths(allowed)
+	a.ForbiddenPaths = decodePaths(forbid)
+	a.Metadata = decodeMeta(meta)
+	return a, nil
+}
+
 // InsertIntent writes an intents row plus intent_paths plus an
 // intent.opened event in one transaction.
 // It returns ErrUnsafeReason wrapped with the original privacy error if
