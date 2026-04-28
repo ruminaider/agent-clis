@@ -99,7 +99,7 @@ func runClaim(streams Streams, o *claimOpts, args []string) error {
 			return cli.NewError(cli.ExitConflict, "missing_assignment", fmt.Sprintf("no active assignment for task %s", o.task)).
 				WithDetails(map[string]any{"task_id": o.task, "finding": "MISSING_ASSIGNMENT"})
 		}
-		return cli.NewError(cli.ExitStorageIO, "assignment_lookup_failed", err.Error())
+		return mapAssignmentReadError(err, "assignment_lookup_failed")
 	}
 
 	policy := assignment.ConflictPolicy

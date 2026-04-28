@@ -10,6 +10,40 @@ of the binary version.
 
 ## [Unreleased]
 
+### Kernel: typed metadata decode error
+
+- Assignment, intent, conflict, change, and validation readers in
+  `internal/domain` now return a typed `*domain.MetadataDecodeError`
+  when a row's `metadata_json` column fails to parse as JSON.
+  Pre-v0.1.3 the kernel silently replaced the field with an empty
+  map, hiding ledger corruption from reviewers.
+- The error carries `Field` (table.column), `RowID` (the row's
+  primary key), `Raw` (truncated payload, max 200 bytes), and the
+  underlying decode error.
+- CLI handlers (`claim`, `assign`, `assign --if-absent`, `adopt`,
+  `assignments`) map the error to `ExitStorageIO` with code
+  `metadata_decode_failed` and details pointing at the corrupted
+  row.
+- Empty or unset metadata still returns an empty map without raising
+  the error, matching pre-v0.1.3 behaviour for the happy path.
+- `verify`'s storage-error path inherits the propagated message so
+  metadata corruption surfaces in `agent-ledger.verify.v1` reports
+  with `status: "error"` / `code: "STORAGE_ERROR"`.
+
+### Documentation
+
+- `docs/adapters.md` audit-trail section restructured around the
+  current kernel surface (v0.1.1+ structured metadata as the
+  canonical query path; reason marker as forward-compat fallback).
+  Removed pre-v0.1.1 "the v0.1 kernel does not yet have --metadata"
+  and "v0.2 of the kernel will add --metadata" claims that became
+  stale when v0.1.1 shipped.
+- `docs/adapters.md` kernel dependencies section now records the
+  v0.1.1, v0.1.2, and v0.1.3 deltas separately so a reader can
+  trace which feature lives in which release.
+- v0.1.0 "Known limitations" entry for `TestConcurrent_ExclusivePolicy`
+  rewritten as past tense with a closure pointer to v0.1.2.
+
 ## [0.1.2] - 2026-04-28
 
 ### Kernel: claim race fix
@@ -318,10 +352,10 @@ Code, and Babysitter adapters arrive in later phases.
   insert transaction, so two concurrent claims on the same path under
   `exclusive` can both pass the overlap check before either writes.
   Exclusive claims serialized through one orchestrator are unaffected;
-  the bug surfaces only for true concurrent races. Tracked for v0.1.x;
-  the fix moves conflict detection inside a single `BEGIN IMMEDIATE`
-  transaction with the intent insert. The integration test
-  `TestConcurrent_ExclusivePolicy` is skipped with a TODO until then.
+  the bug surfaces only for true concurrent races. **Closed in
+  v0.1.2**: conflict detection now runs inside the `InsertIntent`
+  `BEGIN IMMEDIATE` transaction, and `TestConcurrent_ExclusivePolicy`
+  passes under `-race`.
 - Release archives are unsigned. Verify downloads against the
   published `*_checksums.txt` file. A Homebrew tap with signed
   binaries is a Phase 5 deliverable.

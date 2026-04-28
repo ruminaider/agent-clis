@@ -313,7 +313,11 @@ func (s *Store) ChangesForTask(ctx context.Context, taskID string) ([]Change, er
 		if err := rows.Scan(&c.ChangeID, &c.EventID, &c.IntentID, &c.AssignmentID, &c.TaskID, &c.AgentID, &c.ActorKind, &c.Summary, &c.CreatedAt, &c.CommitSHA, &meta); err != nil {
 			return nil, err
 		}
-		c.Metadata = decodeMeta(meta)
+		decoded, err := decodeMeta(meta, "changes.metadata_json", c.ChangeID)
+		if err != nil {
+			return nil, err
+		}
+		c.Metadata = decoded
 		out = append(out, c)
 	}
 	return out, rows.Err()
@@ -369,7 +373,11 @@ func (s *Store) ValidationsForTask(ctx context.Context, taskID string) ([]Valida
 			n := int(exit.Int64)
 			v.ExitCode = &n
 		}
-		v.Metadata = decodeMeta(meta)
+		decoded, err := decodeMeta(meta, "validations.metadata_json", v.ValidationID)
+		if err != nil {
+			return nil, err
+		}
+		v.Metadata = decoded
 		out = append(out, v)
 	}
 	return out, rows.Err()
@@ -394,7 +402,11 @@ func (s *Store) IntentsForTask(ctx context.Context, taskID string) ([]Intent, er
 		if err := rows.Scan(&in.IntentID, &in.EventID, &in.AssignmentID, &in.TaskID, &in.AgentID, &in.AccessMode, &in.ConflictPolicy, &in.Reason, &in.Status, &in.OpenedAt, &in.LastHeartbeatAt, &in.HeartbeatExpiresAt, &in.ClosedAt, &in.CloseOutcome, &in.CloseReason, &meta); err != nil {
 			return nil, err
 		}
-		in.Metadata = decodeMeta(meta)
+		decoded, err := decodeMeta(meta, "intents.metadata_json", in.IntentID)
+		if err != nil {
+			return nil, err
+		}
+		in.Metadata = decoded
 		out = append(out, in)
 	}
 	return out, rows.Err()

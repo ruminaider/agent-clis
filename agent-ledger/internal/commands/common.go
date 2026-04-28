@@ -9,6 +9,7 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/cli"
+	"github.com/ruminaider/agent-clis/agent-ledger/internal/domain"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/project"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/storage/sqlite"
 )
@@ -124,4 +126,26 @@ func pickAgentID(flag string) string {
 // errf helps build cli.Error with formatted message.
 func errf(code int, machine, format string, args ...any) *cli.Error {
 	return cli.NewError(code, machine, fmt.Sprintf(format, args...))
+}
+
+// mapAssignmentReadError maps an error returned from a domain
+// assignment-reader (LatestActive*, ListAssignments, etc.) to a typed
+// CLI error. The default fallback uses fallbackCode and is used for
+// generic SQL errors. domain.MetadataDecodeError surfaces a dedicated
+// metadata_decode_failed code so reviewers can pinpoint corrupted rows
+// without grepping the underlying message. Returns nil on success so
+// callers can chain `if cliErr := mapAssignmentReadError(err, ...); cliErr != nil { return cliErr }`.
+func mapAssignmentReadError(err error, fallbackCode string) *cli.Error {
+	if err == nil {
+		return nil
+	}
+	var mde *domain.MetadataDecodeError
+	if errors.As(err, &mde) {
+		return cli.NewError(cli.ExitStorageIO, "metadata_decode_failed", err.Error()).
+			WithDetails(map[string]any{
+				"field":  mde.Field,
+				"row_id": mde.RowID,
+			})
+	}
+	return cli.NewError(cli.ExitStorageIO, fallbackCode, err.Error())
 }
