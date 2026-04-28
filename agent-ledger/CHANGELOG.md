@@ -10,6 +10,68 @@ of the binary version.
 
 ## [Unreleased]
 
+## [0.2.0-rc2] - 2026-04-27
+
+### Phase 2 adapters: harness-aware task id resolution
+
+The pi extension and shared bootstrap now derive the task id from
+git context the harness already knows, rather than requiring the
+human to pre-set `AGENT_LEDGER_TASK_ID` before launching pi. The
+rc1 "orchestrator did not pre-assign" warning fired on every fresh
+human session, even though the human IS the orchestrator and the
+branch they were sitting on already named the task. This release
+fixes that.
+
+#### Changed
+
+- `agent-ledger/adapters/shared/session-bootstrap.sh` now resolves
+  the task id through a six-step chain: explicit flag, env var,
+  optional PR detection (`--detect-pr 1` or
+  `AGENT_LEDGER_DETECT_PR=1`), git branch, detached HEAD
+  (`detached/<short-sha>`), then the auto-fallback as a true last
+  resort. New `--cwd <dir>` flag scopes git detection to a specific
+  directory so callers can drive bootstrap against a project root
+  that differs from the script's cwd.
+- The bootstrap exports `AGENT_LEDGER_TASK_SOURCE` with the
+  resolution path used (`flag`, `env`, `pr`, `branch`, `detached`,
+  or `auto`) and only sets `AGENT_LEDGER_AUTO_ASSIGNED=1` when the
+  source is `auto`.
+- `agent-ledger/adapters/pi/agent-ledger.ts` passes
+  `--cwd $(process.cwd())` and (when `AGENT_LEDGER_DETECT_PR=1`)
+  `--detect-pr 1` to bootstrap, reads
+  `AGENT_LEDGER_TASK_SOURCE`, and only surfaces the warning toast
+  when source=auto. Branch- and PR-derived sessions are silent
+  beyond a single stderr log line documenting the source.
+- The shared marker helpers (`marker.sh`, `marker.js`) accept a
+  `--source` parameter. For `branch`, `pr`, and `detached` they emit
+  a new `[harness-derived by <by> source=<source> ...]` reason
+  prefix. The `[auto-assigned by ...]` prefix is preserved for the
+  auto-fallback path so existing rc1 audit queries still work.
+
+#### Why
+
+The rc1 toast was content-correct but design-wrong. A human running
+`pi` on a feature branch is not "forgetting" to assign; the branch
+name and the PR number are the task. The harness should pull that
+context for them.
+
+The four-tier source taxonomy (explicit, harness-derived, auto,
+blocked-by-require) gives reviewers a clean audit query:
+`reason LIKE '[auto-assigned%'` finds true context-less sessions;
+`reason LIKE '[harness-derived%'` finds normal harness-managed
+sessions and groups them by source.
+
+### Review remediation (PR #8)
+- F1: PR detection now scopes `gh pr view` to the target cwd; `gh -R <path>` was misusing the repo flag.
+- F2: shell-export mode emits `AGENT_LEDGER_AUTO_ASSIGNED=0|1` to match JSON mode.
+- F3: adapter tests cover PR detection success and failure fallthrough.
+- F4: branch detection uses `git symbolic-ref` first so unborn branches resolve.
+- F5: clarified that `AGENT_LEDGER_REQUIRE_TASK=1` blocks only the auto fallback.
+- F6: tightened `TaskSource` union and added tolerant `parseTaskSource`.
+- F7: removed dead no-op in the explicit task source case.
+- F8: renamed `buildAutoAssignedMarker` to `buildAssignmentMarker`.
+- F9: added `agent-ledger assign --if-absent` and routed bootstrap through it for harness-derived sources.
+
 ## [0.2.0-rc1] - 2026-04-27
 
 ### Phase 2 adapters (scaffold)
@@ -169,6 +231,7 @@ Code, and Babysitter adapters arrive in later phases.
   published `*_checksums.txt` file. A Homebrew tap with signed
   binaries is a Phase 5 deliverable.
 
-[Unreleased]: https://github.com/ruminaider/agent-clis/compare/v0.2.0-rc1...HEAD
+[Unreleased]: https://github.com/ruminaider/agent-clis/compare/v0.2.0-rc2...HEAD
+[0.2.0-rc2]: https://github.com/ruminaider/agent-clis/releases/tag/v0.2.0-rc2
 [0.2.0-rc1]: https://github.com/ruminaider/agent-clis/releases/tag/v0.2.0-rc1
 [0.1.0]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.0
