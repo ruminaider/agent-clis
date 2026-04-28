@@ -352,11 +352,12 @@ func TestAssignIfAbsentDifferentPolicyOrAllowFailsExclusive(t *testing.T) {
 	if code != 4 {
 		t.Fatalf("policy change assign expected ExitConflict (4), got %d: out=%s err=%s", code, out, e)
 	}
-	var errResp map[string]any
-	if jerr := json.Unmarshal([]byte(e), &errResp); jerr == nil {
-		if errResp["code"] != "assignment_exists" {
-			t.Fatalf("expected code=assignment_exists, got %v", errResp["code"])
-		}
+	var errResp cli.Error
+	if jerr := json.Unmarshal([]byte(e), &errResp); jerr != nil {
+		t.Fatalf("stderr not JSON: %v %s", jerr, e)
+	}
+	if errResp.Code != "assignment_exists" {
+		t.Fatalf("expected code=assignment_exists, got %v", errResp.Code)
 	}
 	// Different allow set: should fail with assignment_exists.
 	code, out, e = runCmd(t, ledger, nil, "assign", "--task", "TP", "--orchestrator", "pi.main.test", "--agent", "pi.worker.test", "--allow", "policy.md", "--allow", "other.md", "--policy", "warn", "--reason", "same", "--if-absent", "--json")
@@ -382,10 +383,11 @@ func TestAssignWithoutIfAbsentRejectsDuplicate(t *testing.T) {
 	if code != 4 {
 		t.Fatalf("second assign expected ExitConflict (4), got %d: out=%s err=%s", code, out, e)
 	}
-	var errResp map[string]any
-	if jerr := json.Unmarshal([]byte(e), &errResp); jerr == nil {
-		if errResp["code"] != "assignment_exists" {
-			t.Fatalf("expected code=assignment_exists, got %v", errResp["code"])
-		}
+	var errResp cli.Error
+	if jerr := json.Unmarshal([]byte(e), &errResp); jerr != nil {
+		t.Fatalf("stderr not JSON: %v %s", jerr, e)
+	}
+	if errResp.Code != "assignment_exists" {
+		t.Fatalf("expected code=assignment_exists, got %v", errResp.Code)
 	}
 }

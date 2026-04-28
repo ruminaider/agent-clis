@@ -200,3 +200,132 @@ func TestAssignmentsCommandRejectsBadStatusFlag(t *testing.T) {
 		t.Errorf("expected invalid_status in stderr, got %s", e)
 	}
 }
+
+// TestAssignIfAbsentReusesNumericMetadata verifies that --if-absent
+// reuse still works when metadata carries a JSON number.
+func TestAssignIfAbsentReusesNumericMetadata(t *testing.T) {
+	root, ledger := tempLedger(t)
+	if err := os.WriteFile(filepath.Join(root, "num.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	meta := `{"attempt":1}`
+	if code, _, e := runCmd(t, ledger, nil,
+		"assign", "--task", "TMETA",
+		"--orchestrator", "pi.main", "--agent", "pi.worker",
+		"--allow", "num.md", "--policy", "warn",
+		"--reason", "numeric metadata", "--metadata", meta,
+		"--if-absent",
+	); code != 0 {
+		t.Fatalf("assign with numeric metadata: %d %s", code, e)
+	}
+	code, out, e := runCmd(t, ledger, nil,
+		"assign", "--task", "TMETA",
+		"--orchestrator", "pi.main", "--agent", "pi.worker",
+		"--allow", "num.md", "--policy", "warn",
+		"--reason", "numeric metadata", "--metadata", meta,
+		"--if-absent", "--json",
+	)
+	if code != 0 {
+		t.Fatalf("replay assign: %d %s %s", code, out, e)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("json: %v %s", err, out)
+	}
+	if reused, ok := resp["reused"].(bool); !ok || !reused {
+		t.Fatalf("expected reused true, got %v", resp["reused"])
+	}
+}
+
+// TestAssignMetadataPreservesLargeIntegerInAssignmentsJSON verifies
+// that assignments --json keeps the exact integer lexeme for audit
+// metadata.
+func TestAssignMetadataPreservesLargeIntegerInAssignmentsJSON(t *testing.T) {
+	root, ledger := tempLedger(t)
+	if err := os.WriteFile(filepath.Join(root, "big.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const traceID = `9007199254740993`
+	if code, _, e := runCmd(t, ledger, nil,
+		"assign", "--task", "TBIG",
+		"--orchestrator", "pi.main", "--agent", "pi.worker",
+		"--allow", "big.md", "--policy", "warn",
+		"--reason", "big metadata", "--metadata", `{"trace_id":`+traceID+`}`,
+	); code != 0 {
+		t.Fatalf("assign big metadata: %d %s", code, e)
+	}
+	code, out, e := runCmd(t, ledger, nil, "assignments", "--task", "TBIG", "--json")
+	if code != 0 {
+		t.Fatalf("assignments query: %d %s %s", code, out, e)
+	}
+	if !strings.Contains(out, traceID) {
+		t.Fatalf("expected exact trace_id %s in JSON, got %s", traceID, out)
+	}
+}
+
+// TestAssignMetadataOmitsEmptyBranchKey verifies that assignments with
+// no --branch flag do not emit branch:"" in JSON output.
+func TestAssignMetadataOmitsEmptyBranchKey(t *testing.T) {
+	root, ledger := tempLedger(t)
+	if err := os.WriteFile(filepath.Join(root, "branchless.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, e := runCmd(t, ledger, nil,
+		"assign", "--task", "TBRANCH",
+		"--orchestrator", "pi.main", "--agent", "pi.worker",
+		"--allow", "branchless.md", "--policy", "warn",
+		"--reason", "branchless", "--metadata", `{"task_source":"explicit"}`,
+	); code != 0 {
+		t.Fatalf("assign without branch: %d %s", code, e)
+	}
+	code, out, e := runCmd(t, ledger, nil, "assignments", "--task", "TBRANCH", "--json")
+	if code != 0 {
+		t.Fatalf("assignments query: %d %s %s", code, out, e)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("json: %v %s", err, out)
+	}
+	rows, _ := resp["assignments"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 assignment, got %d", len(rows))
+	}
+	row := rows[0].(map[string]any)
+	meta, _ := row["metadata"].(map[string]any)
+	if _, ok := meta["branch"]; ok {
+		t.Fatalf("unexpected branch key in metadata: %v", meta)
+	}
+}
+
+// TestAssignMetadataRejectsTrailingBytes verifies parseMetadataFlag
+// rejects garbage after a valid JSON object.
+func TestAssignMetadataRejectsTrailingBytes(t *testing.T) {
+	root, ledger := tempLedger(t)
+	if err := os.WriteFile(filepath.Join(root, "trail.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, _, e := runCmd(t, ledger, nil,
+		"assign", "--task", "TTRAIL",
+		"--orchestrator", "pi.main", "--agent", "pi.worker",
+		"--allow", "trail.md", "--policy", "warn",
+		"--reason", "bad meta", "--metadata", `{"ok":true} garbage`,
+	)
+	if code != 2 {
+		t.Fatalf("expected ExitUsage(2) for trailing metadata, got %d (stderr=%s)", code, e)
+	}
+	if !strings.Contains(e, "invalid_metadata") {
+		t.Fatalf("expected invalid_metadata in stderr, got %s", e)
+	}
+}
+
+// TestAssignmentsCommandRejectsLimitAboveCap confirms the --limit cap.
+func TestAssignmentsCommandRejectsLimitAboveCap(t *testing.T) {
+	_, ledger := tempLedger(t)
+	code, _, e := runCmd(t, ledger, nil, "assignments", "--limit", "1001")
+	if code != 2 {
+		t.Fatalf("expected ExitUsage(2), got %d (stderr=%s)", code, e)
+	}
+	if !strings.Contains(e, "invalid_limit") {
+		t.Fatalf("expected invalid_limit in stderr, got %s", e)
+	}
+}

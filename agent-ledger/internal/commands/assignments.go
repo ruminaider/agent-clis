@@ -37,10 +37,10 @@ func NewAssignmentsCommand(streams Streams) *cobra.Command {
 		Long: `List task assignments matching the supplied filters.
 
 Status defaults to "active". Use --status all to include superseded
-and closed rows. Reviewers find auto-assigned and harness-derived
-sessions by inspecting the reason field for the [auto-assigned by ...]
-and [harness-derived by ...] markers documented in
-agent-ledger/docs/adapters.md.`,
+and closed rows. In JSON output, inspect reason_marker for auto,
+harness-derived, or explicit classification. For structured queries,
+prefer metadata.task_source over parsing reason text.
+`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -54,7 +54,7 @@ agent-ledger/docs/adapters.md.`,
 	f.StringVar(&o.orchestrator, "orchestrator", "", "Filter by orchestrator agent ID")
 	f.StringVar(&o.agent, "agent", "", "Filter by assigned worker agent ID")
 	f.StringVar(&o.status, "status", "active", "Filter by status (active|superseded|closed|all)")
-	f.IntVar(&o.limit, "limit", 50, "Maximum rows to return (most-recent first)")
+	f.IntVar(&o.limit, "limit", 50, "Maximum rows to return, 1-1000 (most-recent first)")
 	f.BoolVar(&o.asJSON, "json", false, "Render output as JSON")
 	return cmd
 }
@@ -66,8 +66,8 @@ func runAssignments(streams Streams, o *assignmentsOpts) error {
 		return errf(cli.ExitUsage, "invalid_status",
 			"--status %q must be one of active|superseded|closed|all", o.status)
 	}
-	if o.limit <= 0 {
-		return cli.NewError(cli.ExitUsage, "invalid_limit", "--limit must be positive")
+	if o.limit <= 0 || o.limit > 1000 {
+		return cli.NewError(cli.ExitUsage, "invalid_limit", "--limit must be between 1 and 1000")
 	}
 
 	ctx := ctxFor(streams)

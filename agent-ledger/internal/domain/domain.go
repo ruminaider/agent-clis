@@ -22,6 +22,7 @@ import (
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/privacy"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/storage"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/storage/sqlite"
+	sqlitedrv "modernc.org/sqlite"
 )
 
 // Conflict policies (SPEC §15).
@@ -221,7 +222,9 @@ func decodeMeta(raw string) map[string]any {
 		return map[string]any{}
 	}
 	var m map[string]any
-	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&m); err != nil {
 		return map[string]any{}
 	}
 	return m
@@ -358,7 +361,7 @@ func (s *Store) InsertAssignment(ctx context.Context, a Assignment) (Assignment,
 		`, a.AssignmentID, a.EventID, a.TaskID, a.OrchestratorID, nullable(a.AssignedAgentID), allowed, forbid, a.ConflictPolicy, a.Reason, a.Status, a.CreatedAt, meta)
 		return ierr
 	})
-	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed") {
+	if isActiveAssignmentUniqueViolation(err) {
 		// The partial unique index on (task_id, assigned_agent_id)
 		// WHERE status='active' (migration 0002) caught a duplicate.
 		// Surface as a typed sentinel so the CLI layer can map it to
@@ -366,6 +369,21 @@ func (s *Store) InsertAssignment(ctx context.Context, a Assignment) (Assignment,
 		return a, fmt.Errorf("%w: %w", ErrAssignmentExists, err)
 	}
 	return a, err
+}
+
+func isActiveAssignmentUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	var se *sqlitedrv.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	if se.Code() != 2067 {
+		return false
+	}
+	return strings.Contains(err.Error(), "assignments.task_id, assignments.assigned_agent_id") ||
+		strings.Contains(err.Error(), "idx_assignments_active_task_agent")
 }
 
 // LatestActiveAssignmentForTask returns the most recent active

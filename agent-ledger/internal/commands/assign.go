@@ -1,10 +1,12 @@
 package commands
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"strings"
 
@@ -96,7 +98,10 @@ func runAssign(streams Streams, o *assignOpts) error {
 		_ = d.UpsertAgent(ctx, domain.Agent{AgentID: o.agent, AgentKind: "worker"})
 	}
 
-	meta := map[string]any{"branch": o.branch}
+	meta := map[string]any{}
+	if o.branch != "" {
+		meta["branch"] = o.branch
+	}
 	for k, v := range extraMetadata {
 		meta[k] = v
 	}
@@ -131,14 +136,12 @@ func runAssign(streams Streams, o *assignOpts) error {
 					// missed (concurrent winner committed between
 					// our LatestActive lookup and our INSERT). Retry
 					// the lookup; if it now matches, treat as reuse.
-					prev2, lerr := d.LatestActiveAssignmentForTaskAndAgent(ctx, o.task, o.agent)
-					if lerr == nil && sameAssignmentReplay(prev2, assignment) {
-						assignment = prev2
-						reused = true
-					} else {
-						return cli.NewError(cli.ExitConflict, "assignment_exists",
-							"an active assignment already exists for this (task, agent) pair; supply --if-absent to reuse identical assignments or close the prior one first")
+					updated, retryReused, lerr := recoverIfAbsentAssignment(ctx, d.LatestActiveAssignmentForTaskAndAgent, assignment, o.task, o.agent)
+					if lerr != nil {
+						return lerr
 					}
+					assignment = updated
+					reused = retryReused
 				} else {
 					return cli.NewError(cli.ExitStorageIO, "assign_failed", err.Error())
 				}
@@ -196,13 +199,34 @@ func sameAssignmentReplay(a, b domain.Assignment) bool {
 }
 
 // metadataEqual normalizes two metadata maps for replay comparison.
-// nil and empty are treated as equal so the existing
-// {"branch": ""} default does not block reuse against legacy rows.
+// Empty branch metadata is ignored so legacy rows that still carry
+// {"branch":""} do not block reuse against newer rows that omit it.
 func metadataEqual(a, b map[string]any) bool {
 	if len(a) == 0 && len(b) == 0 {
 		return true
 	}
-	return reflect.DeepEqual(a, b)
+	return reflect.DeepEqual(canonicalizeMetaForCompare(a), canonicalizeMetaForCompare(b))
+}
+
+func canonicalizeMetaForCompare(m map[string]any) map[string]any {
+	if len(m) == 0 {
+		return map[string]any{}
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return m
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return m
+	}
+	if out == nil {
+		return map[string]any{}
+	}
+	if branch, ok := out["branch"]; ok && branch == "" {
+		delete(out, "branch")
+	}
+	return out
 }
 
 // parseMetadataFlag validates --metadata as a JSON object and returns
@@ -219,10 +243,33 @@ func parseMetadataFlag(raw string) (map[string]any, error) {
 	if err := dec.Decode(&v); err != nil {
 		return nil, errf(cli.ExitUsage, "invalid_metadata", "--metadata must be valid JSON: %s", err.Error())
 	}
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = fmt.Errorf("unexpected trailing data")
+		}
+		return nil, errf(cli.ExitUsage, "invalid_metadata", "--metadata must contain exactly one JSON value: %s", err.Error())
+	}
 	obj, ok := v.(map[string]any)
 	if !ok {
 		return nil, cli.NewError(cli.ExitUsage, "invalid_metadata",
 			"--metadata must be a JSON object (got non-object top-level value)")
 	}
 	return obj, nil
+}
+
+func recoverIfAbsentAssignment(ctx context.Context, lookup func(context.Context, string, string) (domain.Assignment, error), wanted domain.Assignment, taskID, agentID string) (domain.Assignment, bool, error) {
+	prev, lerr := lookup(ctx, taskID, agentID)
+	if errors.Is(lerr, sql.ErrNoRows) {
+		return wanted, false, cli.NewError(cli.ExitConflict, "assignment_exists",
+			"an active assignment already exists for this (task, agent) pair; supply --if-absent to reuse identical assignments or close the prior one first")
+	}
+	if lerr != nil {
+		return wanted, false, cli.NewError(cli.ExitStorageIO, "assign_lookup_failed", lerr.Error())
+	}
+	if sameAssignmentReplay(prev, wanted) {
+		return prev, true, nil
+	}
+	return wanted, false, cli.NewError(cli.ExitConflict, "assignment_exists",
+		"an active assignment already exists for this (task, agent) pair; supply --if-absent to reuse identical assignments or close the prior one first")
 }
