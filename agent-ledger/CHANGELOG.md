@@ -10,12 +10,38 @@ of the binary version.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-04-28
+
 ### Kernel: claim race fix
+
+Closes the concurrent-claim race under both `warn` and `exclusive`
+policies. Pre-v0.1.2, two simultaneous `claim` calls on the same
+path could both pass overlap detection before either wrote its
+intent; under `exclusive` policy this produced two winners. The fix
+moves overlap lookup, conflict resolution, and intent insert into a
+single SQLite `BEGIN IMMEDIATE` transaction, so the second writer
+sees the first writer's intent on its overlap query.
 
 #### Changed
 
-- Fix concurrent claim race under exclusive policy: overlap lookup, conflict resolution, and intent insert now run inside a single BEGIN IMMEDIATE SQLite transaction.
-- Unskip TestConcurrent_ExclusivePolicy.
+- `internal/storage/sqlite.Store` exposes `WriteDomainEventImmediate`
+  and `ResolveAndInsertIntent`. The claim flow now runs through the
+  latter so overlap detection, supersede ordering, conflict-record
+  writes, and intent insert are all atomic against concurrent
+  writers.
+- Supersede ordering (C1 from PR #10 review): the `--supersede`
+  step now runs inside the immediate transaction and only on
+  non-Block decisions, so an aborted exclusive claim does not
+  leave a closed-then-untaken superseded chain.
+- `superseded_by` back-reference (C2): the forward link from the
+  old intent to the new intent is restored atomically with the
+  insert of the new intent.
+- New shared `internal/policy` leaf package houses policy and
+  conflict constants previously duplicated across packages (S3).
+- `conflicts.Decision` gains an `Unset` zero value so error
+  returns no longer fall through to a permissive Allow (S2).
+- `tests/integration/concurrent_test.TestConcurrent_ExclusivePolicy`
+  is no longer skipped and passes under `-race`.
 
 ## [0.1.1] - 2026-04-28
 
@@ -300,7 +326,8 @@ Code, and Babysitter adapters arrive in later phases.
   published `*_checksums.txt` file. A Homebrew tap with signed
   binaries is a Phase 5 deliverable.
 
-[Unreleased]: https://github.com/ruminaider/agent-clis/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/ruminaider/agent-clis/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.2
 [0.1.1]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.1
 [0.2.0-rc2]: https://github.com/ruminaider/agent-clis/releases/tag/v0.2.0-rc2
 [0.2.0-rc1]: https://github.com/ruminaider/agent-clis/releases/tag/v0.2.0-rc1
