@@ -6,6 +6,8 @@ MCP servers bloat your agent's context with dozens of tool descriptions and prev
 
 ## Tools
 
+### MCP replacements
+
 | Tool | Replaces | Status |
 |------|----------|--------|
 | [notion](./notion/) | Notion MCP Server | Ready |
@@ -14,6 +16,14 @@ MCP servers bloat your agent's context with dozens of tool descriptions and prev
 | [slack](./slack/) | Slack MCP Server | Planned |
 | [metabase](./metabase/) | Metabase MCP Server | Planned |
 | [newrelic](./newrelic/) | NewRelic MCP Server | Planned |
+
+### Coordination kernel
+
+| Tool | Purpose | Status |
+|------|---------|--------|
+| [agent-ledger](./agent-ledger/) | Local ledger that records which agent claimed which files, what changed, and whether changes stayed in scope. Harness-neutral, with adapters for pi (stable) and Babysitter (experimental). | v0.2.0 |
+
+`agent-ledger` does not replace an MCP server. It sits next to the others and gives any agent harness a coordination layer: assignments, file claims, change records, and a verifiable `agent-ledger.verify.v1` contract per task.
 
 ## Install
 
@@ -24,6 +34,9 @@ npm i -g @ruminaider/notion-cli
 # Linear publish target
 # npm i -g @ruminaider/linear-cli
 
+# agent-ledger ships as a Go binary (requires Go 1.22+)
+go install github.com/ruminaider/agent-clis/agent-ledger/cmd/agent-ledger@latest
+
 # Or clone and install all tools
 git clone https://github.com/ruminaider/agent-clis.git
 bash agent-clis/install.sh
@@ -33,6 +46,8 @@ bash agent-clis/notion/install.sh
 bash agent-clis/linear/install.sh
 bash agent-clis/circleci-cli/install.sh
 ```
+
+For `agent-ledger` release archives and source builds, see [`agent-ledger/README.md`](./agent-ledger/README.md).
 
 ## Why CLI Tools
 
@@ -69,9 +84,13 @@ linear-cli auth status   # Also supports --api-key and persisted credentials
 
 You create no custom integrations, and most flows should not require admin permissions.
 
+`agent-ledger` needs no auth: it is a local-only tool that writes to `$XDG_STATE_HOME/agent-ledger/` (overridable via `AGENT_LEDGER_DIR`).
+
 ## For AI Agent Harnesses
 
 Each tool includes a skill file ([Agent Skills standard](https://agentskills.io)) compatible with [pi](https://github.com/badlogic/pi-coding-agent), Claude Code, and any harness that supports the standard.
+
+`agent-ledger` goes one step further. Its `adapters/pi/` and `adapters/babysitter/` wrappers translate harness events into ledger calls (`assign`, `claim`, `record`, `close`, `verify`) so the agent does not have to remember to coordinate. The cross-harness env contract lives in `agent-ledger/docs/adapters.md`.
 
 ```
 agent-clis/
@@ -87,6 +106,10 @@ agent-clis/
 │   ├── cli/
 │   ├── skill/
 │   └── install.sh
+├── agent-ledger/         # Go-based coordination kernel
+│   ├── cmd/agent-ledger/ # Binary entrypoint
+│   ├── adapters/         # pi (stable), babysitter (experimental)
+│   └── docs/             # Walkthrough, exit codes, finding codes
 └── install.sh            # Install all tools
 ```
 
