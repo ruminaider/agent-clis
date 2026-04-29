@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/domain"
@@ -132,5 +133,167 @@ func TestMetadataDecodeError_EmptyMetadataIsNotAnError(t *testing.T) {
 	}
 	if got.AssignmentID != a.AssignmentID {
 		t.Errorf("got %q, want %q", got.AssignmentID, a.AssignmentID)
+	}
+}
+
+func TestMetadataDecodeError_StrictObjectValidation(t *testing.T) {
+	dir := t.TempDir()
+	store, err := sqlite.Open(context.Background(), filepath.Join(dir, "ledger.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.Migrator().Up(ctx); err != nil {
+		t.Fatal(err)
+	}
+	d := domain.New(store)
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: "orch", AgentKind: "orchestrator"}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := d.InsertAssignment(ctx, domain.Assignment{
+		TaskID:         "T-metadata-strict",
+		OrchestratorID: "orch",
+		AllowedPaths:   []string{"**"},
+		ConflictPolicy: "warn",
+		Reason:         "metadata strictness",
+		Status:         "active",
+		Metadata:       map[string]any{"ok": true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name      string
+		raw       string
+		wantErr   bool
+		wantCause string
+		checkRaw  bool
+	}{
+		{name: "trailing-junk", raw: `{"ok":true} trailing-junk`, wantErr: true},
+		{name: "concatenated-values", raw: `{"ok":true}{"other":false}`, wantErr: true},
+		{name: "null", raw: `null`, wantErr: true, wantCause: "expected JSON object, got null"},
+		{name: "array", raw: `[1,2]`, wantErr: true, wantCause: "expected JSON object, got array"},
+		{name: "scalar", raw: `42`, wantErr: true, wantCause: "expected JSON object, got number"},
+		{name: "empty", raw: ``, wantErr: false},
+		{name: "long-trailing-junk", raw: `{"ok":true}` + strings.Repeat("x", 240), wantErr: true, checkRaw: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := store.DB().ExecContext(ctx, `UPDATE assignments SET metadata_json = ? WHERE assignment_id = ?`, tc.raw, a.AssignmentID); err != nil {
+				t.Fatal(err)
+			}
+			got, err := d.LatestActiveAssignmentForTask(ctx, "T-metadata-strict")
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected MetadataDecodeError, got nil")
+				}
+				var mde *domain.MetadataDecodeError
+				if !errors.As(err, &mde) {
+					t.Fatalf("expected *MetadataDecodeError, got %T: %v", err, err)
+				}
+				if mde.Field != "assignments.metadata_json" {
+					t.Fatalf("Field = %q, want assignments.metadata_json", mde.Field)
+				}
+				if mde.RowID != a.AssignmentID {
+					t.Fatalf("RowID = %q, want %q", mde.RowID, a.AssignmentID)
+				}
+				if mde.Raw == "" {
+					t.Fatal("Raw should carry the offending payload")
+				}
+				if tc.checkRaw {
+					if len(mde.Raw) != 203 {
+						t.Fatalf("Raw length = %d, want 203", len(mde.Raw))
+					}
+					if !strings.HasSuffix(mde.Raw, "...") {
+						t.Fatalf("Raw should be truncated with ellipsis, got %q", mde.Raw)
+					}
+				}
+				if tc.wantCause != "" && !strings.Contains(mde.Error(), tc.wantCause) {
+					t.Fatalf("error = %q, want cause %q", mde.Error(), tc.wantCause)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error for empty metadata: %v", err)
+			}
+			if len(got.Metadata) != 0 {
+				t.Fatalf("expected empty metadata map, got %v", got.Metadata)
+			}
+		})
+	}
+}
+
+func TestPathsDecodeError_PropagatesFromAssignmentReaders(t *testing.T) {
+	dir := t.TempDir()
+	store, err := sqlite.Open(context.Background(), filepath.Join(dir, "ledger.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.Migrator().Up(ctx); err != nil {
+		t.Fatal(err)
+	}
+	d := domain.New(store)
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: "orch", AgentKind: "orchestrator"}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := d.InsertAssignment(ctx, domain.Assignment{
+		TaskID:         "T-paths-strict",
+		OrchestratorID: "orch",
+		AllowedPaths:   []string{"**"},
+		ForbiddenPaths: []string{"secret.md"},
+		ConflictPolicy: "warn",
+		Reason:         "paths strictness",
+		Status:         "active",
+		Metadata:       map[string]any{"ok": true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `UPDATE assignments SET allowed_paths_json = ? WHERE assignment_id = ?`, `{"bad":true}`, a.AssignmentID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.LatestActiveAssignmentForTask(ctx, "T-paths-strict"); err == nil {
+		t.Fatal("expected PathsDecodeError for allowed_paths_json, got nil")
+	} else {
+		var pde *domain.PathsDecodeError
+		if !errors.As(err, &pde) {
+			t.Fatalf("expected *PathsDecodeError, got %T: %v", err, err)
+		}
+		if pde.Field != "assignments.allowed_paths_json" {
+			t.Fatalf("Field = %q, want assignments.allowed_paths_json", pde.Field)
+		}
+		if pde.RowID != a.AssignmentID {
+			t.Fatalf("RowID = %q, want %q", pde.RowID, a.AssignmentID)
+		}
+		if pde.Raw == "" {
+			t.Fatal("Raw should carry the offending payload")
+		}
+	}
+
+	if _, err := store.DB().ExecContext(ctx, `UPDATE assignments SET allowed_paths_json = ?, forbidden_paths_json = ? WHERE assignment_id = ?`, `["**"]`, `null`, a.AssignmentID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.LatestActiveAssignmentForTask(ctx, "T-paths-strict"); err == nil {
+		t.Fatal("expected PathsDecodeError for forbidden_paths_json, got nil")
+	} else {
+		var pde *domain.PathsDecodeError
+		if !errors.As(err, &pde) {
+			t.Fatalf("expected *PathsDecodeError, got %T: %v", err, err)
+		}
+		if pde.Field != "assignments.forbidden_paths_json" {
+			t.Fatalf("Field = %q, want assignments.forbidden_paths_json", pde.Field)
+		}
+		if pde.RowID != a.AssignmentID {
+			t.Fatalf("RowID = %q, want %q", pde.RowID, a.AssignmentID)
+		}
+		if pde.Raw == "" {
+			t.Fatal("Raw should carry the offending payload")
+		}
 	}
 }

@@ -60,7 +60,7 @@ func runStatus(streams Streams, o *statusOpts) error {
 			if errors.Is(err, sql.ErrNoRows) {
 				return cli.NewError(cli.ExitNotFound, "intent_not_found", "intent not found")
 			}
-			return cli.NewError(cli.ExitStorageIO, "intent_lookup_failed", err.Error())
+			return mapStorageReadError(err, "intent_lookup_failed")
 		}
 		ipaths, _ := d.IntentPaths(ctx, in.IntentID)
 		if o.asJSON {
@@ -74,11 +74,11 @@ func runStatus(streams Streams, o *statusOpts) error {
 
 	intents, err := d.ListActiveIntents(ctx, o.task)
 	if err != nil {
-		return cli.NewError(cli.ExitStorageIO, "intents_list_failed", err.Error())
+		return mapStorageReadError(err, "intents_list_failed")
 	}
 	confs, err := d.ListConflicts(ctx, o.task, "detected")
 	if err != nil {
-		return cli.NewError(cli.ExitStorageIO, "conflicts_list_failed", err.Error())
+		return mapStorageReadError(err, "conflicts_list_failed")
 	}
 	stale := staleIntents(intents, store.Clock()())
 

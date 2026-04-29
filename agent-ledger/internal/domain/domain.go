@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -237,7 +238,7 @@ func encodeMeta(m map[string]any) (string, error) {
 // parse as a JSON object. Callers that want to read past corrupted
 // rows can detect the error with errors.As; callers that want to
 // fail loudly on ledger corruption can let it propagate and return
-// ExitStorageIO with code metadata_decode_failed.
+// ExitStorageIO with code metadata_corrupt.
 //
 // Field is the logical column path (table.column or table.row[id].column)
 // for diagnostics. Raw carries up to 200 bytes of the offending
@@ -262,6 +263,60 @@ func (e *MetadataDecodeError) Error() string {
 
 func (e *MetadataDecodeError) Unwrap() error { return e.Err }
 
+// PathsDecodeError is returned by path-scope readers when an
+// allowed_paths_json or forbidden_paths_json payload does not parse as
+// a JSON array of strings. Callers can detect the error with errors.As
+// or let it propagate and return ExitStorageIO with code paths_corrupt.
+//
+// Field is the logical column path (table.column or table.row[id].column)
+// for diagnostics. Raw carries up to 200 bytes of the offending
+// payload so a reviewer reading the error knows what to repair.
+type PathsDecodeError struct {
+	Field string
+	RowID string
+	Raw   string
+	Err   error
+}
+
+func (e *PathsDecodeError) Error() string {
+	if e == nil {
+		return "<nil PathsDecodeError>"
+	}
+	loc := e.Field
+	if e.RowID != "" {
+		loc = fmt.Sprintf("%s row=%s", e.Field, e.RowID)
+	}
+	return fmt.Sprintf("domain: paths decode failed (%s): %v", loc, e.Err)
+}
+
+func (e *PathsDecodeError) Unwrap() error { return e.Err }
+
+func truncatedDecodeRaw(raw string) string {
+	if len(raw) > 200 {
+		return raw[:200] + "..."
+	}
+	return raw
+}
+
+func jsonValueKind(v any) string {
+	switch v.(type) {
+	case nil:
+		return "null"
+	case map[string]any:
+		return "object"
+	case []any:
+		return "array"
+	case string:
+		return "string"
+	case bool:
+		return "bool"
+	case json.Number:
+		return "number"
+	default:
+		return fmt.Sprintf("%T", v)
+	}
+}
+
 // decodeMeta parses a metadata_json column and returns either the
 // decoded map or a typed *MetadataDecodeError. Empty input returns
 // an empty map without error so unset metadata is never an error.
@@ -273,18 +328,35 @@ func decodeMeta(raw, field, rowID string) (map[string]any, error) {
 	if raw == "" {
 		return map[string]any{}, nil
 	}
-	var m map[string]any
+	var v any
 	dec := json.NewDecoder(strings.NewReader(raw))
 	dec.UseNumber()
-	if err := dec.Decode(&m); err != nil {
-		truncated := raw
-		if len(truncated) > 200 {
-			truncated = truncated[:200] + "..."
+	if err := dec.Decode(&v); err != nil {
+		return nil, &MetadataDecodeError{
+			Field: field,
+			RowID: rowID,
+			Raw:   truncatedDecodeRaw(raw),
+			Err:   err,
+		}
+	}
+	m, ok := v.(map[string]any)
+	if !ok || m == nil {
+		return nil, &MetadataDecodeError{
+			Field: field,
+			RowID: rowID,
+			Raw:   truncatedDecodeRaw(raw),
+			Err:   fmt.Errorf("expected JSON object, got %s", jsonValueKind(v)),
+		}
+	}
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = fmt.Errorf("expected EOF, found extra JSON value")
 		}
 		return nil, &MetadataDecodeError{
 			Field: field,
 			RowID: rowID,
-			Raw:   truncated,
+			Raw:   truncatedDecodeRaw(raw),
 			Err:   err,
 		}
 	}
@@ -302,15 +374,56 @@ func encodePaths(p []string) (string, error) {
 	return string(raw), nil
 }
 
-func decodePaths(raw string) []string {
+func decodePaths(raw, field, rowID string) ([]string, error) {
 	if raw == "" {
-		return []string{}
+		return nil, nil
 	}
-	var p []string
-	if err := json.Unmarshal([]byte(raw), &p); err != nil {
-		return []string{}
+	var v any
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&v); err != nil {
+		return nil, &PathsDecodeError{
+			Field: field,
+			RowID: rowID,
+			Raw:   truncatedDecodeRaw(raw),
+			Err:   err,
+		}
 	}
-	return p
+	arr, ok := v.([]any)
+	if !ok || arr == nil {
+		return nil, &PathsDecodeError{
+			Field: field,
+			RowID: rowID,
+			Raw:   truncatedDecodeRaw(raw),
+			Err:   fmt.Errorf("expected JSON array, got %s", jsonValueKind(v)),
+		}
+	}
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = fmt.Errorf("expected EOF, found extra JSON value")
+		}
+		return nil, &PathsDecodeError{
+			Field: field,
+			RowID: rowID,
+			Raw:   truncatedDecodeRaw(raw),
+			Err:   err,
+		}
+	}
+	out := make([]string, 0, len(arr))
+	for i, item := range arr {
+		s, ok := item.(string)
+		if !ok {
+			return nil, &PathsDecodeError{
+				Field: field,
+				RowID: rowID,
+				Raw:   truncatedDecodeRaw(raw),
+				Err:   fmt.Errorf("expected JSON array of strings, got %s at index %d", jsonValueKind(item), i),
+			}
+		}
+		out = append(out, s)
+	}
+	return out, nil
 }
 
 // UpsertAgent inserts or replaces an agents row. Idempotent on agent_id.
@@ -459,12 +572,19 @@ func (s *Store) LatestActiveAssignmentForTask(ctx context.Context, taskID string
 		LIMIT 1
 	`, taskID)
 	var a Assignment
+	var err error
 	var allowed, forbid, meta string
 	if err := row.Scan(&a.AssignmentID, &a.EventID, &a.TaskID, &a.OrchestratorID, &a.AssignedAgentID, &allowed, &forbid, &a.ConflictPolicy, &a.Reason, &a.Status, &a.CreatedAt, &meta); err != nil {
 		return Assignment{}, err
 	}
-	a.AllowedPaths = decodePaths(allowed)
-	a.ForbiddenPaths = decodePaths(forbid)
+	a.AllowedPaths, err = decodePaths(allowed, "assignments.allowed_paths_json", a.AssignmentID)
+	if err != nil {
+		return Assignment{}, err
+	}
+	a.ForbiddenPaths, err = decodePaths(forbid, "assignments.forbidden_paths_json", a.AssignmentID)
+	if err != nil {
+		return Assignment{}, err
+	}
 	decoded, err := decodeMeta(meta, "assignments.metadata_json", a.AssignmentID)
 	if err != nil {
 		return Assignment{}, err
@@ -485,12 +605,19 @@ func (s *Store) LatestActiveAssignmentForTaskAndAgent(ctx context.Context, taskI
 		LIMIT 1
 	`, taskID, agentID)
 	var a Assignment
+	var err error
 	var allowed, forbid, meta string
 	if err := row.Scan(&a.AssignmentID, &a.EventID, &a.TaskID, &a.OrchestratorID, &a.AssignedAgentID, &allowed, &forbid, &a.ConflictPolicy, &a.Reason, &a.Status, &a.CreatedAt, &meta); err != nil {
 		return Assignment{}, err
 	}
-	a.AllowedPaths = decodePaths(allowed)
-	a.ForbiddenPaths = decodePaths(forbid)
+	a.AllowedPaths, err = decodePaths(allowed, "assignments.allowed_paths_json", a.AssignmentID)
+	if err != nil {
+		return Assignment{}, err
+	}
+	a.ForbiddenPaths, err = decodePaths(forbid, "assignments.forbidden_paths_json", a.AssignmentID)
+	if err != nil {
+		return Assignment{}, err
+	}
 	decoded, err := decodeMeta(meta, "assignments.metadata_json", a.AssignmentID)
 	if err != nil {
 		return Assignment{}, err
@@ -564,8 +691,14 @@ func (s *Store) ListAssignments(ctx context.Context, filter AssignmentFilter) ([
 		if err := rows.Scan(&a.AssignmentID, &a.EventID, &a.TaskID, &a.OrchestratorID, &a.AssignedAgentID, &allowed, &forbid, &a.ConflictPolicy, &a.Reason, &a.Status, &a.CreatedAt, &meta); err != nil {
 			return nil, err
 		}
-		a.AllowedPaths = decodePaths(allowed)
-		a.ForbiddenPaths = decodePaths(forbid)
+		a.AllowedPaths, err = decodePaths(allowed, "assignments.allowed_paths_json", a.AssignmentID)
+		if err != nil {
+			return nil, err
+		}
+		a.ForbiddenPaths, err = decodePaths(forbid, "assignments.forbidden_paths_json", a.AssignmentID)
+		if err != nil {
+			return nil, err
+		}
 		decoded, err := decodeMeta(meta, "assignments.metadata_json", a.AssignmentID)
 		if err != nil {
 			return nil, err

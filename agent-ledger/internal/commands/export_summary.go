@@ -67,7 +67,7 @@ func runExportSummary(streams Streams, o *exportSummaryOpts) error {
 		GeneratedAt: now.UTC().Format(time.RFC3339),
 	})
 	if err != nil {
-		return cli.NewError(cli.ExitGeneric, "summary_build_failed", err.Error())
+		return mapStorageReadError(err, "summary_build_failed")
 	}
 	raw, err := summary.Marshal(doc)
 	if err != nil {
