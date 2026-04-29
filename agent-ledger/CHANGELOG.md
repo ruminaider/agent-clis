@@ -10,6 +10,8 @@ of the binary version.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-04-29
+
 ### Verify: AUTO_ASSIGNED_TASK finding
 
 - New `AUTO_ASSIGNED_TASK` finding code (severity `warning`) fires
@@ -435,7 +437,8 @@ Code, and Babysitter adapters arrive in later phases.
   published `*_checksums.txt` file. A Homebrew tap with signed
   binaries is a Phase 5 deliverable.
 
-[Unreleased]: https://github.com/ruminaider/agent-clis/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/ruminaider/agent-clis/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.5
 [0.1.4]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.4
 [0.2.0-rc3]: https://github.com/ruminaider/agent-clis/releases/tag/v0.2.0-rc3
 [0.1.3]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.3
