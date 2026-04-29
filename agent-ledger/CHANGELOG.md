@@ -10,6 +10,8 @@ of the binary version.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-04-29
+
 ### Kernel: integrity scan command
 
 - New `agent-ledger scan` top-level command walks every JSON-bearing
@@ -417,7 +419,8 @@ Code, and Babysitter adapters arrive in later phases.
   published `*_checksums.txt` file. A Homebrew tap with signed
   binaries is a Phase 5 deliverable.
 
-[Unreleased]: https://github.com/ruminaider/agent-clis/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/ruminaider/agent-clis/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.4
 [0.2.0-rc3]: https://github.com/ruminaider/agent-clis/releases/tag/v0.2.0-rc3
 [0.1.3]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.3
 [0.1.2]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.2
