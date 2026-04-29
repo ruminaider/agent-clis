@@ -435,6 +435,112 @@ func TestVerify_MissingAssignment(t *testing.T) {
 	}
 }
 
+// TestVerify_AutoAssignedTask_Metadata verifies that an assignment
+// carrying metadata.auto_assigned == true (the v0.1.1+ structured
+// signal written by the adapter bootstrap) surfaces as an
+// AUTO_ASSIGNED_TASK finding with severity warning.
+func TestVerify_AutoAssignedTask_Metadata(t *testing.T) {
+	root, ledger := setupProject(t)
+	store := openTestStore(t, ledger)
+	t.Cleanup(func() { store.Close() })
+	d := domain.New(store)
+	ctx := context.Background()
+
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: "pi.worker.test", AgentKind: "worker"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.InsertAssignment(ctx, domain.Assignment{
+		TaskID:          "AUTO",
+		OrchestratorID:  "pi-adapter",
+		AssignedAgentID: "pi.worker.test",
+		AllowedPaths:    []string{"**"},
+		ConflictPolicy:  domain.PolicyWarn,
+		Reason:          "adapter session bootstrap",
+		Metadata: map[string]any{
+			"auto_assigned":    true,
+			"auto_assigned_by": "pi-adapter",
+			"task_source":      "branch",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rep := runVerify(t, verify.Inputs{
+		Root:                 root,
+		LedgerDirFlag:        ledger,
+		TaskID:               "AUTO",
+		ChangedPathsOverride: nil,
+	})
+	codes := findingsByCode(rep)
+	if len(codes[verify.CodeAutoAssignedTask]) == 0 {
+		t.Fatalf("expected AUTO_ASSIGNED_TASK, got %+v", rep.Findings)
+	}
+	if codes[verify.CodeAutoAssignedTask][0].Severity != verify.SevWarning {
+		t.Errorf("AUTO_ASSIGNED_TASK severity = %q, want warning", codes[verify.CodeAutoAssignedTask][0].Severity)
+	}
+	// MISSING_ASSIGNMENT must NOT fire because the assignment exists.
+	if len(codes[verify.CodeMissingAssignment]) != 0 {
+		t.Errorf("MISSING_ASSIGNMENT should not fire when an assignment row exists; got %+v", codes[verify.CodeMissingAssignment])
+	}
+}
+
+// TestVerify_AutoAssignedTask_ReasonMarkerFallback verifies the
+// pre-v0.1.1 fallback path: an assignment WITHOUT structured metadata
+// but with a leading [auto-assigned by ...] reason marker is still
+// recognized as adapter-derived. Catches sessions that wrote against
+// older kernel binaries before the structured surface existed.
+func TestVerify_AutoAssignedTask_ReasonMarkerFallback(t *testing.T) {
+	root, ledger := setupProject(t)
+	store := openTestStore(t, ledger)
+	t.Cleanup(func() { store.Close() })
+	d := domain.New(store)
+	ctx := context.Background()
+
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: "pi.worker.test", AgentKind: "worker"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.InsertAssignment(ctx, domain.Assignment{
+		TaskID:          "LEGACY",
+		OrchestratorID:  "pi-adapter",
+		AssignedAgentID: "pi.worker.test",
+		AllowedPaths:    []string{"**"},
+		ConflictPolicy:  domain.PolicyWarn,
+		Reason:          "[auto-assigned by pi-adapter auto-derived task=auto/x] legacy session",
+		// No structured metadata; v0.2.0-rc1 ledgers look like this.
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rep := runVerify(t, verify.Inputs{
+		Root:                 root,
+		LedgerDirFlag:        ledger,
+		TaskID:               "LEGACY",
+		ChangedPathsOverride: nil,
+	})
+	codes := findingsByCode(rep)
+	if len(codes[verify.CodeAutoAssignedTask]) == 0 {
+		t.Fatalf("expected AUTO_ASSIGNED_TASK from reason-marker fallback, got %+v", rep.Findings)
+	}
+}
+
+// TestVerify_ExplicitAssignment_NoAutoFinding confirms that an
+// orchestrator-supplied assignment (no metadata.auto_assigned, no
+// reason marker) does NOT trigger AUTO_ASSIGNED_TASK. Regression
+// guard against false positives.
+func TestVerify_ExplicitAssignment_NoAutoFinding(t *testing.T) {
+	root, ledger := setupProject(t)
+	writeFile(t, filepath.Join(root, "x.md"), "x")
+	seedAssignmentClaimRecord(t, ledger, root, "EXPLICIT", "pi.worker.test", []string{"x.md"}, nil, "x.md", true)
+	rep := runVerify(t, verify.Inputs{
+		Root:                 root,
+		LedgerDirFlag:        ledger,
+		TaskID:               "EXPLICIT",
+		ChangedPathsOverride: []string{"x.md"},
+	})
+	codes := findingsByCode(rep)
+	if len(codes[verify.CodeAutoAssignedTask]) != 0 {
+		t.Errorf("AUTO_ASSIGNED_TASK should not fire for an explicit orchestrator assignment; got %+v", codes[verify.CodeAutoAssignedTask])
+	}
+}
+
 func TestVerify_ExclusiveLockHeld(t *testing.T) {
 	root, ledger := setupProject(t)
 	writeFile(t, filepath.Join(ledger, "locks/abc.lock"), "")

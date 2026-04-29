@@ -10,6 +10,22 @@ of the binary version.
 
 ## [Unreleased]
 
+### Verify: AUTO_ASSIGNED_TASK finding
+
+- New `AUTO_ASSIGNED_TASK` finding code (severity `warning`) fires
+  when an assignment exists for a verified task but was created by
+  an adapter's auto-derivation path. Detection keys on the v0.1.1+
+  structured signal `metadata.auto_assigned == true`; falls back to
+  a leading `[auto-assigned by ...]` or `[harness-derived by ...]`
+  reason marker for ledgers written by older adapter versions.
+- `MISSING_ASSIGNMENT` keeps its v0.1.0 semantics (no assignment
+  row at all). The two findings are complementary: explicit-but-no-
+  row → `MISSING_ASSIGNMENT`; row-exists-but-adapter-derived →
+  `AUTO_ASSIGNED_TASK`.
+- `docs/finding-codes.md` documents the new code as an additive
+  v0.1.5 extension (not a SPEC §19.3 contract code).
+
+
 ## [0.1.4] - 2026-04-29
 
 ### Kernel: integrity scan command

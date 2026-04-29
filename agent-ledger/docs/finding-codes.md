@@ -3,8 +3,11 @@
 `agent-ledger verify` emits findings under the `agent-ledger.verify.v1`
 schema. Each finding carries a stable `code`, a `severity` (`info`,
 `warning`, `error`, or `fatal`), a scalar `path`, and a
-`suggested_recovery` string. The 14 codes below are the complete
-Phase 1 set per SPEC §19.3. Constants live in `internal/verify/verify.go`.
+`suggested_recovery` string. Constants live in
+`internal/verify/verify.go`. The 14 SPEC §19.3 codes are the
+long-stable Phase 1 set; `AUTO_ASSIGNED_TASK` (added in v0.1.5) is
+an additive `warning` finding for adapter-derived assignments and is
+not a SPEC §19.3 code.
 
 ## Codes
 
@@ -18,6 +21,7 @@ Phase 1 set per SPEC §19.3. Constants live in `internal/verify/verify.go`.
 | `OPEN_INTENT` | `info` | An intent is open at verify time. Informational at end-of-task. | `close --intent <id> --outcome completed` (or `abandoned`). |
 | `MISSING_REASON` | `error` | An assignment or intent has an empty `reason` field. | Re-create the assignment or intent with `--reason "<text>"`. |
 | `MISSING_ASSIGNMENT` | `error` | A claim or change references a task that has no assignment record. | Create the assignment first with `agent-ledger assign --task <id> ...`. |
+| `AUTO_ASSIGNED_TASK` | `warning` | An assignment exists for the task but was created by an adapter's auto-derivation path (`metadata.auto_assigned == true` or a `[auto-assigned by ...]` / `[harness-derived by ...]` reason marker) rather than by an explicit orchestrator. | If this session belongs to a known task, set `AGENT_LEDGER_TASK_ID` before launching the harness so the orchestrator declares the task explicitly. Otherwise informational; the audit trail is intact via the assignment metadata. |
 | `AGENT_MISMATCH` | `error` | A change's agent identity does not match the assignment's `--agent` value. | Re-record under the assigned agent, or update the assignment if the wrong agent owned the task. |
 | `REVIEW_ONLY_WRITE` | `error` | An intent declared `--access-mode read-only` but a `change.recorded` event exists for it. | Re-claim with `--access-mode read-write`, or revert the change. |
 | `EXCLUSIVE_LOCK_HELD` | `warning` | An advisory file lock is held outside the expected exclusive-claim flow. | Run `agent-ledger doctor --json` to inspect lock sentinels; release the stale lock. |
@@ -38,7 +42,8 @@ Phase 1 set per SPEC §19.3. Constants live in `internal/verify/verify.go`.
 
 ## Stability
 
-The 14 codes above are part of the Phase 1 public contract. Future
+The 14 SPEC §19.3 codes above are part of the Phase 1 public
+contract; `AUTO_ASSIGNED_TASK` is an additive v0.1.5 extension. Future
 phases may add new codes; existing codes will not be renamed without a
 schema version bump. Adapter authors should treat unknown codes as
 non-fatal and surface them under the persona that emitted them.
