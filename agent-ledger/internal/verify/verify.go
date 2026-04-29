@@ -105,12 +105,21 @@ const (
 	CodeOpenIntent            = "OPEN_INTENT"
 	CodeMissingReason         = "MISSING_REASON"
 	CodeMissingAssignment     = "MISSING_ASSIGNMENT"
-	CodeAgentMismatch         = "AGENT_MISMATCH"
-	CodeReviewOnlyWrite       = "REVIEW_ONLY_WRITE"
-	CodeExclusiveLockHeld     = "EXCLUSIVE_LOCK_HELD"
-	CodeConfigError           = "CONFIG_ERROR"
-	CodeStorageError          = "STORAGE_ERROR"
-	CodeSummaryMismatch       = "SUMMARY_MISMATCH"
+	// CodeAutoAssignedTask fires when an assignment exists for the
+	// task but was created by an adapter's auto-derivation path
+	// (metadata.auto_assigned == true) rather than by an explicit
+	// orchestrator. Severity is warning, not error: the work is
+	// attributable, but the orchestrator did not pre-declare a task
+	// id and the audit trail carries the [auto-assigned by ...] or
+	// [harness-derived by ...] marker. Reviewers see this as a soft
+	// signal that a session was self-bootstrapped.
+	CodeAutoAssignedTask  = "AUTO_ASSIGNED_TASK"
+	CodeAgentMismatch     = "AGENT_MISMATCH"
+	CodeReviewOnlyWrite   = "REVIEW_ONLY_WRITE"
+	CodeExclusiveLockHeld = "EXCLUSIVE_LOCK_HELD"
+	CodeConfigError       = "CONFIG_ERROR"
+	CodeStorageError      = "STORAGE_ERROR"
+	CodeSummaryMismatch   = "SUMMARY_MISMATCH"
 )
 
 // DefaultStaleAfter is the heartbeat-expiry window applied when a
@@ -380,6 +389,24 @@ func Run(ctx context.Context, in Inputs) (*Report, error) {
 			})
 		} else {
 			assignment = &a
+			// Soft signal: assignment exists but adapter auto-derived
+			// it (metadata.auto_assigned == true). Reviewers see one
+			// finding instead of having to run agent-ledger
+			// assignments separately.
+			if assignmentIsAutoDerived(a) {
+				by, _ := a.Metadata["auto_assigned_by"].(string)
+				source, _ := a.Metadata["task_source"].(string)
+				detail := ""
+				if by != "" || source != "" {
+					detail = fmt.Sprintf(" (by=%s source=%s)", by, source)
+				}
+				r.Findings = append(r.Findings, Finding{
+					Code:              CodeAutoAssignedTask,
+					Severity:          SevWarning,
+					Message:           fmt.Sprintf("task %q assignment was adapter-derived rather than orchestrator-declared%s", in.TaskID, detail),
+					SuggestedRecovery: fmt.Sprintf("If this session belongs to a known task, set AGENT_LEDGER_TASK_ID before launching the harness; otherwise this finding is informational and the audit trail is intact via the assignment's metadata.auto_assigned marker."),
+				})
+			}
 		}
 	}
 
@@ -891,6 +918,28 @@ func recomputeAssignmentHash(s summary.AssignmentSnapshot) string {
 	}
 	sum := sha256.Sum256(raw)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// assignmentIsAutoDerived reports whether a was created by an
+// adapter's auto-derivation path rather than by an explicit
+// orchestrator. The signal is the v0.1.1+ structured metadata flag
+// metadata.auto_assigned == true; the v0.2.0-rc1 reason marker
+// prefix ("[auto-assigned by ...]" or "[harness-derived by ...]")
+// is honored as a fallback for ledgers written before v0.1.1.
+func assignmentIsAutoDerived(a domain.Assignment) bool {
+	if v, ok := a.Metadata["auto_assigned"].(bool); ok && v {
+		return true
+	}
+	// task_source is set by the v0.2.0-rc2+ bootstrap on every
+	// adapter-derived assignment. Treat any non-empty value as
+	// adapter-derived.
+	if s, ok := a.Metadata["task_source"].(string); ok && s != "" {
+		return true
+	}
+	// Pre-v0.1.1 fallback: reason text marker.
+	reason := a.Reason
+	return strings.HasPrefix(reason, "[auto-assigned") ||
+		strings.HasPrefix(reason, "[harness-derived")
 }
 
 // pathHashAtRoot returns the portable path hash for a project-relative path

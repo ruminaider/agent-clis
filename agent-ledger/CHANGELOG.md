@@ -19,7 +19,7 @@ status. The extension has been continuously dogfooded against
 shima-enaga's real ledger across the v0.2.0-rc1, rc2, and rc3
 windows; tool-call interception, subagent chain auto-assignment,
 bash snapshot-and-diff, and structured-metadata writing all run
-cleanly against the v0.1.4 kernel.
+cleanly against the v0.1.5 kernel.
 
 #### Stable surface (v0.2.x contract)
 
@@ -57,10 +57,29 @@ cleanly against the v0.1.4 kernel.
 
 #### Recommended kernel pairing
 
-v0.2.0 adapters work against `agent-ledger` v0.1.0 through v0.1.4.
-Recommended pair is the latest stable kernel (v0.1.4 at v0.2.0
-tag time). Older kernels lose only the structured-metadata audit
-surface; the reason-text marker fallback remains.
+v0.2.0 adapters work against `agent-ledger` v0.1.0 through v0.1.5.
+Recommended pair is the latest stable kernel (v0.1.5 at v0.2.0
+tag time, includes the `AUTO_ASSIGNED_TASK` verify finding for
+adapter-derived assignments). Older kernels lose only the
+structured-metadata audit surface; the reason-text marker
+fallback remains.
+
+## [0.1.5] - 2026-04-29
+
+### Verify: AUTO_ASSIGNED_TASK finding
+
+- New `AUTO_ASSIGNED_TASK` finding code (severity `warning`) fires
+  when an assignment exists for a verified task but was created by
+  an adapter's auto-derivation path. Detection keys on the v0.1.1+
+  structured signal `metadata.auto_assigned == true`; falls back to
+  a leading `[auto-assigned by ...]` or `[harness-derived by ...]`
+  reason marker for ledgers written by older adapter versions.
+- `MISSING_ASSIGNMENT` keeps its v0.1.0 semantics (no assignment
+  row at all). The two findings are complementary: explicit-but-no-
+  row → `MISSING_ASSIGNMENT`; row-exists-but-adapter-derived →
+  `AUTO_ASSIGNED_TASK`.
+- `docs/finding-codes.md` documents the new code as an additive
+  v0.1.5 extension (not a SPEC §19.3 contract code).
 
 
 ## [0.1.4] - 2026-04-29
@@ -474,6 +493,7 @@ Code, and Babysitter adapters arrive in later phases.
 
 [Unreleased]: https://github.com/ruminaider/agent-clis/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/ruminaider/agent-clis/releases/tag/v0.2.0
+[0.1.5]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.5
 [0.1.4]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.4
 [0.2.0-rc3]: https://github.com/ruminaider/agent-clis/releases/tag/v0.2.0-rc3
 [0.1.3]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.3
