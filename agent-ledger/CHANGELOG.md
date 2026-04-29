@@ -10,6 +10,60 @@ of the binary version.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-29
+
+### Adapters: stable
+
+v0.2.0 promotes the **pi extension** out of release-candidate
+status. The extension has been continuously dogfooded against
+shima-enaga's real ledger across the v0.2.0-rc1, rc2, and rc3
+windows; tool-call interception, subagent chain auto-assignment,
+bash snapshot-and-diff, and structured-metadata writing all run
+cleanly against the v0.1.5 kernel.
+
+#### Stable surface (v0.2.x contract)
+
+- **pi extension** (`adapters/pi/agent-ledger.ts`): `tool_call`
+  and `tool_result` interception for `Edit`, `Write`, `MultiEdit`,
+  `Bash`, and `subagent`. Pre-claims paths, blocks on claim
+  failure, records after edits, snapshots `git status` around
+  bash. Subagent dispatches auto-create child tasks and inject
+  `AGENT_LEDGER_TASK_ID` / `AGENT_LEDGER_PARENT_TASK_ID` into the
+  child env so the chain follows automatically.
+- **Cross-harness env var contract** (`docs/adapters.md`):
+  `AGENT_ID`, `AGENT_LEDGER_TASK_ID`, `AGENT_LEDGER_PARENT_TASK_ID`,
+  `AGENT_LEDGER_DIR`, `AGENT_LEDGER_REQUIRE_TASK`,
+  `AGENT_LEDGER_AUTO_ASSIGN_POLICY`, `AGENT_LEDGER_AUTO_ASSIGN_ALLOW`,
+  `AGENT_LEDGER_REASON`, `AGENT_LEDGER_DETECT_PR`. Renames are
+  breaking under semver.
+- **Shared session bootstrap** (`adapters/shared/session-bootstrap.sh`):
+  six-source resolution chain (flag, env, pr, branch, detached,
+  auto), structured-metadata writing via `assign --metadata` when
+  the kernel supports it, idempotent `assign --if-absent` retries.
+- **Marker helpers** (`adapters/shared/marker.sh`, `marker.js`):
+  reason-text audit markers (`[auto-assigned by ...]` and
+  `[harness-derived by ...]`) preserved as forward-compat
+  fallback for v0.1.0 ledgers.
+
+#### Experimental, opt-in (NOT in v0.2.x contract)
+
+- **babysitter wrapper** (`adapters/babysitter/define-ledger-task.js`)
+  ships in the repo for users who want to invoke it from a
+  Babysitter process file. The wrapper has not been dogfooded at
+  scale; its CLI surface, env-var convention, and chain-of-tasks
+  shape may change in v0.3+. v0.2.x makes no contract guarantee
+  about it. Marked experimental in `adapters/README.md` and
+  `adapters/babysitter/README.md`.
+
+#### Recommended kernel pairing
+
+v0.2.0 adapters work against `agent-ledger` v0.1.0 through v0.1.5.
+Recommended pair is the latest stable kernel (v0.1.5 at v0.2.0
+tag time, includes the `AUTO_ASSIGNED_TASK` verify finding for
+adapter-derived assignments). Older kernels lose only the
+structured-metadata audit surface; the reason-text marker
+fallback remains.
+
 ## [0.1.5] - 2026-04-29
 
 ### Verify: AUTO_ASSIGNED_TASK finding
@@ -437,7 +491,8 @@ Code, and Babysitter adapters arrive in later phases.
   published `*_checksums.txt` file. A Homebrew tap with signed
   binaries is a Phase 5 deliverable.
 
-[Unreleased]: https://github.com/ruminaider/agent-clis/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/ruminaider/agent-clis/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/ruminaider/agent-clis/releases/tag/v0.2.0
 [0.1.5]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.5
 [0.1.4]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.4
 [0.2.0-rc3]: https://github.com/ruminaider/agent-clis/releases/tag/v0.2.0-rc3

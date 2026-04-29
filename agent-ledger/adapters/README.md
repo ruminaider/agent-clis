@@ -8,10 +8,17 @@ deterministically.
 
 | Adapter | Status | Path |
 | ------- | ------ | ---- |
-| pi extension | scaffold | `pi/agent-ledger.ts` |
-| babysitter wrapper | scaffold | `babysitter/define-ledger-task.js` |
+| pi extension | **stable** (v0.2.0) | `pi/agent-ledger.ts` |
+| babysitter wrapper | experimental, opt-in | `babysitter/define-ledger-task.js` |
 | Claude Code hooks | not shipped | (planned for v0.3) |
 | generic shell | not shipped | (planned post-MVP) |
+
+The pi extension is the v0.2.0 supported surface and has been
+continuously dogfooded against shima-enaga's real ledger. The
+babysitter wrapper ships in the repo for users who want to opt in
+but is not part of the v0.2.x contract: its CLI surface, env-var
+convention, and chain-of-tasks shape may evolve in v0.3+ once it
+has comparable production exposure.
 
 The shared `shared/session-bootstrap.sh` helper implements the
 idempotent identify + ensure-assignment dance every adapter runs

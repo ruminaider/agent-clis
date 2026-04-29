@@ -1,5 +1,13 @@
 # Agent Ledger babysitter wrapper
 
+> **Status (as of v0.2.0): experimental, opt-in.** The wrapper ships
+> in the repo for users who want to invoke it from a Babysitter
+> process file, but it is not part of the v0.2.x supported contract
+> and has not been dogfooded at scale. The CLI surface, env-var
+> convention, and chain-of-tasks shape may change in v0.3+. The
+> v0.2.0 stable surface is the pi extension only; see
+> `agent-ledger/adapters/pi/`.
+
 `defineLedgerTask` is a higher-order replacement for the Babysitter
 SDK's `defineTask`. It brackets every wrapped agent task with an
 `agent-ledger assign` shell pre-step and a `agent-ledger verify` shell
