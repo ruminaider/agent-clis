@@ -37,6 +37,7 @@ func Register(root *cobra.Command, streams Streams) {
 	// stubbed in cli.Phase1Commands. Listed in --help by cobra's
 	// default discovery.
 	root.AddCommand(NewAssignmentsCommand(streams))
+	root.AddCommand(NewScanCommand(streams))
 }
 
 // Execute is the same entrypoint as cli.Execute but registers Wave-2
