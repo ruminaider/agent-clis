@@ -10,6 +10,28 @@ of the binary version.
 
 ## [Unreleased]
 
+### Kernel: integrity scan command
+
+- New `agent-ledger scan` top-level command walks every JSON-bearing
+  column in the ledger (`agents`, `assignments`, `intents`,
+  `changes`, `validations`, `conflicts`, `events`) and reports any
+  row whose `metadata_json`, paths columns, or `payload_json` fails
+  to decode. Aggregates issues across all rows instead of aborting
+  on the first failure. Output as text (per-row detail with table /
+  column / row id / decode message) or JSON
+  (`agent-ledger.scan.v1`).
+- Exits 0 on a clean scan, 3 (`ExitStorageIO`) when any corrupt row
+  is found OR when the underlying query fails.
+- Backed by new `domain.IntegrityScan(ctx)` returning a structured
+  `IntegrityReport{Tables, Issues}`. Re-uses the typed
+  `MetadataDecodeError` and `PathsDecodeError` introduced in v0.1.3
+  so the scan reports the same root cause the routine readers
+  surface.
+- Tests: clean ledger → exit 0 + zero issues; deliberately corrupted
+  rows across 5 tables → exit 3 + every corruption reported in one
+  invocation; text output includes per-row detail.
+
+
 ## [0.2.0-rc3] - 2026-04-28
 
 ### Adapters: catch up with v0.1.1 kernel surface
