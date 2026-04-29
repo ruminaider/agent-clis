@@ -101,7 +101,7 @@ func runRecord(streams Streams, o *recordOpts, args []string) error {
 		if errors.Is(err, sql.ErrNoRows) {
 			return cli.NewError(cli.ExitNotFound, "intent_not_found", fmt.Sprintf("intent %q not found", o.intent))
 		}
-		return cli.NewError(cli.ExitStorageIO, "intent_lookup_failed", err.Error())
+		return mapStorageReadError(err, "intent_lookup_failed")
 	}
 	if intent.Status != domain.IntentActive {
 		return cli.NewError(cli.ExitConflict, "intent_not_active", fmt.Sprintf("intent %s is %s, expected active", intent.IntentID, intent.Status))

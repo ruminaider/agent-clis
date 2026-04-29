@@ -128,23 +128,31 @@ func errf(code int, machine, format string, args ...any) *cli.Error {
 	return cli.NewError(code, machine, fmt.Sprintf(format, args...))
 }
 
-// mapAssignmentReadError maps an error returned from a domain
-// assignment-reader (LatestActive*, ListAssignments, etc.) to a typed
-// CLI error. The default fallback uses fallbackCode and is used for
-// generic SQL errors. domain.MetadataDecodeError surfaces a dedicated
-// metadata_decode_failed code so reviewers can pinpoint corrupted rows
-// without grepping the underlying message. Returns nil on success so
-// callers can chain `if cliErr := mapAssignmentReadError(err, ...); cliErr != nil { return cliErr }`.
-func mapAssignmentReadError(err error, fallbackCode string) *cli.Error {
+// mapStorageReadError maps storage read failures returned from
+// strict domain readers to a typed CLI error. The default fallback
+// uses fallbackCode and preserves the caller's legacy code for plain
+// SQL errors. domain.MetadataDecodeError and domain.PathsDecodeError
+// surface dedicated storage codes so reviewers can pinpoint corrupted
+// rows without grepping the underlying message. Returns nil on success
+// so callers can chain `if cliErr := mapStorageReadError(err, ...); cliErr != nil { return cliErr }`.
+func mapStorageReadError(err error, fallbackCode string) *cli.Error {
 	if err == nil {
 		return nil
 	}
 	var mde *domain.MetadataDecodeError
 	if errors.As(err, &mde) {
-		return cli.NewError(cli.ExitStorageIO, "metadata_decode_failed", err.Error()).
+		return cli.NewError(cli.ExitStorageIO, "metadata_corrupt", err.Error()).
 			WithDetails(map[string]any{
 				"field":  mde.Field,
 				"row_id": mde.RowID,
+			})
+	}
+	var pde *domain.PathsDecodeError
+	if errors.As(err, &pde) {
+		return cli.NewError(cli.ExitStorageIO, "paths_corrupt", err.Error()).
+			WithDetails(map[string]any{
+				"field":  pde.Field,
+				"row_id": pde.RowID,
 			})
 	}
 	return cli.NewError(cli.ExitStorageIO, fallbackCode, err.Error())

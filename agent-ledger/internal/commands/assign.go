@@ -120,7 +120,7 @@ func runAssign(streams Streams, o *assignOpts) error {
 	if o.ifAbsent {
 		prev, err := d.LatestActiveAssignmentForTaskAndAgent(ctx, o.task, o.agent)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return mapAssignmentReadError(err, "assign_lookup_failed")
+			return mapStorageReadError(err, "assign_lookup_failed")
 		}
 		if err == nil && sameAssignmentReplay(prev, assignment) {
 			assignment = prev
@@ -265,7 +265,7 @@ func recoverIfAbsentAssignment(ctx context.Context, lookup func(context.Context,
 			"an active assignment already exists for this (task, agent) pair; supply --if-absent to reuse identical assignments or close the prior one first")
 	}
 	if lerr != nil {
-		return wanted, false, cli.NewError(cli.ExitStorageIO, "assign_lookup_failed", lerr.Error())
+		return wanted, false, mapStorageReadError(lerr, "assign_lookup_failed")
 	}
 	if sameAssignmentReplay(prev, wanted) {
 		return prev, true, nil

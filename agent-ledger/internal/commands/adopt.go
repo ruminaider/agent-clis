@@ -69,7 +69,7 @@ func runAdopt(streams Streams, o *adoptOpts, args []string) error {
 
 	assignment, err := d.LatestActiveAssignmentForTask(ctx, o.task)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return mapAssignmentReadError(err, "assignment_lookup_failed")
+		return mapStorageReadError(err, "assignment_lookup_failed")
 	}
 	// Adoption is allowed without an active assignment so backfill on
 	// completed tasks works. We still record assignment metadata when

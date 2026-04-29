@@ -86,7 +86,7 @@ func runAssignments(streams Streams, o *assignmentsOpts) error {
 		Limit:          o.limit,
 	})
 	if err != nil {
-		return mapAssignmentReadError(err, "assignments_query_failed")
+		return mapStorageReadError(err, "assignments_query_failed")
 	}
 
 	if o.asJSON {

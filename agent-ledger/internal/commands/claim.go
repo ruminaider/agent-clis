@@ -99,7 +99,7 @@ func runClaim(streams Streams, o *claimOpts, args []string) error {
 			return cli.NewError(cli.ExitConflict, "missing_assignment", fmt.Sprintf("no active assignment for task %s", o.task)).
 				WithDetails(map[string]any{"task_id": o.task, "finding": "MISSING_ASSIGNMENT"})
 		}
-		return mapAssignmentReadError(err, "assignment_lookup_failed")
+		return mapStorageReadError(err, "assignment_lookup_failed")
 	}
 
 	policy := assignment.ConflictPolicy
@@ -151,7 +151,10 @@ func runClaim(streams Streams, o *claimOpts, args []string) error {
 	if o.override != "" {
 		c, cerr := d.ConflictByID(ctx, o.override)
 		if cerr != nil {
-			return cli.NewError(cli.ExitConflict, "override_conflict_invalid", cerr.Error())
+			if errors.Is(cerr, sql.ErrNoRows) {
+				return cli.NewError(cli.ExitConflict, "override_conflict_invalid", cerr.Error())
+			}
+			return mapStorageReadError(cerr, "override_conflict_invalid")
 		}
 		if c.Status != domain.ConflictAcknowledged || c.Resolution != "override" {
 			return cli.NewError(cli.ExitConflict, "override_not_authorized",

@@ -49,7 +49,7 @@ func runConflictsList(streams Streams, o *conflictsOpts) error {
 	d := domain.New(store)
 	confs, err := d.ListConflicts(ctx, o.task, "")
 	if err != nil {
-		return cli.NewError(cli.ExitStorageIO, "conflicts_list_failed", err.Error())
+		return mapStorageReadError(err, "conflicts_list_failed")
 	}
 	if o.asJSON {
 		out := make([]map[string]any, 0, len(confs))
