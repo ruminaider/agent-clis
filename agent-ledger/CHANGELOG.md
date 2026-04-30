@@ -10,6 +10,8 @@ of the binary version.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-04-29
+
 ### Fixed
 
 - Documented the orchestrator ordering rule for long-lived workers:
