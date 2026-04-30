@@ -90,6 +90,16 @@ The reason is stored verbatim for debugging but is rejected if it
 matches a secret pattern (AWS keys, GitHub PATs, bearer tokens, etc.).
 Audit JSONL and exported summaries reference reasons by SHA-256 only.
 
+For long-lived workers, run assignment before sending the worker a
+task brief or any `agent-ledger claim --task T1` command. The worker's
+session bootstrap runs only once; it will not create an assignment for
+a later manually supplied task id. Use `--if-absent` for idempotent
+orchestrator preflight:
+
+```bash
+agent-ledger assign   --task T1   --orchestrator op.main   --agent worker.alice   --allow 'src/**'   --policy warn   --reason "implement feature X"   --if-absent   --ledger-dir "$LEDGER"
+```
+
 ## 6. Claim files before editing
 
 ```bash

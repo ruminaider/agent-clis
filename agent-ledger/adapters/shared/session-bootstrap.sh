@@ -16,16 +16,21 @@
 #   5. Detached HEAD           => `detached/<short-sha>`
 #   6. Auto fallback           => `auto/<agent>/<utc>` (last resort)
 #
-# Sources 1 and 2 are explicit; the bootstrap skips assigning since the
-# orchestrator is expected to have already done so.
+# Sources 1 and 2 are explicit; the bootstrap skips assigning when an
+# active assignment already exists. If none exists, it fails early by
+# default so orchestrators fix ordering before workers claim. Operators
+# can opt into audited repair with AGENT_LEDGER_REPAIR_EXPLICIT_ASSIGNMENT=1
+# plus AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW.
 #
 # Sources 3-5 are harness-derived; the bootstrap creates a fresh
 # assignment on first encounter with a [harness-derived ...] marker so
 # reviewers can audit how the task id was sourced.
 #
-# Source 6 is the only path that triggers the legacy
-# [auto-assigned ...] marker. The pi extension reads AGENT_LEDGER_TASK_SOURCE
-# and only surfaces a warning toast for source=auto.
+# Source 6 is the normal path for the legacy [auto-assigned ...]
+# marker. Opt-in explicit repair assignments also use that marker, with
+# structured metadata distinguishing the repair case. The pi extension
+# reads AGENT_LEDGER_TASK_SOURCE and only surfaces a warning toast for
+# source=auto.
 
 set -euo pipefail
 
@@ -186,31 +191,79 @@ case "$TASK_SOURCE" in
     ;;
 esac
 
-# 3. Ensure assignment exists for non-explicit sources. Explicit sources
-#    are the orchestrator's responsibility and the bootstrap trusts that
-#    an assignment already exists.
+# 3. Ensure assignment exists. Derived sources always create an
+#    assignment. Explicit sources are the orchestrator's responsibility:
+#    if no active assignment exists, fail before the first claim unless
+#    audited explicit repair is enabled.
 ledger_args=()
 if [[ -n "${AGENT_LEDGER_DIR:-}" ]]; then
   ledger_args+=( --ledger-dir "$AGENT_LEDGER_DIR" )
 fi
 
-if [[ "$EXPLICIT" == "0" ]]; then
-  policy="${AGENT_LEDGER_AUTO_ASSIGN_POLICY:-warn}"
-  allow="${AGENT_LEDGER_AUTO_ASSIGN_ALLOW:-**}"
-  orch="${ORCHESTRATOR_LABEL:-${HARNESS}-adapter}"
-  parent="${PARENT_TASK_FLAG:-${AGENT_LEDGER_PARENT_TASK_ID:-}}"
-  marker_args=( --by "${HARNESS}-adapter" --source "$TASK_SOURCE" --task "$TASK_ID" --agent "$AGENT_ID" )
+assignment_count_for_task() {
+  local out=""
+  local count=""
+  local err_file=""
+
+  err_file="$(mktemp "${TMPDIR:-/tmp}/agent-ledger-assignments.XXXXXX")"
+  if ! out="$(agent-ledger assignments --task "$TASK_ID" --status active --limit 1 --json "${ledger_args[@]+"${ledger_args[@]}"}" 2>"$err_file")"; then
+    echo "session-bootstrap: agent-ledger assignments query failed (task=$TASK_ID)" >&2
+    cat "$err_file" >&2
+    rm -f "$err_file"
+    return 2
+  fi
+  rm -f "$err_file"
+
+  if command -v python3 >/dev/null 2>&1; then
+    count="$(printf '%s\n' "$out" | python3 -c 'import json, sys; data = json.load(sys.stdin); print(int(data.get("count", len(data.get("assignments", [])))))' 2>/dev/null)" || count=""
+  elif command -v node >/dev/null 2>&1; then
+    count="$(printf '%s\n' "$out" | node -e 'let input=""; process.stdin.setEncoding("utf8"); process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => { const data = JSON.parse(input); const fallback = Array.isArray(data.assignments) ? data.assignments.length : 0; const count = data.count ?? fallback; if (!Number.isInteger(count)) process.exit(1); console.log(count); });' 2>/dev/null)" || count=""
+  else
+    echo "session-bootstrap: python3 or node is required to parse agent-ledger assignments --json" >&2
+    return 2
+  fi
+  if [[ -z "$count" ]]; then
+    echo "session-bootstrap: could not parse agent-ledger assignments --json count (task=$TASK_ID)" >&2
+    printf '%s\n' "$out" >&2
+    return 2
+  fi
+  printf '%s\n' "$count"
+}
+
+active_assignment_exists_for_task() {
+  local count=""
+  if count="$(assignment_count_for_task)"; then
+    [[ "$count" -gt 0 ]]
+    return
+  fi
+  return $?
+}
+
+write_bootstrap_assignment() {
+  local assignment_source="$1"
+  local marker_source="$2"
+  local auto_assigned="$3"
+  local reason_detail="$4"
+  local explicit_repair="${5:-0}"
+  local allow_override="${6:-}"
+  local policy="${AGENT_LEDGER_AUTO_ASSIGN_POLICY:-warn}"
+  local allow="${allow_override:-${AGENT_LEDGER_AUTO_ASSIGN_ALLOW:-**}}"
+  local orch="${ORCHESTRATOR_LABEL:-${HARNESS}-adapter}"
+  local parent="${PARENT_TASK_FLAG:-${AGENT_LEDGER_PARENT_TASK_ID:-}}"
+  local marker=""
+  local reason=""
+  local metadata_json=""
+  local assign_help=""
+  local -a marker_args
+  local -a allow_args
+  local -a metadata_args
+
+  marker_args=( --by "${HARNESS}-adapter" --source "$marker_source" --task "$TASK_ID" --agent "$AGENT_ID" )
   if [[ -n "$parent" ]]; then
     marker_args+=( --parent "$parent" )
   fi
   marker="$(agent_ledger_auto_assigned_marker "${marker_args[@]}")"
-  case "$TASK_SOURCE" in
-    auto) reason="${marker} session bootstrap (no harness context found; see docs/adapters.md)" ;;
-    pr) reason="${marker} session bootstrap (task id derived from current PR)" ;;
-    branch) reason="${marker} session bootstrap (task id derived from current branch)" ;;
-    detached) reason="${marker} session bootstrap (task id derived from detached HEAD short sha)" ;;
-    *) reason="${marker} session bootstrap" ;;
-  esac
+  reason="${marker} ${reason_detail}"
 
   allow_args=()
   while IFS= read -r -d '' arg; do
@@ -221,9 +274,12 @@ if [[ "$EXPLICIT" == "0" ]]; then
   # stays as a forward-compatible audit signal; the metadata JSON is
   # the canonical surface for programmatic queries via the
   # agent-ledger assignments command.
-  metadata_json="{\"auto_assigned\":$([[ "$TASK_SOURCE" == "auto" ]] && echo true || echo false)"
+  metadata_json="{\"auto_assigned\":${auto_assigned}"
   metadata_json="${metadata_json},\"auto_assigned_by\":\"$(json_escape "${HARNESS}-adapter")\""
-  metadata_json="${metadata_json},\"task_source\":\"$(json_escape "$TASK_SOURCE")\""
+  metadata_json="${metadata_json},\"task_source\":\"$(json_escape "$assignment_source")\""
+  if [[ "$explicit_repair" == "1" ]]; then
+    metadata_json="${metadata_json},\"explicit_missing_assignment\":true"
+  fi
   if [[ -n "$parent" ]]; then
     metadata_json="${metadata_json},\"parent_task\":\"$(json_escape "$parent")\""
   fi
@@ -255,6 +311,36 @@ if [[ "$EXPLICIT" == "0" ]]; then
       "${ledger_args[@]+"${ledger_args[@]}"}" >&2
   then
     echo "session-bootstrap: agent-ledger assign failed (task=$TASK_ID)" >&2
+    exit 5
+  fi
+}
+
+if [[ "$EXPLICIT" == "0" ]]; then
+  case "$TASK_SOURCE" in
+    auto) write_bootstrap_assignment "$TASK_SOURCE" "$TASK_SOURCE" true "session bootstrap (no harness context found; see docs/adapters.md)" ;;
+    pr) write_bootstrap_assignment "$TASK_SOURCE" "$TASK_SOURCE" false "session bootstrap (task id derived from current PR)" ;;
+    branch) write_bootstrap_assignment "$TASK_SOURCE" "$TASK_SOURCE" false "session bootstrap (task id derived from current branch)" ;;
+    detached) write_bootstrap_assignment "$TASK_SOURCE" "$TASK_SOURCE" false "session bootstrap (task id derived from detached HEAD short sha)" ;;
+    *) write_bootstrap_assignment "$TASK_SOURCE" auto true "session bootstrap" ;;
+  esac
+elif active_assignment_exists_for_task; then
+  :
+else
+  assignment_rc=$?
+  if [[ "$assignment_rc" == "1" ]]; then
+    if [[ "${AGENT_LEDGER_REPAIR_EXPLICIT_ASSIGNMENT:-0}" != "1" ]]; then
+      echo "session-bootstrap: explicit task id has no active assignment (task=$TASK_ID source=$TASK_SOURCE)" >&2
+      echo "session-bootstrap: run agent-ledger assign before launching or instructing this worker" >&2
+      echo "session-bootstrap: optional emergency repair requires AGENT_LEDGER_REPAIR_EXPLICIT_ASSIGNMENT=1 and AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW" >&2
+      exit 5
+    fi
+    if [[ -z "${AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW:-}" ]]; then
+      echo "session-bootstrap: AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW is required when AGENT_LEDGER_REPAIR_EXPLICIT_ASSIGNMENT=1" >&2
+      exit 5
+    fi
+    echo "session-bootstrap: WARNING: explicit task id has no active assignment; creating audited repair assignment (task=$TASK_ID source=$TASK_SOURCE allow=$AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW)" >&2
+    write_bootstrap_assignment "$TASK_SOURCE" auto true "session bootstrap (explicit task id from $TASK_SOURCE lacked an active assignment; adapter created an opt-in repair assignment)" 1 "$AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW"
+  else
     exit 5
   fi
 fi

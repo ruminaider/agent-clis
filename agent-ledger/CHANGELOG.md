@@ -10,6 +10,25 @@ of the binary version.
 
 ## [Unreleased]
 
+### Fixed
+
+- Documented the orchestrator ordering rule for long-lived workers:
+  run `agent-ledger assign --if-absent` and confirm an active
+  assignment before sending a worker any task brief or claim command.
+- The shared adapter bootstrap now fails early when explicit
+  `AGENT_LEDGER_TASK_ID` or `--task-id` sessions have no active
+  assignment. Emergency repair is opt-in via
+  `AGENT_LEDGER_REPAIR_EXPLICIT_ASSIGNMENT=1` plus an explicit
+  `AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW` scope, and repair rows are
+  marked with `metadata.explicit_missing_assignment == true`.
+- The pi extension's subagent hook now sets the child ledger env on
+  `process.env` for the duration of the subagent tool call, which is
+  the environment current pi-subagents uses when spawning children.
+  Management calls such as `subagent({ action: "list" })` no longer
+  create child ledger assignments. Child assignments are written from
+  the requested subagent cwd when supplied, and overlapping subagent
+  env injections are blocked.
+
 ## [0.2.0] - 2026-04-29
 
 ### Adapters: stable

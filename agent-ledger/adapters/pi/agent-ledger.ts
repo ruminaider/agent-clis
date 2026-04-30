@@ -40,6 +40,8 @@ interface IntentRef {
   paths: string[];
 }
 
+type EnvSnapshot = Record<string, string | undefined>;
+
 type TaskSource = "flag" | "env" | "pr" | "branch" | "detached" | "auto";
 
 interface BootstrapState {
@@ -51,13 +53,15 @@ interface BootstrapState {
   bootstrapPromise: Promise<void> | null;
   liveClaims: Map<string, IntentRef>;
   bashSnapshots: Map<string, Set<string>>;
+  subagentEnvRestores: Map<string, EnvSnapshot>;
 }
 
 // --- Helpers -------------------------------------------------------------
 
-async function runLedger(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
+async function runLedger(args: string[], cwd = process.cwd()): Promise<{ stdout: string; stderr: string; code: number }> {
   try {
     const { stdout, stderr } = await exec("agent-ledger", args, {
+      cwd,
       env: process.env,
       maxBuffer: 1024 * 1024,
     });
@@ -93,6 +97,16 @@ function parseBootstrapOutput(stdout: string): Record<string, string> {
     env[k] = decodeShellSingleQuoted(vRaw);
   }
   return env;
+}
+
+function errorMessage(err: any): string {
+  return [err?.stderr?.toString().trim(), err?.message?.toString().trim()]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function shouldBlockBootstrapFailure(): boolean {
+  return process.env.AGENT_LEDGER_REQUIRE_TASK === "1" || Boolean(process.env.AGENT_LEDGER_TASK_ID);
 }
 
 async function bootstrapSession(state: BootstrapState, harness: string, agentKind: string): Promise<void> {
@@ -243,6 +257,52 @@ function diffPaths(after: Set<string>, before: Set<string>): string[] {
   return [...after].filter((p) => !before.has(p));
 }
 
+function snapshotEnv(keys: string[]): EnvSnapshot {
+  const snapshot: EnvSnapshot = {};
+  for (const key of keys) snapshot[key] = process.env[key];
+  return snapshot;
+}
+
+function restoreEnv(snapshot: EnvSnapshot): void {
+  for (const [key, value] of Object.entries(snapshot)) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+}
+
+function isExecutionSubagentCall(input: any): boolean {
+  return !input?.action;
+}
+
+function collectSubagentCwds(input: any): string[] {
+  const cwds: string[] = [];
+  if (typeof input?.cwd === "string") cwds.push(input.cwd);
+  if (Array.isArray(input?.tasks)) {
+    for (const task of input.tasks) {
+      if (typeof task?.cwd === "string") cwds.push(task.cwd);
+    }
+  }
+  if (Array.isArray(input?.chain)) {
+    for (const step of input.chain) {
+      if (typeof step?.cwd === "string") cwds.push(step.cwd);
+      if (Array.isArray(step?.parallel)) {
+        for (const task of step.parallel) {
+          if (typeof task?.cwd === "string") cwds.push(task.cwd);
+        }
+      }
+    }
+  }
+  return [...new Set(cwds)];
+}
+
+function resolveSubagentLedgerCwd(input: any): string {
+  const cwds = collectSubagentCwds(input);
+  return cwds.length === 1 ? path.resolve(process.cwd(), cwds[0]!) : process.cwd();
+}
+
 // --- Extension entry -----------------------------------------------------
 
 export default function (pi: ExtensionAPI) {
@@ -255,6 +315,7 @@ export default function (pi: ExtensionAPI) {
     bootstrapPromise: null,
     liveClaims: new Map(),
     bashSnapshots: new Map(),
+    subagentEnvRestores: new Map(),
   };
 
   // Bootstrap lazily on first tool call so we do not slow down sessions
@@ -273,22 +334,40 @@ export default function (pi: ExtensionAPI) {
           ctx.ui.notify(`agent-ledger: no task context found; auto task=${state.resolvedTaskId}`, "warning");
         }
       } catch (err: any) {
-        if (process.env.AGENT_LEDGER_REQUIRE_TASK === "1") {
-          return { block: true, reason: `agent-ledger bootstrap failed: ${err.message}` };
+        const message = errorMessage(err);
+        if (shouldBlockBootstrapFailure()) {
+          return { block: true, reason: `agent-ledger bootstrap failed: ${message}` };
         }
-        // Soft-fail: log and continue without ledger discipline.
-        console.error(`agent-ledger bootstrap failed (continuing without enforcement): ${err.message}`);
+        // Soft-fail only when no explicit task contract was supplied.
+        console.error(`agent-ledger bootstrap failed (continuing without enforcement): ${message}`);
         return undefined;
       }
     }
 
     // Subagent dispatch: assign a child task and inject env so the
-    // child pi process picks up where the parent left off.
+    // child pi process picks up where the parent left off. The current
+    // pi-subagents tool reads process.env when it spawns children, not
+    // an event.input.env field, so set process.env for the duration of
+    // this tool call and restore it in tool_result. Keep event.input.env
+    // populated for future subagent versions that may accept it.
     if (SUBAGENT_TOOLS.has(toolName)) {
+      if (!isExecutionSubagentCall(event.input)) return undefined;
+      if (state.subagentEnvRestores.size > 0) {
+        return { block: true, reason: "agent-ledger refused overlapping subagent env injection; wait for the active subagent call to finish" };
+      }
       const childAgent = (event.input?.agent as string) ?? "subagent";
       const childTask = `${state.resolvedTaskId}/${childAgent}/${Date.now().toString(36)}`;
+      const childLedgerCwd = resolveSubagentLedgerCwd(event.input);
       const policy = process.env.AGENT_LEDGER_AUTO_ASSIGN_POLICY ?? "warn";
       const allowArgs = splitAllowGlobs(process.env.AGENT_LEDGER_AUTO_ASSIGN_ALLOW).flatMap((g) => ["--allow", g]);
+      const childEnv: Record<string, string> = {
+        AGENT_LEDGER_TASK_ID: childTask,
+        AGENT_LEDGER_PARENT_TASK_ID: state.resolvedTaskId ?? "",
+      };
+      if (process.env.AGENT_LEDGER_DIR) childEnv.AGENT_LEDGER_DIR = process.env.AGENT_LEDGER_DIR;
+
+      const restore = snapshotEnv(Object.keys(childEnv));
+      state.subagentEnvRestores.set(event.toolCallId, restore);
       const assign = await runLedger([
         "assign",
         "--task", childTask,
@@ -297,15 +376,17 @@ export default function (pi: ExtensionAPI) {
         "--policy", policy,
         ...allowArgs,
         "--reason", `${buildAssignmentMarker({ by: "pi-extension-subagent-hook", parent: state.resolvedTaskId, task: childTask, agent: childAgent })} subagent dispatch from ${state.resolvedAgentId ?? "pi"}`,
-      ]);
+      ], childLedgerCwd);
       if (assign.code !== 0) {
+        state.subagentEnvRestores.delete(event.toolCallId);
         return { block: true, reason: `agent-ledger refused subagent assignment: ${assign.stderr.trim() || `exit ${assign.code}`}` };
       }
+
+      for (const [key, value] of Object.entries(childEnv)) process.env[key] = value;
+
       if (event.input && typeof event.input === "object") {
         const env = (event.input.env as Record<string, string> | undefined) ?? {};
-        env.AGENT_LEDGER_TASK_ID = childTask;
-        env.AGENT_LEDGER_PARENT_TASK_ID = state.resolvedTaskId ?? "";
-        if (process.env.AGENT_LEDGER_DIR) env.AGENT_LEDGER_DIR = process.env.AGENT_LEDGER_DIR;
+        Object.assign(env, childEnv);
         (event.input as any).env = env;
       }
       return undefined;
@@ -341,6 +422,17 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_result", async (event, _ctx) => {
     if (!state.bootstrapped) return;
     const toolName = normalizeToolName(event.toolName);
+
+    // Subagent dispatch: restore the parent's ledger env after the
+    // subagent tool has spawned its child process(es).
+    if (SUBAGENT_TOOLS.has(toolName)) {
+      const restore = state.subagentEnvRestores.get(event.toolCallId);
+      if (restore) {
+        state.subagentEnvRestores.delete(event.toolCallId);
+        restoreEnv(restore);
+      }
+      return;
+    }
 
     // Edit tools: record against the intent claimed in tool_call.
     if (EDIT_TOOLS.has(toolName)) {
@@ -382,6 +474,13 @@ export {
   extractEditPaths,
   normalizeToolName,
   parseBootstrapOutput,
+  collectSubagentCwds,
+  errorMessage,
+  isExecutionSubagentCall,
   parseTaskSource,
+  resolveSubagentLedgerCwd,
+  shouldBlockBootstrapFailure,
+  restoreEnv,
+  snapshotEnv,
   splitAllowGlobs,
 };

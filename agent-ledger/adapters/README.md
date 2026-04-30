@@ -32,6 +32,8 @@ Every adapter implements the same env var contract documented in
 - `AGENT_ID`: identity, set by the harness or auto-derived.
 - `AGENT_LEDGER_TASK_ID`: orchestrator-set; auto-derived if missing
   (with a leading `[auto-assigned ...]` reason marker for v0.1 audit).
+  If explicit but unassigned, bootstrap fails unless emergency repair
+  env vars are set.
 - `AGENT_LEDGER_PARENT_TASK_ID`: chains a child task to its parent.
 - `AGENT_LEDGER_DIR`: optional ledger directory override.
 - `AGENT_LEDGER_REQUIRE_TASK=1`: opt into fail-closed enforcement
@@ -46,14 +48,18 @@ dispatched without `AGENT_LEDGER_TASK_ID`, the adapter generates
 a leading reason marker of the form `[auto-assigned by <source>
 auto-derived ...]`. The worker proceeds with full attribution;
 reviewers find every auto-assigned task by filtering assignment
-reasons that start with `[auto-assigned`, and `verify` emits a
-`MISSING_ASSIGNMENT` warning that surfaces in CI without blocking
+reasons that start with `[auto-assigned`, and `verify` emits an
+`AUTO_ASSIGNED_TASK` warning that surfaces in CI without blocking
 merges.
 
 Operators who want strict enforcement set
 `AGENT_LEDGER_REQUIRE_TASK=1` and accept the disruption.
 
-See `agent-ledger/docs/adapters.md` for the complete design.
+For long-lived workers, auto-derivation is not an orchestrator-ordering
+substitute. The orchestrator must run `agent-ledger assign --if-absent`
+and confirm an active assignment before it sends a worker a task brief
+or claim command for that task id. See `agent-ledger/docs/adapters.md`
+for the complete design.
 
 ## Stability
 
