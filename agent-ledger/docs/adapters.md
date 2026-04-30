@@ -14,13 +14,15 @@ wrapper, future Claude Code hooks) implements the same shape.
 | Variable | Producer | Consumer | Required | Purpose |
 | -------- | -------- | -------- | -------- | ------- |
 | `AGENT_ID` | harness or orchestrator | every claim/record | yes | Identity attributed to events. Set by the harness; falls back to a non-PII opaque value at session bootstrap. |
-| `AGENT_LEDGER_TASK_ID` | orchestrator | adapters | strongly preferred | The task id this agent is working on. Orchestrators set it before dispatching a worker. If unset at first claim, the adapter auto-derives one. |
+| `AGENT_LEDGER_TASK_ID` | orchestrator | adapters | strongly preferred | The task id this agent is working on. Orchestrators set it before dispatching a worker. If unset at first claim, the adapter auto-derives one. If set but no active assignment exists, the adapter fails before the first claim unless explicit repair is enabled. |
 | `AGENT_LEDGER_PARENT_TASK_ID` | orchestrator | adapters | optional | Set by the orchestrator when dispatching a subagent for a sub-task. Auto-derived child tasks include this in the v0.1 reason marker as `parent=<id>` for audit. |
 | `AGENT_LEDGER_DIR` | operator | every CLI call | optional | Override the resolved ledger directory. Defaults to `${XDG_STATE_HOME:-$HOME/.local/state}/agent-ledger/repos/<slug>-<fingerprint>/`. |
 | `AGENT_LEDGER_REASON` | orchestrator | adapters | optional | Default `--reason` text for claims and records when the adapter cannot derive one from tool input. |
 | `AGENT_LEDGER_REQUIRE_TASK` | operator | adapters | optional | When `1`, the adapter fails closed on missing `AGENT_LEDGER_TASK_ID` instead of auto-deriving. Default `0`. |
 | `AGENT_LEDGER_AUTO_ASSIGN_POLICY` | operator | adapters | optional | Default conflict policy for auto-derived assignments: `warn` (default) or `exclusive`. |
 | `AGENT_LEDGER_AUTO_ASSIGN_ALLOW` | operator | adapters | optional | Glob list (colon-separated) for the auto-derived assignment's `--allow`. Defaults to `**` (permissive). |
+| `AGENT_LEDGER_REPAIR_EXPLICIT_ASSIGNMENT` | operator | adapters | optional | Emergency opt-in. When `1`, a bootstrap with an explicit task id but no active assignment creates a marked repair assignment instead of failing. Default `0`. |
+| `AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW` | operator | adapters | required when repairing | Glob list (colon-separated) used for an opt-in explicit repair assignment. No default, to avoid silently widening scope. |
 
 ## Task id resolution
 
@@ -28,10 +30,13 @@ At session bootstrap the adapter resolves a task id through this
 chain (first match wins):
 
 1. **`--task-id` flag** supplied by the orchestrator. Marked
-   `TASK_SOURCE=flag`. The bootstrap trusts the orchestrator already
-   wrote an assignment and skips the assign step.
+   `TASK_SOURCE=flag`. The bootstrap first checks for an active
+   assignment. If one exists, it writes nothing. If none exists, it
+   fails before the worker reaches its first claim. Emergency repair is
+   opt-in via `AGENT_LEDGER_REPAIR_EXPLICIT_ASSIGNMENT=1` plus
+   `AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW`.
 2. **`AGENT_LEDGER_TASK_ID` env var**. Marked `TASK_SOURCE=env`. Same
-   skip behavior as the flag.
+   check-fail-or-opt-in-repair behavior as the flag.
 3. **PR detection** (opt-in via `--detect-pr 1` or
    `AGENT_LEDGER_DETECT_PR=1`). If `gh pr view --json number` returns
    a PR for the current branch, task id becomes `pr-<number>`. Marked
@@ -47,10 +52,16 @@ chain (first match wins):
    This is the only path that triggers the adapter's warning toast,
    because true context-less sessions are rare and worth flagging.
 
-Sources 1 and 2 are explicit; the bootstrap does not write an
-assignment. Sources 3-6 are derived; the bootstrap writes an
-assignment with a marker in the reason text so reviewers can audit
-how the task id was sourced.
+Sources 1 and 2 are explicit. The bootstrap does not write an
+assignment when the orchestrator already created one. If an explicit
+task id has no active assignment, the bootstrap fails closed by
+default and tells the operator to run `agent-ledger assign` first. If
+emergency repair is explicitly enabled, the bootstrap writes a repair
+assignment with `metadata.explicit_missing_assignment == true` and the
+operator-supplied `AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW` scope.
+Sources 3-6 are derived; the bootstrap writes an assignment with a
+marker in the reason text so reviewers can audit how the task id was
+sourced.
 
 The pi extension passes `--cwd $(process.cwd())` and (when
 `AGENT_LEDGER_DETECT_PR=1`) `--detect-pr 1` to the bootstrap, then
@@ -58,6 +69,36 @@ reads `AGENT_LEDGER_TASK_SOURCE` from the bootstrap output and only
 shows a UI warning when source=auto.
 
 Operators who want strict enforcement set `AGENT_LEDGER_REQUIRE_TASK=1`; the bootstrap then blocks only the auto fallback. PR, branch, and detached harness-derived sources still satisfy the requirement.
+
+## Orchestrator ordering for long-lived workers
+
+Adapters only bootstrap a process once. A long-lived worker that is
+later instructed over intercom or prompt text to run
+`agent-ledger claim --task <task>` will not re-run session bootstrap
+for that task id. The orchestrator must create the assignment before
+sending the worker any claim command or task brief that names that
+id.
+
+Required order for manual or long-lived-worker dispatch:
+
+```bash
+agent-ledger assign \
+  --task "$TASK_ID" \
+  --orchestrator "$ORCHESTRATOR_AGENT_ID" \
+  --agent "$WORKER_AGENT_ID_OR_LABEL" \
+  --allow 'path/or/glob/**' \
+  --policy warn \
+  --reason "<why this worker owns this scope>" \
+  --if-absent
+
+agent-ledger assignments --task "$TASK_ID" --status active --json
+# Only after count > 0: send the worker its task brief or claim command.
+```
+
+Do not rely on explicit-task bootstrap repair for this flow. Repair is
+an emergency fallback for process launch mistakes, not an orchestration
+protocol. The pi `subagent` tool is different: its adapter hook creates
+child assignments before the child process starts.
 
 ## Auto-derived task ids: solving "the orchestrator forgot"
 
@@ -110,7 +151,10 @@ Adapters write the audit signal in two complementary forms:
 
 Assignments without either marker prefix were supplied explicitly
 by an orchestrator (`--task-id` flag or `AGENT_LEDGER_TASK_ID` env
-var).
+var) and already existed when the adapter bootstrapped. Explicit task
+ids that lacked an active assignment fail by default. If emergency
+repair is enabled, they are repaired with the `[auto-assigned ...]`
+prefix plus `metadata.explicit_missing_assignment == true`.
 
 Reviewers query the audit trail through the
 `agent-ledger assignments` command on v0.1.1+ kernels:
@@ -125,9 +169,9 @@ agent-ledger assignments --status all --limit 200 --json \
   | jq '.assignments[] | select(.reason_marker == "harness-derived")
         | {task_id, source: .metadata.task_source, agent: .assigned_agent}'
 
-# Live (active) auto-assigned tasks, the most common review query:
+# Live (active) auto-assigned and explicit-repair tasks:
 agent-ledger assignments --status active --json \
-  | jq '.assignments[] | select(.reason_marker == "auto")'
+  | jq '.assignments[] | select(.reason_marker == "auto" or .metadata.explicit_missing_assignment == true)'
 ```
 
 The v0.1.1 kernel additionally exposes structured metadata:
@@ -143,23 +187,24 @@ reason marker classifier (`reason_marker` field on each row) which
 classifies any reason starting with `[auto-assigned` or
 `[harness-derived` accordingly.
 
-Verify emits a `MISSING_ASSIGNMENT` finding with severity `warning`
-(not error) for auto-fallback tasks so CI can surface them without
-blocking the merge.
+Verify emits an `AUTO_ASSIGNED_TASK` warning for adapter-derived or
+repaired tasks so CI can surface them without blocking the merge.
+`MISSING_ASSIGNMENT` remains reserved for the true no-assignment-row
+case.
 
 ### Replay idempotency
 
-Bootstrap calls `agent-ledger assign --if-absent` for non-explicit sources (pr, branch, detached, and auto), so repeated pi launches on the same branch do not create duplicate `task.assigned` events. Dedupe is scoped to `(task_id, assigned_agent_id)`: a genuinely new `AGENT_ID` for the same branch still creates a new assignment, which is correct because the agent is new. Changes to `--allow`, `--forbid`, or `--policy` always create a new assignment, so policy drift remains visible to reviewers. Explicit `--task-id` and `AGENT_LEDGER_TASK_ID` paths still skip bootstrap assignment entirely, because the orchestrator owns it.
+Bootstrap calls `agent-ledger assign --if-absent` for non-explicit sources (pr, branch, detached, and auto), so repeated pi launches on the same branch do not create duplicate `task.assigned` events. Dedupe is scoped to `(task_id, assigned_agent_id)`: a genuinely new `AGENT_ID` for the same branch still creates a new assignment, which is correct because the agent is new. Changes to `--allow`, `--forbid`, or `--policy` always create a new assignment, so policy drift remains visible to reviewers. Explicit `--task-id` and `AGENT_LEDGER_TASK_ID` paths first query for an active assignment. They skip assignment when one exists, fail when none exists, and create a repair assignment only when `AGENT_LEDGER_REPAIR_EXPLICIT_ASSIGNMENT=1` and `AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW` are set.
 
 ### Future audit work
 
 The v0.1.1 kernel ships `--metadata`, the v0.1.2 kernel closes the
 concurrent claim race, and the v0.1.3 kernel surfaces metadata
-decode failures as a typed `MetadataDecodeError`. A future release
-should wire `verify`'s `MISSING_ASSIGNMENT` finding to key on
-`metadata.auto_assigned == true` directly rather than parsing the
-reason marker prefix. Until then `MISSING_ASSIGNMENT` continues to
-use the prefix-based detection it has always used.
+decode failures as a typed `MetadataDecodeError`. v0.1.5 adds the
+`AUTO_ASSIGNED_TASK` finding for adapter-derived rows. A future
+release can refine that finding to distinguish branch-derived,
+auto-fallback, and explicit-repair assignments with separate policy
+knobs.
 
 ## Session bootstrap
 
@@ -179,8 +224,12 @@ Every adapter runs the same bootstrap once per session, idempotent:
    "$AGENT_LEDGER_AUTO_ASSIGN_POLICY"`, one `--allow` per
    colon-separated glob in `$AGENT_LEDGER_AUTO_ASSIGN_ALLOW`, and a
    reason that starts with the appropriate marker prefix from the
-   audit-trail section above. For sources `flag` and `env` the
-   bootstrap trusts the orchestrator already wrote the assignment.
+   audit-trail section above. For sources `flag` and `env`, query
+   active assignments for the task. If none exists, fail before the
+   first claim. If emergency repair is explicitly enabled, write a
+   repair assignment with an `[auto-assigned ...]` reason marker,
+   `metadata.explicit_missing_assignment == true`, and the
+   operator-supplied `AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW` scope.
 4. Export the resolved env vars for child processes. Shell callers use
    export lines; pi uses the helper's `--json` mode.
 
@@ -205,8 +254,15 @@ the babysitter wrapper.
   shell mutation detection is not complete.
 - Hooks `tool_call` for `subagent`. Auto-creates a child task id and
   passes it to the subagent via env so the child's pi extension picks
-  up where the parent left off. This is how subagent inheritance is
-  enforced deterministically.
+  up where the parent left off. The extension sets `process.env` for
+  the duration of the subagent tool call because current pi-subagents
+  spawns children from `process.env`; it also keeps `event.input.env`
+  populated for future subagent versions. Child assignment is written
+  from the requested subagent cwd when one is supplied, so cross-repo
+  subagents use the same ledger their child bootstrap will resolve.
+  Overlapping subagent calls are blocked while this temporary env
+  override is active. This is how subagent inheritance is enforced
+  deterministically.
 - Hooks `agent_end` and `session_end` to close any open intents.
 
 ### babysitter wrapper (`adapters/babysitter/define-ledger-task.js`)
@@ -282,9 +338,9 @@ all versions.
 ### Future kernel work
 
 Nothing kernel-blocking remains for the v0.2.0 adapter promotion.
-The `verify` command's `MISSING_ASSIGNMENT` finding could be
-tightened to key on `metadata.auto_assigned == true` rather than
-the reason marker prefix; tracked as future polish.
+The `verify` command's `AUTO_ASSIGNED_TASK` finding can be tightened
+with separate policy knobs for branch-derived, auto-fallback, and
+explicit-repair assignments; tracked as future polish.
 
 ## Stability
 

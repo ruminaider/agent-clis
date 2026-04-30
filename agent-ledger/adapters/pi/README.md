@@ -41,9 +41,12 @@ The full contract is in `docs/adapters.md`. The two you most often
 set explicitly:
 
 - `AGENT_LEDGER_TASK_ID`: the task you are working on. When
-  unset, the extension auto-derives `auto/<agent>/<utc-timestamp>`
-  and writes an assignment reason that starts with `[auto-assigned`
-  so reviewers can find sessions where the orchestrator forgot.
+  unset, the extension derives a task from the PR, branch, detached
+  HEAD, or, as a last resort, `auto/<agent>/<utc-timestamp>`. When
+  set, the extension verifies an active assignment exists and fails
+  early if the orchestrator forgot one. Emergency repair requires
+  `AGENT_LEDGER_REPAIR_EXPLICIT_ASSIGNMENT=1` and
+  `AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW`.
 - `AGENT_LEDGER_REQUIRE_TASK=1`: opt into fail-closed mode. With
   this set, the extension blocks every edit if `AGENT_LEDGER_TASK_ID`
   is missing.
@@ -58,31 +61,40 @@ set explicitly:
 
 ## Subagent inheritance
 
-When the parent pi extension intercepts a `subagent` tool call, it
-auto-creates a child task id and injects it into the subagent
-invocation's env. The child pi process loads the same extension from
-`~/.pi/agent/extensions/`, picks up the env vars in its own
-`tool_call` bootstrap, and proceeds with claim/record against the
-child task. The parent's task id is recorded as the child task's
-a reason marker containing `parent=<task>` for audit.
+When the parent pi extension intercepts a `subagent` execution call,
+it auto-creates a child task id and exposes it through the environment
+used to spawn the subagent. The child pi process loads the same
+extension from `~/.pi/agent/extensions/`, picks up the env vars in its
+own `tool_call` bootstrap, and proceeds with claim/record against the
+child task. The parent's task id is recorded in the child task's
+reason marker as `parent=<task>` for audit.
 
 This means the orchestrator does not have to manually call
-`agent-ledger assign` before each subagent dispatch. The extension
-does it on every `subagent` tool call.
+`agent-ledger assign` before each pi `subagent` dispatch. The
+extension does it on every `subagent` execution call. Management
+calls such as `subagent({ action: "list" })` do not create ledger
+assignments.
+
+For long-lived workers instructed later through intercom or prompt
+text, the orchestrator still must run `agent-ledger assign --if-absent`
+before it sends the worker a task brief or claim command. Session
+bootstrap will not re-run for that later task id.
 
 ## Auto-assigned tasks: finding the gaps
 
-Sessions where the orchestrator forgot to set `AGENT_LEDGER_TASK_ID`
-produce assignments whose reason starts with `[auto-assigned`. To audit:
+Sessions where the adapter had to create a fallback or explicit
+repair assignment carry either `reason_marker == "auto"` or
+`metadata.explicit_missing_assignment == true`. To audit:
 
 ```bash
-agent-ledger status --json \
-  | jq '.assignments[] | select(.reason | startswith("[auto-assigned"))'
+agent-ledger assignments --status active --json \
+  | jq '.assignments[] | select(.reason_marker == "auto" or .metadata.explicit_missing_assignment == true)'
 ```
 
-Verify (`agent-ledger verify --task <id> --json`) emits a
-`MISSING_ASSIGNMENT` finding with severity `warning` for these tasks
-so CI can surface them without blocking merges.
+Verify (`agent-ledger verify --task <id> --json`) emits an
+`AUTO_ASSIGNED_TASK` warning for adapter-derived tasks so CI can
+surface them without blocking merges. A true missing assignment row
+still reports `MISSING_ASSIGNMENT`.
 
 ## Caveats
 
@@ -92,6 +104,13 @@ so CI can surface them without blocking merges.
   root or via `chmod`. SPEC §33 open decision #2 covers the design
   trade-off. For high-trust workflows, use `AGENT_LEDGER_BASH_MODE=block`
   to block bash entirely.
+- **Temporary env override for subagents is serialized.** The
+  extension sets child task env on `process.env` while the current
+  pi-subagents package spawns the child process. It writes the child
+  assignment from the requested subagent cwd when one is supplied, so
+  cross-repo subagents use the same ledger their child bootstrap will
+  resolve. It blocks overlapping subagent tool calls while that
+  override is active.
 - **Concurrent exclusive claims have a known race** in v0.1.0
   (tracked for v0.1.x). Two parallel pi sessions both claiming an
   exclusive path may both win. Until the kernel fix lands, serialize

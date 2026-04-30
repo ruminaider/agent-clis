@@ -15,6 +15,23 @@ node --check adapters/babysitter/define-ledger-task.js
 ! grep -n "AGENT_LEDGER_DIR = process.env.AGENT_LEDGER_DIR ?? \"\"" adapters/pi/agent-ledger.ts
 grep -n "agent-ledger/session-bootstrap.sh" adapters/pi/agent-ledger.ts >/dev/null
 grep -n "bootstrapPromise" adapters/pi/agent-ledger.ts >/dev/null
+grep -n "subagentEnvRestores" adapters/pi/agent-ledger.ts >/dev/null
+grep -n "isExecutionSubagentCall" adapters/pi/agent-ledger.ts >/dev/null
+grep -n "shouldBlockBootstrapFailure" adapters/pi/agent-ledger.ts >/dev/null
+grep -n "resolveSubagentLedgerCwd" adapters/pi/agent-ledger.ts >/dev/null
+grep -n "input?.chain" adapters/pi/agent-ledger.ts >/dev/null
+grep -n "process.env\[key\] = value" adapters/pi/agent-ledger.ts >/dev/null
+grep -n "cwd," adapters/pi/agent-ledger.ts >/dev/null
+python3 - <<'PYEXT'
+from pathlib import Path
+src = Path('adapters/pi/agent-ledger.ts').read_text()
+reserve = src.index('state.subagentEnvRestores.set(event.toolCallId, restore);')
+assign = src.index('const assign = await runLedger([')
+mutate = src.index('for (const [key, value] of Object.entries(childEnv)) process.env[key] = value;')
+fail_delete = src.index('state.subagentEnvRestores.delete(event.toolCallId);')
+if not (reserve < assign < fail_delete < mutate):
+    raise SystemExit('subagent env reservation must happen before await and clear before mutation on failure')
+PYEXT
 grep -n "file_path" adapters/pi/agent-ledger.ts >/dev/null
 grep -n "filePath" adapters/pi/agent-ledger.ts >/dev/null
 
@@ -26,6 +43,10 @@ cat > "$tmp/bin/agent-ledger" <<'STUB'
 printf '%s\n' "$*" >> "$AGENT_LEDGER_STUB_LOG"
 case "$1" in
   identify) exit 0 ;;
+  assignments)
+    count="${AGENT_LEDGER_STUB_ASSIGNMENTS_COUNT:-0}"
+    printf '{"assignments":[],"count":%s,"schema":"agent-ledger.assignments.v1"}\n' "$count"
+    exit 0 ;;
   assign)
     if [[ "${2:-}" == "--help" ]]; then
       case "${AGENT_LEDGER_STUB_ASSIGN_HELP_MODE:-ok}" in
@@ -158,9 +179,11 @@ if (env.AGENT_LEDGER_TASK_SOURCE !== "detached") throw new Error(`source=${env.A
 grep -q -- "\[harness-derived by pi-adapter source=detached" "$AGENT_LEDGER_STUB_LOG"
 
 # Explicit env var beats branch detection. AGENT_LEDGER_TASK_ID set =>
-# bootstrap must skip the assign step and emit TASK_SOURCE=env.
+# bootstrap verifies the orchestrator already created an active
+# assignment, skips the repair assign, and emits TASK_SOURCE=env.
 : > "$AGENT_LEDGER_STUB_LOG"
 git -C "$repo" checkout -q feature/branch-derived
+export AGENT_LEDGER_STUB_ASSIGNMENTS_COUNT=1
 export AGENT_LEDGER_TASK_ID="explicit-task"
 explicit_line="$(bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --orchestrator test --cwd "$repo" --json)"
 node -e '
@@ -169,11 +192,70 @@ if (env.AGENT_LEDGER_TASK_ID !== "explicit-task") throw new Error(`task=${env.AG
 if (env.AGENT_LEDGER_TASK_SOURCE !== "env") throw new Error(`source=${env.AGENT_LEDGER_TASK_SOURCE}`);
 if (env.AGENT_LEDGER_AUTO_ASSIGNED !== "0") throw new Error("AUTO_ASSIGNED should be 0 for explicit task");
 ' "$explicit_line"
-grep -q "^assign" "$AGENT_LEDGER_STUB_LOG" && { echo "explicit task should not trigger assign" >&2; exit 1; } || true
-unset AGENT_LEDGER_TASK_ID
+grep -q "^assign " "$AGENT_LEDGER_STUB_LOG" && { echo "explicit task with existing assignment should not trigger assign" >&2; exit 1; } || true
+unset AGENT_LEDGER_TASK_ID AGENT_LEDGER_STUB_ASSIGNMENTS_COUNT
+
+# Explicit env var with no active assignment fails closed by default.
+: > "$AGENT_LEDGER_STUB_LOG"
+export AGENT_LEDGER_STUB_ASSIGNMENTS_COUNT=0
+export AGENT_LEDGER_TASK_ID="missing-explicit-task"
+if bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --orchestrator test --cwd "$repo" --json >/dev/null 2>"$tmp/missing-explicit-default.err"; then
+  echo "expected explicit task without assignment to fail by default" >&2
+  exit 1
+fi
+grep -q -- 'run agent-ledger assign before launching or instructing this worker' "$tmp/missing-explicit-default.err"
+grep -q "^assign " "$AGENT_LEDGER_STUB_LOG" && { echo "default explicit missing assignment should not repair" >&2; exit 1; } || true
+unset AGENT_LEDGER_TASK_ID AGENT_LEDGER_STUB_ASSIGNMENTS_COUNT
+
+# Opt-in explicit repair requires a non-empty explicit repair allow-list,
+# so the bootstrap cannot silently widen scope to **.
+: > "$AGENT_LEDGER_STUB_LOG"
+export AGENT_LEDGER_STUB_ASSIGNMENTS_COUNT=0
+export AGENT_LEDGER_REPAIR_EXPLICIT_ASSIGNMENT=1
+export AGENT_LEDGER_TASK_ID="missing-explicit-task"
+if bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --orchestrator test --cwd "$repo" --json >/dev/null 2>"$tmp/missing-explicit-no-allow.err"; then
+  echo "expected explicit repair without allow-list to fail" >&2
+  exit 1
+fi
+grep -q -- 'AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW is required' "$tmp/missing-explicit-no-allow.err"
+unset AGENT_LEDGER_TASK_ID AGENT_LEDGER_STUB_ASSIGNMENTS_COUNT AGENT_LEDGER_REPAIR_EXPLICIT_ASSIGNMENT
+
+# Explicit repair is available only with an operator-supplied allow-list.
+# The task id remains explicit, but the assignment is marked for audit.
+: > "$AGENT_LEDGER_STUB_LOG"
+repair_metadata="$tmp/explicit-repair-metadata.json"
+export AGENT_LEDGER_STUB_ASSIGNMENTS_COUNT=0
+export AGENT_LEDGER_STUB_METADATA_LOG="$repair_metadata"
+export AGENT_LEDGER_REPAIR_EXPLICIT_ASSIGNMENT=1
+export AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW='src/explicit/**:tests/explicit/**'
+export AGENT_LEDGER_TASK_ID="missing-explicit-task"
+repair_line="$(bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --orchestrator test --cwd "$repo" --json)"
+node -e '
+const env = JSON.parse(process.argv[1].slice("AGENT_LEDGER_BOOTSTRAP_JSON=".length));
+if (env.AGENT_LEDGER_TASK_ID !== "missing-explicit-task") throw new Error(`task=${env.AGENT_LEDGER_TASK_ID}`);
+if (env.AGENT_LEDGER_TASK_SOURCE !== "env") throw new Error(`source=${env.AGENT_LEDGER_TASK_SOURCE}`);
+if (env.AGENT_LEDGER_AUTO_ASSIGNED !== "0") throw new Error(`AUTO_ASSIGNED=${env.AGENT_LEDGER_AUTO_ASSIGNED}`);
+' "$repair_line"
+grep -q -- '^assign ' "$AGENT_LEDGER_STUB_LOG"
+grep -q -- '--allow src/explicit/\*\* --allow tests/explicit/\*\*' "$AGENT_LEDGER_STUB_LOG"
+grep -q -- 'opt-in repair assignment' "$AGENT_LEDGER_STUB_LOG"
+python3 - "$repair_metadata" <<'PYREPAIR'
+import json
+import sys
+with open(sys.argv[1], encoding='utf-8') as fh:
+    meta = json.load(fh)
+if meta.get('auto_assigned') is not True:
+    raise SystemExit(meta)
+if meta.get('task_source') != 'env':
+    raise SystemExit(meta)
+if meta.get('explicit_missing_assignment') is not True:
+    raise SystemExit(meta)
+PYREPAIR
+unset AGENT_LEDGER_TASK_ID AGENT_LEDGER_STUB_ASSIGNMENTS_COUNT AGENT_LEDGER_STUB_METADATA_LOG AGENT_LEDGER_REPAIR_EXPLICIT_ASSIGNMENT AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW
 
 # --task-id flag beats env. Also explicit (TASK_SOURCE=flag).
 : > "$AGENT_LEDGER_STUB_LOG"
+export AGENT_LEDGER_STUB_ASSIGNMENTS_COUNT=1
 export AGENT_LEDGER_TASK_ID="env-task"
 flag_line="$(bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --orchestrator test --cwd "$repo" --task-id flag-task --json)"
 node -e '
@@ -181,7 +263,8 @@ const env = JSON.parse(process.argv[1].slice("AGENT_LEDGER_BOOTSTRAP_JSON=".leng
 if (env.AGENT_LEDGER_TASK_ID !== "flag-task") throw new Error(`task=${env.AGENT_LEDGER_TASK_ID}`);
 if (env.AGENT_LEDGER_TASK_SOURCE !== "flag") throw new Error(`source=${env.AGENT_LEDGER_TASK_SOURCE}`);
 ' "$flag_line"
-unset AGENT_LEDGER_TASK_ID
+grep -q "^assign " "$AGENT_LEDGER_STUB_LOG" && { echo "explicit flag with existing assignment should not trigger assign" >&2; exit 1; } || true
+unset AGENT_LEDGER_TASK_ID AGENT_LEDGER_STUB_ASSIGNMENTS_COUNT
 
 # AGENT_LEDGER_REQUIRE_TASK=1 outside a git repo (no derivable context)
 # must fail closed.
