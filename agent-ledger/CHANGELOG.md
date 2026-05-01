@@ -10,6 +10,8 @@ of the binary version.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-05-01
+
 ### Fixed
 
 - `verify` no longer reports `EXCLUSIVE_LOCK_HELD` for sentinels owned
