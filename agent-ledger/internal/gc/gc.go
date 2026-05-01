@@ -17,6 +17,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ruminaider/agent-clis/agent-ledger/internal/domain"
+	"github.com/ruminaider/agent-clis/agent-ledger/internal/locks"
+	"github.com/ruminaider/agent-clis/agent-ledger/internal/storage"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/storage/sqlite"
 )
 
@@ -97,15 +100,29 @@ func Run(ctx context.Context, store *sqlite.Store, opts Options) (Result, error)
 		Candidates: len(stale),
 	}
 	reason := fmt.Sprintf("stale-after=%s", opts.StaleAfter)
+	d := domain.New(store)
+	lockDir := storage.Layout{Dir: store.LedgerDir()}.LocksDir()
 	for _, si := range stale {
 		actor := opts.AgentID
 		if actor == "" {
 			actor = si.AgentID
 		}
+		// Snapshot exclusive intent paths before orphaning so we can
+		// remove their lock sentinels post-transition. Best-effort.
+		var exclusivePaths []domain.IntentPath
+		if intent, ierr := d.IntentByID(ctx, si.IntentID); ierr == nil &&
+			intent.ConflictPolicy == domain.PolicyExclusive {
+			if ps, perr := d.IntentPaths(ctx, si.IntentID); perr == nil {
+				exclusivePaths = ps
+			}
+		}
 		err := store.OrphanIntent(ctx, si.IntentID, actor, reason, now())
 		switch {
 		case err == nil:
 			res.Orphaned = append(res.Orphaned, si.IntentID)
+			for _, p := range exclusivePaths {
+				_ = locks.RemoveSentinel(lockDir, p.PathHash)
+			}
 		case errors.Is(err, sqlite.ErrIntentNotActive):
 			res.Skipped = append(res.Skipped, si.IntentID)
 		default:
