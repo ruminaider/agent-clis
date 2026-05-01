@@ -10,6 +10,8 @@ of the binary version.
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-05-01
+
 ### Added
 
 - `doctor` gains a `lock_sentinels` check that cross-references
