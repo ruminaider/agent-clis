@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -8,6 +9,9 @@ import (
 
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/cli"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/domain"
+	"github.com/ruminaider/agent-clis/agent-ledger/internal/locks"
+	"github.com/ruminaider/agent-clis/agent-ledger/internal/storage"
+	"github.com/ruminaider/agent-clis/agent-ledger/internal/storage/sqlite"
 )
 
 type closeOpts struct {
@@ -60,9 +64,29 @@ func runClose(streams Streams, o *closeOpts) error {
 	}
 	defer store.Close()
 	d := domain.New(store)
+	// Capture intent metadata before close so we can clean up lock
+	// sentinels for exclusive intents after the DB transition succeeds.
+	// Failure to load the intent here is non-fatal: close() below will
+	// surface the real error if the intent is missing or already closed.
+	var (
+		priorPolicy string
+		priorPaths  []domain.IntentPath
+	)
+	if intent, ierr := d.IntentByID(ctx, o.intent); ierr == nil {
+		priorPolicy = intent.ConflictPolicy
+		if priorPolicy == domain.PolicyExclusive {
+			if ps, perr := d.IntentPaths(ctx, intent.IntentID); perr == nil {
+				priorPaths = ps
+			}
+		}
+	}
 	if err := d.Close(ctx, o.intent, agentID, o.outcome, o.summary, store.Clock()()); err != nil {
 		return cli.NewError(cli.ExitGeneric, "close_failed", err.Error())
 	}
+	// Best-effort sentinel cleanup. Errors are swallowed; the verify
+	// EXCLUSIVE_LOCK_HELD scan remains the authoritative reporter of
+	// any sentinel that survives.
+	cleanupExclusiveSentinels(ctx, store, priorPolicy, priorPaths)
 	if o.asJSON {
 		return printJSON(streams.Out, map[string]any{
 			"intent_id":     o.intent,
@@ -71,4 +95,22 @@ func runClose(streams Streams, o *closeOpts) error {
 	}
 	fmt.Fprintf(streams.Out, "intent_id=%s outcome=%s\n", o.intent, o.outcome)
 	return nil
+}
+
+// cleanupExclusiveSentinels removes <ledger-dir>/locks/<hash>.lock for
+// every path of an exclusive intent that has just transitioned out of
+// active. The call is best-effort: any error is dropped on the floor
+// to honor SPEC §28's "DB row is authoritative" rule.
+//
+// ctx is reserved for future telemetry. The signature accepts it so
+// callers can wire structured logs without churning this surface.
+func cleanupExclusiveSentinels(ctx context.Context, store *sqlite.Store, policy string, paths []domain.IntentPath) {
+	_ = ctx
+	if policy != domain.PolicyExclusive || len(paths) == 0 {
+		return
+	}
+	dir := storage.Layout{Dir: store.LedgerDir()}.LocksDir()
+	for _, p := range paths {
+		_ = locks.RemoveSentinel(dir, p.PathHash)
+	}
 }

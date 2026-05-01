@@ -10,6 +10,27 @@ of the binary version.
 
 ## [Unreleased]
 
+### Fixed
+
+- `verify` no longer reports `EXCLUSIVE_LOCK_HELD` for sentinels owned
+  by an active intent. The pre-fix scanner built its "known" hash set
+  from a no-op loop over intents, so every sentinel under
+  `<ledger-dir>/locks/` was flagged regardless of ownership. The
+  scanner now resolves `intent_paths` for each active intent and
+  flags only sentinels whose hash has no live owner.
+- `verify` no longer reports `AGENT_MISMATCH` for changes recorded
+  under a since-superseded assignment by that assignment's assignee.
+  The check now consults every assignment row attached to the task
+  (status `all`) and prefers `change.assignment_id` when set, falling
+  back to "agent ever held an assignment for this task". A change by
+  an agent that never held any assignment on the task is still flagged.
+- `agent-ledger close` removes the `<ledger-dir>/locks/<hash>.lock`
+  sentinel for each path of an exclusive intent after a successful
+  close. Best-effort: filesystem failures do not abort the close.
+- `agent-ledger gc` removes the same sentinels when it orphans a
+  stale exclusive intent, preventing carried-over `EXCLUSIVE_LOCK_HELD`
+  findings across gc cycles.
+
 ## [0.2.1] - 2026-04-29
 
 ### Fixed

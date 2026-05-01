@@ -203,3 +203,116 @@ func TestDoctorReportsBrokenPolicy(t *testing.T) {
 		t.Fatalf("expected non-zero exit for invalid policy")
 	}
 }
+
+// TestCloseRemovesExclusiveLockSentinel exercises the v0.1.x sentinel
+// cleanup: an exclusive claim drops <ledger>/locks/<hash>.lock; closing
+// the owning intent must remove the file so subsequent verify runs do
+// not flag EXCLUSIVE_LOCK_HELD. Best-effort: a failure to remove must
+// not bubble up as a close error, but a successful close on a normal
+// filesystem should leave the locks dir empty.
+func TestCloseRemovesExclusiveLockSentinel(t *testing.T) {
+	root, ledger := tempLedger(t)
+	if err := os.WriteFile(filepath.Join(root, "lockfile.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, e := runCmd(t, ledger, nil, "assign", "--task", "TLOCK",
+		"--orchestrator", "pi.main.test", "--agent", "pi.worker.test",
+		"--allow", "lockfile.txt", "--policy", "exclusive",
+		"--reason", "lock cleanup test"); code != 0 {
+		t.Fatalf("assign: %d %s", code, e)
+	}
+	code, out, e := runCmd(t, ledger, map[string]string{"AGENT_ID": "pi.worker.test"},
+		"claim", "lockfile.txt", "--task", "TLOCK", "--reason", "exclusive claim", "--json")
+	if code != 0 {
+		t.Fatalf("claim: %d %s %s", code, out, e)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("claim json: %v %s", err, out)
+	}
+	intentID, _ := resp["intent_id"].(string)
+	if intentID == "" {
+		t.Fatalf("no intent_id in claim response: %s", out)
+	}
+	// Sentinel should now exist.
+	entries, err := os.ReadDir(filepath.Join(ledger, "locks"))
+	if err != nil {
+		t.Fatalf("read locks dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 sentinel after exclusive claim, got %d: %+v", len(entries), entries)
+	}
+	// Close the intent. Sentinel must be removed.
+	if code, _, e := runCmd(t, ledger, map[string]string{"AGENT_ID": "pi.worker.test"},
+		"close", "--intent", intentID, "--outcome", "completed"); code != 0 {
+		t.Fatalf("close: %d %s", code, e)
+	}
+	entries, err = os.ReadDir(filepath.Join(ledger, "locks"))
+	if err != nil {
+		t.Fatalf("read locks dir post-close: %v", err)
+	}
+	if len(entries) != 0 {
+		names := []string{}
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("expected empty locks dir after close, got: %v", names)
+	}
+}
+
+// TestGCRemovesExclusiveLockSentinelOnOrphan covers the sibling path
+// for stale-intent gc: when a stale exclusive intent is orphaned, its
+// sentinel must be removed too, otherwise verify keeps reporting
+// EXCLUSIVE_LOCK_HELD across gc runs.
+func TestGCRemovesExclusiveLockSentinelOnOrphan(t *testing.T) {
+	_, ledger := tempLedger(t)
+	if code, _, e := runCmd(t, ledger, nil, "migrate"); code != 0 {
+		t.Fatalf("migrate: %d %s", code, e)
+	}
+	store, err := sqlite.Open(context.Background(), ledger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	staleTS := now.Add(-48 * time.Hour).Format("2006-01-02T15:04:05.000Z07:00")
+	if _, err := store.DB().ExecContext(context.Background(),
+		`INSERT INTO agents(agent_id, agent_kind, started_at) VALUES('agent.lock','worker',?)`,
+		staleTS); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(context.Background(),
+		`INSERT INTO events(event_id, schema, event_type, created_at, agent_id, task_id, payload_json)
+		 VALUES('evt_lock','agent-ledger.v1','intent.opened',?,?,?, '{"intent_id":"int_lock"}')`,
+		staleTS, "agent.lock", "TLOCKGC"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(context.Background(),
+		`INSERT INTO intents(intent_id,event_id,task_id,agent_id,access_mode,conflict_policy,reason,status,opened_at)
+		 VALUES('int_lock','evt_lock','TLOCKGC','agent.lock','write','exclusive','stale-lock-test','active',?)`,
+		staleTS); err != nil {
+		t.Fatal(err)
+	}
+	const lockHash = "feedfacefeedface"
+	if _, err := store.DB().ExecContext(context.Background(),
+		`INSERT INTO intent_paths(intent_id,path,realpath,path_hash,access_mode)
+		 VALUES('int_lock','lockfile.txt','lockfile.txt',?,'write')`, lockHash); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	// Drop the sentinel that an exclusive claim would have left behind.
+	if err := os.MkdirAll(filepath.Join(ledger, "locks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sentinelPath := filepath.Join(ledger, "locks", lockHash+".lock")
+	if err := os.WriteFile(sentinelPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if code, _, e := runCmd(t, ledger, nil, "gc", "--stale-after", "1h"); code != 0 {
+		t.Fatalf("gc: %d %s", code, e)
+	}
+	if _, err := os.Stat(sentinelPath); !os.IsNotExist(err) {
+		t.Fatalf("expected sentinel removed after gc; stat err = %v", err)
+	}
+}

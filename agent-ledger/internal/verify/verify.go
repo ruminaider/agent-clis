@@ -537,7 +537,9 @@ func Run(ctx context.Context, in Inputs) (*Report, error) {
 	// EXCLUSIVE_LOCK_HELD: lock sentinels exist for path hashes that
 	// have no active exclusive intent in the DB. Use the DB lock-set
 	// dir under <ledger-dir>/locks/.
-	if r2 := scanExclusiveLocks(res.LedgerDir, intents); r2 != nil {
+	if r2, err := scanExclusiveLocks(ctx, d, res.LedgerDir, intents); err != nil {
+		return errorReport(StatusError, CodeStorageError, "scan exclusive locks: "+err.Error(), now), nil
+	} else if r2 != nil {
 		r.Findings = append(r.Findings, r2...)
 	}
 
@@ -548,16 +550,63 @@ func Run(ctx context.Context, in Inputs) (*Report, error) {
 			return errorReport(StatusError, CodeStorageError, "load changes for task: "+err.Error(), now), nil
 		}
 		if assignment != nil {
-			for _, c := range changes {
-				if c.AgentID != "" && assignment.AssignedAgentID != "" && c.AgentID != assignment.AssignedAgentID {
-					r.Findings = append(r.Findings, Finding{
-						Code:              CodeAgentMismatch,
-						Severity:          SevError,
-						Message:           fmt.Sprintf("change %s recorded by %s but task %s is assigned to %s", c.ChangeID, c.AgentID, assignment.TaskID, assignment.AssignedAgentID),
-						Details:           map[string]any{"change_id": c.ChangeID, "agent_id": c.AgentID, "assigned_agent_id": assignment.AssignedAgentID},
-						SuggestedRecovery: fmt.Sprintf("Reassign the task with `agent-ledger assign --task %s --agent %s ...` or have the assigned agent record the change.", assignment.TaskID, c.AgentID),
-					})
+			// AGENT_MISMATCH must consider every assignment that has
+			// ever been attached to this task, not just the latest
+			// active one. A change recorded under a since-superseded
+			// assignment by the assignee of that assignment is in
+			// policy. The check is: prefer the assignment row whose
+			// assignment_id matches change.AssignmentID; fall back to
+			// accepting any historic assigned_agent_id on this task.
+			historic, err := d.ListAssignments(ctx, domain.AssignmentFilter{
+				TaskID: in.TaskID,
+				Status: "all",
+				Limit:  500,
+			})
+			if err != nil {
+				return errorReport(StatusError, CodeStorageError, "load historic assignments: "+err.Error(), now), nil
+			}
+			byID := make(map[string]string, len(historic))
+			agentSet := make(map[string]struct{}, len(historic))
+			for _, a := range historic {
+				byID[a.AssignmentID] = a.AssignedAgentID
+				if a.AssignedAgentID != "" {
+					agentSet[a.AssignedAgentID] = struct{}{}
 				}
+			}
+			for _, c := range changes {
+				if c.AgentID == "" {
+					continue
+				}
+				// Prefer the assignment under which the change was
+				// recorded.
+				if c.AssignmentID != "" {
+					if owner, ok := byID[c.AssignmentID]; ok {
+						if owner == "" || owner == c.AgentID {
+							continue
+						}
+						r.Findings = append(r.Findings, Finding{
+							Code:              CodeAgentMismatch,
+							Severity:          SevError,
+							Message:           fmt.Sprintf("change %s recorded by %s but assignment %s is assigned to %s", c.ChangeID, c.AgentID, c.AssignmentID, owner),
+							Details:           map[string]any{"change_id": c.ChangeID, "agent_id": c.AgentID, "assignment_id": c.AssignmentID, "assigned_agent_id": owner},
+							SuggestedRecovery: fmt.Sprintf("Reassign with `agent-ledger assign --task %s --agent %s ...` or have %s record the change.", in.TaskID, c.AgentID, owner),
+						})
+						continue
+					}
+				}
+				// No matching assignment row, or change.AssignmentID was
+				// not populated. Accept the change if its agent_id has
+				// ever held an assignment on this task; otherwise flag.
+				if _, ok := agentSet[c.AgentID]; ok {
+					continue
+				}
+				r.Findings = append(r.Findings, Finding{
+					Code:              CodeAgentMismatch,
+					Severity:          SevError,
+					Message:           fmt.Sprintf("change %s recorded by %s but task %s has no assignment for that agent", c.ChangeID, c.AgentID, in.TaskID),
+					Details:           map[string]any{"change_id": c.ChangeID, "agent_id": c.AgentID, "latest_assigned_agent_id": assignment.AssignedAgentID},
+					SuggestedRecovery: fmt.Sprintf("Reassign the task with `agent-ledger assign --task %s --agent %s ...` or have the assigned agent record the change.", in.TaskID, c.AgentID),
+				})
 			}
 		} else if len(changes) > 0 {
 			// Already emitted MISSING_ASSIGNMENT above; nothing else.
@@ -869,15 +918,33 @@ func intentHasChanges(ctx context.Context, store *sqlite.Store, intentID string)
 // <ledger-dir>/locks/ that are not paired with an active intent in
 // the DB. SPEC §16: dropping a lock without closing the intent leaks
 // the sentinel, so verify surfaces it for cleanup.
-func scanExclusiveLocks(ledgerDir string, intents []domain.Intent) []Finding {
+//
+// The set of "known" path hashes is built by walking every active
+// intent and resolving its intent_paths. A sentinel whose hash maps
+// to an active intent is in policy and skipped; one with no owner is
+// flagged. Pre-v0.1.x code path-checked against an empty set, which
+// produced one finding per sentinel even when the owning intent was
+// alive; that bug is fixed here.
+func scanExclusiveLocks(ctx context.Context, d *domain.Store, ledgerDir string, intents []domain.Intent) ([]Finding, error) {
 	dir := filepath.Join(ledgerDir, "locks")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
 	}
 	known := map[string]struct{}{}
 	for _, in := range intents {
-		_ = in
+		ps, err := d.IntentPaths(ctx, in.IntentID)
+		if err != nil {
+			return nil, fmt.Errorf("intent_paths for %s: %w", in.IntentID, err)
+		}
+		for _, p := range ps {
+			if p.PathHash != "" {
+				known[p.PathHash] = struct{}{}
+			}
+		}
 	}
 	var findings []Finding
 	for _, e := range entries {
@@ -897,7 +964,7 @@ func scanExclusiveLocks(ledgerDir string, intents []domain.Intent) []Finding {
 			SuggestedRecovery: "Close or supersede the owning intent, or remove the stale sentinel after confirming no process holds it.",
 		})
 	}
-	return findings
+	return findings, nil
 }
 
 func setOf(in []string) map[string]struct{} {

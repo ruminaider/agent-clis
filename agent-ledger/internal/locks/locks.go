@@ -91,3 +91,26 @@ func (l *LockSet) ReleaseAll() {
 		_ = l.Release(h)
 	}
 }
+
+// RemoveSentinel deletes the sentinel file <dir>/<pathHash>.lock if
+// present. Used by close and gc paths to keep the locks directory
+// clean once the owning intent transitions out of active. The call is
+// best-effort: callers expect to log and continue on error rather
+// than abort the close/gc transaction. SPEC §28 keeps the DB row
+// authoritative; this is purely housekeeping for the verifier's
+// EXCLUSIVE_LOCK_HELD scan.
+//
+// Returns nil if the sentinel does not exist or pathHash/dir is empty.
+func RemoveSentinel(dir, pathHash string) error {
+	if dir == "" || pathHash == "" {
+		return nil
+	}
+	p := filepath.Join(dir, pathHash+".lock")
+	if err := os.Remove(p); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("locks: remove %s: %w", p, err)
+	}
+	return nil
+}

@@ -805,3 +805,133 @@ var _ = errors.New
 
 // silence unused import warning for strings; used in subprocess test.
 var _ = strings.HasPrefix
+
+// TestVerify_AgentMismatch_HistoricAssignmentAccepted is the v0.1.x
+// regression guard for reassignment scenarios. When an orchestrator
+// supersedes assignment v1 (agent A) and creates assignment v2
+// (agent B) on the same task, A's prior changes recorded under v1
+// must NOT be flagged as AGENT_MISMATCH. Pre-fix code consulted only
+// the latest active assignment and falsely flagged every historic
+// change after a reassignment.
+func TestVerify_AgentMismatch_HistoricAssignmentAccepted(t *testing.T) {
+	root, ledger := setupProject(t)
+	writeFile(t, filepath.Join(root, "src/foo.go"), "x")
+
+	store := openTestStore(t, ledger)
+	d := domain.New(store)
+	ctx := context.Background()
+
+	// Both agents must exist for FK constraints.
+	for _, ag := range []string{"pi.worker.A", "pi.worker.B"} {
+		if err := d.UpsertAgent(ctx, domain.Agent{AgentID: ag, AgentKind: "worker"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// v1: agent A, already superseded.
+	v1, err := d.InsertAssignment(ctx, domain.Assignment{
+		TaskID:          "T-REASSIGN",
+		OrchestratorID:  "pi.main",
+		AssignedAgentID: "pi.worker.A",
+		AllowedPaths:    []string{"src/**"},
+		ConflictPolicy:  domain.PolicyWarn,
+		Reason:          "v1",
+		Status:          "superseded",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// v2: agent B, currently active.
+	if _, err := d.InsertAssignment(ctx, domain.Assignment{
+		TaskID:          "T-REASSIGN",
+		OrchestratorID:  "pi.main",
+		AssignedAgentID: "pi.worker.B",
+		AllowedPaths:    []string{"src/**"},
+		ConflictPolicy:  domain.PolicyWarn,
+		Reason:          "v2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Change recorded by A under v1.
+	n, _ := paths.Normalize(root, "src/foo.go")
+	if _, err := d.InsertChange(ctx, domain.RecordChangeInput{
+		Change: domain.Change{
+			TaskID:       "T-REASSIGN",
+			AgentID:      "pi.worker.A",
+			AssignmentID: v1.AssignmentID,
+			Summary:      "historic change under v1",
+		},
+		Paths:     []domain.ChangePath{{Path: n.Display, RealPath: n.RealPath, PathHash: n.PathHash, Status: domain.PathStatusModified}},
+		EventType: "change.recorded",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	rep := runVerify(t, verify.Inputs{
+		Root:                 root,
+		LedgerDirFlag:        ledger,
+		TaskID:               "T-REASSIGN",
+		ChangedPathsOverride: []string{"src/foo.go"},
+	})
+	codes := findingsByCode(rep)
+	if got := len(codes[verify.CodeAgentMismatch]); got != 0 {
+		t.Fatalf("expected no AGENT_MISMATCH after reassignment; got %d: %+v", got, codes[verify.CodeAgentMismatch])
+	}
+}
+
+// TestVerify_ExclusiveLockHeld_ActiveIntentNotFlagged is the v0.1.x
+// regression guard for the orphan-lock scanner. A sentinel whose
+// path_hash maps to an active intent is in policy and must not be
+// reported. Pre-fix code reported every sentinel because the "known"
+// set was constructed from a no-op loop.
+func TestVerify_ExclusiveLockHeld_ActiveIntentNotFlagged(t *testing.T) {
+	root, ledger := setupProject(t)
+	writeFile(t, filepath.Join(root, "src/foo.go"), "x")
+	// Seed one closed intent + change. We want the sentinel to be
+	// owned by an OPEN intent though, so seed a second intent below.
+	store := openTestStore(t, ledger)
+	d := domain.New(store)
+	ctx := context.Background()
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: "pi.worker.test", AgentKind: "worker"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.InsertAssignment(ctx, domain.Assignment{
+		TaskID:          "T-LOCK",
+		OrchestratorID:  "pi.main",
+		AssignedAgentID: "pi.worker.test",
+		AllowedPaths:    []string{"src/**"},
+		ConflictPolicy:  domain.PolicyExclusive,
+		Reason:          "lock-test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	n, _ := paths.Normalize(root, "src/foo.go")
+	if _, err := d.InsertIntent(ctx, domain.Intent{
+		TaskID:         "T-LOCK",
+		AgentID:        "pi.worker.test",
+		AccessMode:     domain.AccessWrite,
+		ConflictPolicy: domain.PolicyExclusive,
+		Reason:         "edit",
+	}, []domain.IntentPath{{Path: n.Display, RealPath: n.RealPath, PathHash: n.PathHash, AccessMode: domain.AccessWrite}}); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	// Drop a sentinel for the owned hash AND a sentinel for an
+	// unrelated hash. Only the unrelated one should be flagged.
+	writeFile(t, filepath.Join(ledger, "locks", n.PathHash+".lock"), "")
+	writeFile(t, filepath.Join(ledger, "locks", "deadbeefcafefade.lock"), "")
+
+	rep := runVerify(t, verify.Inputs{
+		Root:                 root,
+		LedgerDirFlag:        ledger,
+		ChangedPathsOverride: []string{},
+	})
+	codes := findingsByCode(rep)
+	if got := len(codes[verify.CodeExclusiveLockHeld]); got != 1 {
+		t.Fatalf("expected exactly 1 EXCLUSIVE_LOCK_HELD (the unowned sentinel); got %d: %+v", got, codes[verify.CodeExclusiveLockHeld])
+	}
+	if h, _ := codes[verify.CodeExclusiveLockHeld][0].Details["path_hash"].(string); h != "deadbeefcafefade" {
+		t.Fatalf("unexpected sentinel flagged: %+v", codes[verify.CodeExclusiveLockHeld][0])
+	}
+}
