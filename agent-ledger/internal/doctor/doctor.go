@@ -20,6 +20,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/config"
+	"github.com/ruminaider/agent-clis/agent-ledger/internal/domain"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/project"
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/storage/sqlite"
 )
@@ -104,6 +105,7 @@ func Run(ctx context.Context, opts Options) Report {
 	stCheck, healthChecks := checkStorage(ctx, res)
 	rep.Checks = append(rep.Checks, stCheck)
 	rep.Checks = append(rep.Checks, healthChecks...)
+	rep.Checks = append(rep.Checks, checkLockSentinels(ctx, res, stCheck.Status))
 
 	rep.Overall = aggregate(rep.Checks)
 	return rep
@@ -481,3 +483,105 @@ func (r Report) HasError() bool { return r.Overall == StatusError }
 
 // HasWarn reports whether any check is at warn or worse.
 func (r Report) HasWarn() bool { return r.Overall != StatusOK }
+
+// checkLockSentinels cross-references *.lock sentinel files in
+// <ledger-dir>/locks/ against active intents in the DB. A sentinel
+// whose path_hash maps to an active intent is healthy; one with no
+// owner is stale residue from a pre-v0.2.2 close that did not clean
+// up. The check is advisory (StatusWarn at most): the authoritative
+// report is `agent-ledger verify`, which emits EXCLUSIVE_LOCK_HELD
+// per stale sentinel. Doctor surfaces the same signal at the lock
+// hygiene layer so reviewers see it without running task-mode
+// verify.
+//
+// storageStatus is the status of the sibling "storage" check. When
+// storage failed we cannot consult intents and skip with StatusWarn
+// rather than producing misleading output.
+func checkLockSentinels(ctx context.Context, res project.Resolution, storageStatus string) Check {
+	c := Check{Name: "lock_sentinels"}
+	if res.LedgerDir == "" {
+		c.Status = StatusWarn
+		c.Message = "ledger dir unresolved; cannot inspect sentinels"
+		return c
+	}
+	locksDir := filepath.Join(res.LedgerDir, "locks")
+	entries, err := os.ReadDir(locksDir)
+	if err != nil {
+		if errIsNotExist(err) {
+			c.Status = StatusOK
+			c.Message = "no locks directory; nothing to inspect"
+			return c
+		}
+		c.Status = StatusError
+		c.Message = "read locks dir: " + err.Error()
+		return c
+	}
+	var sentinelHashes []string
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".lock" {
+			continue
+		}
+		sentinelHashes = append(sentinelHashes, strings.TrimSuffix(e.Name(), ".lock"))
+	}
+	if len(sentinelHashes) == 0 {
+		c.Status = StatusOK
+		c.Message = "0 sentinels"
+		return c
+	}
+	if storageStatus != StatusOK {
+		c.Status = StatusWarn
+		c.Message = fmt.Sprintf("%d sentinel(s) present; storage check is %s, cannot cross-reference active intents", len(sentinelHashes), storageStatus)
+		c.Details = map[string]any{"sentinels": len(sentinelHashes)}
+		return c
+	}
+	store, err := sqlite.Open(ctx, res.LedgerDir)
+	if err != nil {
+		c.Status = StatusError
+		c.Message = "open sqlite for sentinel cross-reference: " + err.Error()
+		return c
+	}
+	defer store.Close()
+	d := domain.New(store)
+	intents, err := d.ListActiveIntents(ctx, "")
+	if err != nil {
+		c.Status = StatusError
+		c.Message = "list active intents: " + err.Error()
+		return c
+	}
+	owned := map[string]struct{}{}
+	for _, in := range intents {
+		ps, err := d.IntentPaths(ctx, in.IntentID)
+		if err != nil {
+			c.Status = StatusError
+			c.Message = "load intent paths: " + err.Error()
+			return c
+		}
+		for _, p := range ps {
+			if p.PathHash != "" {
+				owned[p.PathHash] = struct{}{}
+			}
+		}
+	}
+	var stale []string
+	for _, h := range sentinelHashes {
+		if _, ok := owned[h]; !ok {
+			stale = append(stale, h)
+		}
+	}
+	if len(stale) == 0 {
+		c.Status = StatusOK
+		c.Message = fmt.Sprintf("%d sentinel(s) all owned by active intents", len(sentinelHashes))
+		c.Details = map[string]any{"sentinels": len(sentinelHashes)}
+		return c
+	}
+	c.Status = StatusWarn
+	c.Message = fmt.Sprintf("%d stale sentinel(s) of %d total; run `agent-ledger gc --stale-after=<window>` and remove leftovers under %s", len(stale), len(sentinelHashes), locksDir)
+	c.Details = map[string]any{
+		"sentinels":   len(sentinelHashes),
+		"stale_count": len(stale),
+		"stale":       stale,
+		"locks_dir":   locksDir,
+		"recovery":    "agent-ledger gc removes sentinels for stale exclusive intents on orphan; pre-v0.2.2 close left files behind, delete by hand if no live process holds them",
+	}
+	return c
+}

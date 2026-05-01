@@ -10,6 +10,16 @@ of the binary version.
 
 ## [Unreleased]
 
+### Added
+
+- `doctor` gains a `lock_sentinels` check that cross-references
+  `<ledger-dir>/locks/*.lock` against active intents in the DB and
+  reports stale sentinels as a `warn` with recovery hints. The
+  authoritative report stays `agent-ledger verify`
+  (`EXCLUSIVE_LOCK_HELD`); doctor surfaces the same signal at the
+  hygiene layer so reviewers see lock state without running task-mode
+  verify.
+
 ## [0.2.2] - 2026-05-01
 
 ### Fixed

@@ -220,3 +220,83 @@ outer:
 	}
 	return -1
 }
+
+// TestRun_LockSentinelsCheck_StaleVsOwned exercises the v0.2.2
+// lock_sentinels doctor check. A sentinel whose path_hash maps to an
+// active intent is healthy and produces StatusOK; an unowned sentinel
+// is reported as a stale entry with StatusWarn and recovery hints.
+func TestRun_LockSentinelsCheck_StaleVsOwned(t *testing.T) {
+	root, ledger := newProject(t)
+	store, err := sqlite.Open(context.Background(), ledger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrator().Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Seed an active exclusive intent owning hash "ownedhash". We bypass
+	// the domain layer and write directly: doctor's check only reads the
+	// rows it needs.
+	now := "2026-05-01T00:00:00.000Z"
+	mustExec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := store.DB().ExecContext(context.Background(), q, args...); err != nil {
+			t.Fatalf("exec %q: %v", q, err)
+		}
+	}
+	mustExec(`INSERT INTO agents(agent_id,agent_kind,started_at) VALUES('a.test','worker',?)`, now)
+	mustExec(`INSERT INTO events(event_id,schema,event_type,created_at,agent_id,task_id,payload_json)
+	          VALUES('evt_doc','agent-ledger.v1','intent.opened',?,?,?, '{"intent_id":"int_doc"}')`,
+		now, "a.test", "T-DOC")
+	mustExec(`INSERT INTO intents(intent_id,event_id,task_id,agent_id,access_mode,conflict_policy,reason,status,opened_at)
+	          VALUES('int_doc','evt_doc','T-DOC','a.test','write','exclusive','doctor test','active',?)`, now)
+	mustExec(`INSERT INTO intent_paths(intent_id,path,realpath,path_hash,access_mode)
+	          VALUES('int_doc','x.txt','x.txt','ownedhash','write')`)
+	store.Close()
+
+	locksDir := filepath.Join(ledger, "locks")
+	if err := os.MkdirAll(locksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// One owned, one stale.
+	for _, name := range []string{"ownedhash.lock", "stalehash.lock"} {
+		if err := os.WriteFile(filepath.Join(locksDir, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rep := runDoctor(t, root, ledger, nil)
+	c := findCheck(t, rep, "lock_sentinels")
+	if c.Status != doctor.StatusWarn {
+		t.Fatalf("lock_sentinels status = %s, want warn: %+v", c.Status, c)
+	}
+	if got, _ := c.Details["stale_count"].(int); got != 1 {
+		t.Fatalf("stale_count = %v, want 1: %+v", c.Details["stale_count"], c)
+	}
+	stale, _ := c.Details["stale"].([]string)
+	if len(stale) != 1 || stale[0] != "stalehash" {
+		t.Fatalf("stale = %v, want [stalehash]", stale)
+	}
+
+	// Remove the stale sentinel; check should flip to ok.
+	if err := os.Remove(filepath.Join(locksDir, "stalehash.lock")); err != nil {
+		t.Fatal(err)
+	}
+	rep = runDoctor(t, root, ledger, nil)
+	c = findCheck(t, rep, "lock_sentinels")
+	if c.Status != doctor.StatusOK {
+		t.Fatalf("expected lock_sentinels ok after cleanup, got %s: %+v", c.Status, c)
+	}
+}
+
+// TestRun_LockSentinelsCheck_NoLocksDir asserts that the absence of a
+// locks directory is healthy (a fresh ledger has not yet held any
+// exclusive claim) and produces StatusOK.
+func TestRun_LockSentinelsCheck_NoLocksDir(t *testing.T) {
+	root, ledger := newProject(t)
+	rep := runDoctor(t, root, ledger, nil)
+	c := findCheck(t, rep, "lock_sentinels")
+	if c.Status != doctor.StatusOK {
+		t.Fatalf("lock_sentinels status = %s, want ok: %+v", c.Status, c)
+	}
+}
