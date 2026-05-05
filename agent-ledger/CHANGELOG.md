@@ -10,6 +10,56 @@ of the binary version.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-04
+
+### Added
+
+- `claim`, `record`, and `adopt` accept absolute paths inside any
+  worktree of the same git common dir. Path normalization now
+  enumerates worktree toplevels via `git worktree list --porcelain`
+  and picks the longest realpath-prefix match, so an orchestrator in
+  the main checkout can claim a file inside a sibling worktree
+  without `path_outside_project`. SPEC §8.1 and §14 #1.
+- `canonical_path_hash` column on `intent_paths`, `change_paths`,
+  and `conflicts`, derived from `sha256(NFC(case-fold(display)))`.
+  This is the new equality key for conflict detection, lock sentinel
+  naming, and lookups across worktrees of the same project. Case
+  folding uses Unicode-aware folding (`golang.org/x/text/cases.Fold`)
+  so two case-aliased paths on macOS APFS or Windows NTFS continue
+  to collide. SPEC §14 #8.
+- Schema migration `0003_canonical_path_hash` adds the column
+  (nullable) and matching indexes. Schema version bumps from 2 to 3.
+- `agent-ledger migrate` now runs a Go-side backfill that rewrites
+  legacy rows from their stored `path` to populate
+  `canonical_path_hash`. The backfill refuses while any intent is
+  active (lock-correctness gap risk); pass `--force` to override.
+  Hard-errors with a manifest on rows whose `path` is malformed
+  (empty, absolute, contains `..`, contains `\` on POSIX, non-NFC).
+  Idempotent.
+- Verifier finding `SYMLINK_ALIAS` (warning) fires when two active
+  intents share a realpath but have distinct `canonical_path_hash`
+  values, surfacing the lost symlink-aliasing that the realpath hash
+  provided for free. SPEC §19.3.
+
+### Fixed
+
+- The same logical file claimed from two different worktrees of the
+  same repo no longer produces two distinct `path_hash` values that
+  silently bypass conflict detection. Conflict detection joins on
+  `canonical_path_hash` and falls back to `path_hash` for rows with
+  NULL canonical, so cross-worktree conflicts surface for new claims
+  even before the legacy backfill runs.
+
+### Notes
+
+- Old binaries running against new ledgers continue to work because
+  the new column is nullable and the conflict-detection query keeps
+  the legacy `path_hash` branch.
+- Operators with active intents at upgrade time will see a deferred
+  backfill: schema migrates cleanly, but the canonical column stays
+  NULL on old rows until they close intents and run
+  `agent-ledger migrate` (or run with `--force`).
+
 ## [0.2.3] - 2026-05-01
 
 ### Added

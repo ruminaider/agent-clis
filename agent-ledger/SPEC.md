@@ -883,9 +883,12 @@ AGENT_MISMATCH
 REVIEW_ONLY_WRITE
 EXCLUSIVE_LOCK_HELD
 SUMMARY_MISMATCH
+SYMLINK_ALIAS
 CONFIG_ERROR
 STORAGE_ERROR
 ```
+
+`SYMLINK_ALIAS` warns that two active intents reference different display paths that resolve through symlinks to the same realpath but compute distinct `canonical_path_hash` values. SPEC §14 #8: switching the equality key from realpath to display lost free symlink-aliasing, so this finding makes the regression observable. Operators should pick one canonical display path or close one of the intents.
 
 ## 20. Babysitter integration
 

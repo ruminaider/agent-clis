@@ -51,6 +51,7 @@ var verifyCanonicalCodes = []string{
 	"REVIEW_ONLY_WRITE",
 	"EXCLUSIVE_LOCK_HELD",
 	"SUMMARY_MISMATCH",
+	"SYMLINK_ALIAS",
 	"CONFIG_ERROR",
 	"STORAGE_ERROR",
 }
@@ -196,6 +197,7 @@ func TestSchema_VerifyCodeRegistry(t *testing.T) {
 		verify.CodeReviewOnlyWrite:       true,
 		verify.CodeExclusiveLockHeld:     true,
 		verify.CodeSummaryMismatch:       true,
+		verify.CodeSymlinkAlias:          true,
 		verify.CodeConfigError:           true,
 		verify.CodeStorageError:          true,
 	}
