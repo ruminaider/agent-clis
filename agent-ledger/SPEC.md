@@ -100,6 +100,8 @@ On macOS, an installer may choose platform-native state storage, but the CLI mus
 
 Compute the project fingerprint from shared project identity, not from an individual worktree root. Git worktrees that share a common git directory must share one ledger. Separate clones intentionally get separate local ledgers in the Product MVP.
 
+A single ledger spans every worktree of the same git common dir. Path scope checks (§14) accept any path inside any worktree, and `canonical_path_hash` collapses the same logical file across worktrees into a single equality key so conflict detection works regardless of which checkout an agent edits from.
+
 Inputs:
 
 1. Optional explicit `project_id` from the local `.agent-ledger.toml` pointer or committed `.agent-ledger-policy.toml`.
@@ -532,16 +534,21 @@ Every path must be normalized before storage.
 
 Rules:
 
-1. Resolve project root.
+1. Resolve project scope. For git repos, scope is every worktree of the same git common dir; the input path is matched against every worktree toplevel by longest realpath prefix. For non-git projects, scope is the resolved project root.
 2. Convert input path to absolute path.
 3. Resolve symlinks where possible.
-4. Convert to project-root-relative display path.
+4. Convert to display path relative to the matched scope root, preserving case.
 5. Normalize Unicode to NFC.
 6. Normalize separators to `/`.
-7. Preserve case in display path.
-8. Store `path_hash = sha256(realpath-normalized)`.
+7. Preserve case in `path` (display) and `realpath` columns.
+8. Store `canonical_path_hash = sha256(NFC(case-fold(display)))` and use it as the equality key for conflict detection, lock sentinel naming, and lookups across worktrees of the same project.
+9. Continue to store the legacy `path_hash = sha256(NFC(realpath))` column as a per-checkout forensic artifact. It is preserved by migrations but is not used as an equality key.
 
-The verifier must detect paths outside the project root and report them as scope violations unless explicitly allowed by assignment metadata.
+Case-folding uses Unicode case folding, not ASCII lowercase, so it matches the case-insensitivity behavior agents observe on macOS APFS and Windows NTFS by default. Two distinct logical files on a case-insensitive filesystem (`Foo.go` and `foo.go`) cannot coexist; folding the hash matches that constraint instead of silently splitting them into separate ledger rows.
+
+Symlinks within a project that point to another file in the same project no longer collapse under the canonical hash because that hash is computed from display, not realpath. The verifier emits a `SYMLINK_ALIAS` finding when two active rows share a `realpath` value but have distinct `canonical_path_hash` values, so this regression is observable rather than silent.
+
+The verifier must detect paths outside every project scope root and report them as scope violations unless explicitly allowed by assignment metadata.
 
 ## 15. Conflict policies
 

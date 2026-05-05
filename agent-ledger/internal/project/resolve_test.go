@@ -125,6 +125,44 @@ func TestResolve_GitCommonDirSharedAcrossWorktrees(t *testing.T) {
 	}
 }
 
+func TestResolve_RootsIncludeAllWorktrees(t *testing.T) {
+	skipIfNoGit(t)
+	repo := t.TempDir()
+	runOrFatal(t, repo, "git", "init", "-q")
+	runOrFatal(t, repo, "git", "-c", "user.email=t@t", "-c", "user.name=t",
+		"commit", "--allow-empty", "-m", "init", "--quiet")
+	wt := filepath.Join(t.TempDir(), "wt")
+	runOrFatal(t, repo, "git", "worktree", "add", "-b", "wt", wt)
+
+	res, err := Resolve(Options{Root: repo, HomeDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Roots) != 2 {
+		t.Fatalf("expected 2 roots, got %v", res.Roots)
+	}
+	repoReal, _ := filepath.EvalSymlinks(repo)
+	wtReal, _ := filepath.EvalSymlinks(wt)
+	found := map[string]bool{res.Roots[0]: true, res.Roots[1]: true}
+	if !found[repoReal] || !found[wtReal] {
+		t.Fatalf("roots %v missing %q or %q", res.Roots, repoReal, wtReal)
+	}
+	if res.Roots[0] != repoReal {
+		t.Fatalf("first root should be the resolved Root %q, got %q", repoReal, res.Roots[0])
+	}
+}
+
+func TestResolve_RootsForNonGit(t *testing.T) {
+	root := t.TempDir()
+	res, err := Resolve(Options{Root: root, HomeDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Roots) != 1 {
+		t.Fatalf("expected 1 root for non-git, got %v", res.Roots)
+	}
+}
+
 func TestResolve_NonGitFallback(t *testing.T) {
 	root := t.TempDir()
 	res, err := Resolve(Options{Root: root, HomeDir: t.TempDir()})

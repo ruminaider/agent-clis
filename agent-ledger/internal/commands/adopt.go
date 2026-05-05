@@ -85,7 +85,7 @@ func runAdopt(streams Streams, o *adoptOpts, args []string) error {
 	}
 	chPaths := make([]domain.ChangePath, 0, len(abspaths))
 	for _, p := range abspaths {
-		n, err := paths.Normalize(res.Root, p)
+		n, err := paths.NormalizeAt(res.Roots, p)
 		if err != nil {
 			if paths.IsOutsideProject(err) {
 				return cli.NewError(cli.ExitGeneric, "path_outside_project", err.Error())
@@ -93,10 +93,11 @@ func runAdopt(streams Streams, o *adoptOpts, args []string) error {
 			return cli.NewError(cli.ExitGeneric, "path_normalize_failed", err.Error())
 		}
 		chPaths = append(chPaths, domain.ChangePath{
-			Path:     n.Display,
-			RealPath: n.RealPath,
-			PathHash: n.PathHash,
-			Status:   domain.PathStatusUnknown,
+			Path:          n.Display,
+			RealPath:      n.RealPath,
+			PathHash:      n.PathHash,
+			CanonicalHash: n.CanonicalHash,
+			Status:        domain.PathStatusUnknown,
 		})
 	}
 

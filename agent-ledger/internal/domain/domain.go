@@ -165,11 +165,12 @@ type Intent struct {
 
 // IntentPath mirrors a single row in intent_paths.
 type IntentPath struct {
-	IntentID   string
-	Path       string
-	RealPath   string
-	PathHash   string
-	AccessMode string
+	IntentID      string
+	Path          string
+	RealPath      string
+	PathHash      string
+	CanonicalHash string
+	AccessMode    string
 }
 
 // ClaimResult summarizes the outcome of ResolveAndInsertIntent.
@@ -187,6 +188,7 @@ type Conflict struct {
 	EventID               string
 	Path                  string
 	PathHash              string
+	CanonicalHash         string
 	ExistingIntentID      string
 	NewIntentID           string
 	Policy                string
@@ -213,6 +215,24 @@ func nullable(s string) any {
 		return nil
 	}
 	return s
+}
+
+// hashListSQL renders a list of hash strings as positional placeholders
+// and the matching argument slice. An empty input collapses to a single
+// placeholder with the sentinel value "\x00", which never matches any
+// real hex hash, so the OR branch in the caller's WHERE clause becomes
+// a no-op rather than a syntax error.
+func hashListSQL(hashes []string) ([]any, string) {
+	if len(hashes) == 0 {
+		return []any{"\x00"}, "?"
+	}
+	args := make([]any, 0, len(hashes))
+	for _, h := range hashes {
+		args = append(args, h)
+	}
+	placeholders := strings.Repeat("?,", len(hashes))
+	placeholders = placeholders[:len(placeholders)-1]
+	return args, placeholders
 }
 
 func nsToString(v sql.NullString) string {
@@ -801,9 +821,9 @@ func insertIntentRows(ctx context.Context, exec sqlExecer, in Intent, ipaths []I
 	}
 	for _, p := range ipaths {
 		if _, err := exec.ExecContext(ctx, `
-			INSERT INTO intent_paths(intent_id, path, realpath, path_hash, access_mode)
-			VALUES(?, ?, ?, ?, ?)
-		`, p.IntentID, p.Path, p.RealPath, p.PathHash, p.AccessMode); err != nil {
+			INSERT INTO intent_paths(intent_id, path, realpath, path_hash, canonical_path_hash, access_mode)
+			VALUES(?, ?, ?, ?, ?, ?)
+		`, p.IntentID, p.Path, p.RealPath, p.PathHash, nullable(p.CanonicalHash), p.AccessMode); err != nil {
 			return err
 		}
 	}
@@ -830,24 +850,46 @@ func (s *Store) ResolveAndInsertIntent(ctx context.Context, in Intent, ipaths []
 		filtered []conflicts.Overlap
 	)
 	if err := s.S.WriteDomainEventImmediate(ctx, func(ctx context.Context, conn *sql.Conn) ([]storage.Event, error) {
-		hashes := make([]string, 0, len(ipaths))
+		// SPEC §14 #8: prefer canonical hash for cross-worktree conflict
+		// detection; pass path_hash too so rows that have not been
+		// backfilled are still matched by the legacy key.
+		canonicalHashes := make([]string, 0, len(ipaths))
+		legacyHashes := make([]string, 0, len(ipaths))
 		for _, p := range ipaths {
-			hashes = append(hashes, p.PathHash)
+			if p.CanonicalHash != "" {
+				canonicalHashes = append(canonicalHashes, p.CanonicalHash)
+			}
+			legacyHashes = append(legacyHashes, p.PathHash)
 		}
-		rowHashes, err := activeIntentsByPathHashes(ctx, conn, hashes)
+		rowHashes, err := activeIntentsByPathHashes(ctx, conn, canonicalHashes, legacyHashes)
 		if err != nil {
 			return nil, err
 		}
 		overlaps := make([]conflicts.Overlap, 0, len(rowHashes))
 		for _, row := range rowHashes {
 			display := row.Path
+			canonical := row.CanonicalHash
+			legacy := row.PathHash
+			// Match by canonical first, fall back to path_hash so the
+			// returned overlap reports the caller's display when one
+			// of the two columns matched.
 			for _, p := range ipaths {
-				if p.PathHash == row.PathHash {
+				if (p.CanonicalHash != "" && p.CanonicalHash == row.CanonicalHash) || p.PathHash == row.PathHash {
 					display = p.Path
+					if canonical == "" {
+						canonical = p.CanonicalHash
+					}
+					legacy = p.PathHash
 					break
 				}
 			}
-			overlaps = append(overlaps, conflicts.Overlap{NewPath: display, NewPathHash: row.PathHash, ExistingIntent: row.IntentID, ExistingPath: row.Path})
+			overlaps = append(overlaps, conflicts.Overlap{
+				NewPath:          display,
+				NewPathHash:      legacy,
+				NewCanonicalHash: canonical,
+				ExistingIntent:   row.IntentID,
+				ExistingPath:     row.Path,
+			})
 		}
 		supersedeSet := map[string]bool{}
 		if supersede != "" {
@@ -944,7 +986,7 @@ func (s *Store) IntentByID(ctx context.Context, intentID string) (Intent, error)
 
 // IntentPaths returns the paths for an intent.
 func (s *Store) IntentPaths(ctx context.Context, intentID string) ([]IntentPath, error) {
-	rows, err := s.S.DB().QueryContext(ctx, `SELECT intent_id, path, realpath, path_hash, access_mode FROM intent_paths WHERE intent_id = ? ORDER BY path`, intentID)
+	rows, err := s.S.DB().QueryContext(ctx, `SELECT intent_id, path, realpath, path_hash, COALESCE(canonical_path_hash,''), access_mode FROM intent_paths WHERE intent_id = ? ORDER BY path`, intentID)
 	if err != nil {
 		return nil, err
 	}
@@ -952,7 +994,7 @@ func (s *Store) IntentPaths(ctx context.Context, intentID string) ([]IntentPath,
 	var out []IntentPath
 	for rows.Next() {
 		var p IntentPath
-		if err := rows.Scan(&p.IntentID, &p.Path, &p.RealPath, &p.PathHash, &p.AccessMode); err != nil {
+		if err := rows.Scan(&p.IntentID, &p.Path, &p.RealPath, &p.PathHash, &p.CanonicalHash, &p.AccessMode); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -965,27 +1007,50 @@ type sqlQueryer interface {
 }
 
 // ActiveIntentsByPathHashes returns active intents that overlap any of
-// pathHashes. Each result row is paired with the matching path hash.
+// pathHashes. Caller-supplied hashes are matched against canonical_path_hash
+// when set, falling back to the legacy path_hash column for rows that
+// have not been backfilled yet (SPEC §14 #8 transitional).
+//
+// To preserve cross-worktree conflict detection during the transition,
+// callers should pass canonical hashes; for backward compatibility we
+// also accept path_hash values via the same interface, since the
+// backfill rewrites only the canonical column.
 func (s *Store) ActiveIntentsByPathHashes(ctx context.Context, pathHashes []string) ([]IntentPath, error) {
-	return activeIntentsByPathHashes(ctx, s.S.DB(), pathHashes)
+	return activeIntentsByPathHashes(ctx, s.S.DB(), pathHashes, pathHashes)
 }
 
-func activeIntentsByPathHashes(ctx context.Context, q sqlQueryer, pathHashes []string) ([]IntentPath, error) {
-	if len(pathHashes) == 0 {
+// ActiveIntentsByCanonicalAndPathHashes is the explicit two-key variant
+// used by claim resolution. canonicalHashes are matched against
+// intent_paths.canonical_path_hash; pathHashes are matched against
+// intent_paths.path_hash for rows whose canonical column is still NULL
+// (pre-backfill state). Both lists must align by index with the
+// caller's request order, but they need not be the same length: any
+// non-empty value in either is sufficient.
+func (s *Store) ActiveIntentsByCanonicalAndPathHashes(ctx context.Context, canonicalHashes, pathHashes []string) ([]IntentPath, error) {
+	return activeIntentsByPathHashes(ctx, s.S.DB(), canonicalHashes, pathHashes)
+}
+
+func activeIntentsByPathHashes(ctx context.Context, q sqlQueryer, canonicalHashes, pathHashes []string) ([]IntentPath, error) {
+	if len(canonicalHashes) == 0 && len(pathHashes) == 0 {
 		return nil, nil
 	}
-	placeholders := strings.Repeat("?,", len(pathHashes))
-	placeholders = placeholders[:len(placeholders)-1]
-	args := make([]any, 0, len(pathHashes))
-	for _, h := range pathHashes {
-		args = append(args, h)
-	}
+	// Build the WHERE clause in two parts: canonical match (preferred)
+	// and legacy path_hash match for rows whose canonical column is
+	// still NULL. The branches are unioned with OR so a single query
+	// covers both cases. Empty input lists collapse to a never-matches
+	// branch via a placeholder that no real hash equals.
+	canArgs, canPlaceholders := hashListSQL(canonicalHashes)
+	phArgs, phPlaceholders := hashListSQL(pathHashes)
 	query := fmt.Sprintf(`
-		SELECT ip.intent_id, ip.path, ip.realpath, ip.path_hash, ip.access_mode
+		SELECT ip.intent_id, ip.path, ip.realpath, ip.path_hash, COALESCE(ip.canonical_path_hash,''), ip.access_mode
 		FROM intent_paths ip
 		JOIN intents i ON i.intent_id = ip.intent_id
-		WHERE i.status = 'active' AND ip.path_hash IN (%s)
-	`, placeholders)
+		WHERE i.status = 'active' AND (
+			ip.canonical_path_hash IN (%s)
+			OR (ip.canonical_path_hash IS NULL AND ip.path_hash IN (%s))
+		)
+	`, canPlaceholders, phPlaceholders)
+	args := append(canArgs, phArgs...)
 	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -994,7 +1059,7 @@ func activeIntentsByPathHashes(ctx context.Context, q sqlQueryer, pathHashes []s
 	var out []IntentPath
 	for rows.Next() {
 		var p IntentPath
-		if err := rows.Scan(&p.IntentID, &p.Path, &p.RealPath, &p.PathHash, &p.AccessMode); err != nil {
+		if err := rows.Scan(&p.IntentID, &p.Path, &p.RealPath, &p.PathHash, &p.CanonicalHash, &p.AccessMode); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -1137,9 +1202,9 @@ func (s *Store) InsertConflict(ctx context.Context, c Conflict) (Conflict, error
 	}
 	err = s.S.WriteDomainEvent(ctx, ev, func(ctx context.Context, tx *sql.Tx) error {
 		_, ierr := tx.ExecContext(ctx, `
-			INSERT INTO conflicts(conflict_id, event_id, path, path_hash, existing_intent_id, new_intent_id, policy, status, detected_at, metadata_json)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, c.ConflictID, c.EventID, c.Path, c.PathHash, nullable(c.ExistingIntentID), nullable(c.NewIntentID), c.Policy, c.Status, c.DetectedAt, meta)
+			INSERT INTO conflicts(conflict_id, event_id, path, path_hash, canonical_path_hash, existing_intent_id, new_intent_id, policy, status, detected_at, metadata_json)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, c.ConflictID, c.EventID, c.Path, c.PathHash, nullable(c.CanonicalHash), nullable(c.ExistingIntentID), nullable(c.NewIntentID), c.Policy, c.Status, c.DetectedAt, meta)
 		return ierr
 	})
 	return c, err
@@ -1197,14 +1262,15 @@ func (s *Store) AcknowledgeConflict(ctx context.Context, conflictID, agentID, re
 // ConflictByID returns a conflict.
 func (s *Store) ConflictByID(ctx context.Context, conflictID string) (Conflict, error) {
 	row := s.S.DB().QueryRowContext(ctx, `
-		SELECT conflict_id, event_id, path, path_hash, COALESCE(existing_intent_id, ''), COALESCE(new_intent_id, ''),
+		SELECT conflict_id, event_id, path, path_hash, COALESCE(canonical_path_hash, ''),
+		       COALESCE(existing_intent_id, ''), COALESCE(new_intent_id, ''),
 		       policy, status, detected_at, COALESCE(acknowledged_at, ''), COALESCE(acknowledged_by_agent_id, ''),
 		       COALESCE(resolution, ''), metadata_json
 		FROM conflicts WHERE conflict_id = ?
 	`, conflictID)
 	var c Conflict
 	var meta string
-	if err := row.Scan(&c.ConflictID, &c.EventID, &c.Path, &c.PathHash, &c.ExistingIntentID, &c.NewIntentID, &c.Policy, &c.Status, &c.DetectedAt, &c.AcknowledgedAt, &c.AcknowledgedByAgentID, &c.Resolution, &meta); err != nil {
+	if err := row.Scan(&c.ConflictID, &c.EventID, &c.Path, &c.PathHash, &c.CanonicalHash, &c.ExistingIntentID, &c.NewIntentID, &c.Policy, &c.Status, &c.DetectedAt, &c.AcknowledgedAt, &c.AcknowledgedByAgentID, &c.Resolution, &meta); err != nil {
 		return Conflict{}, err
 	}
 	decoded, err := decodeMeta(meta, "conflicts.metadata_json", c.ConflictID)
@@ -1219,7 +1285,8 @@ func (s *Store) ConflictByID(ctx context.Context, conflictID string) (Conflict, 
 // joined intent. Status filter "" returns everything.
 func (s *Store) ListConflicts(ctx context.Context, taskID, status string) ([]Conflict, error) {
 	q := `
-		SELECT c.conflict_id, c.event_id, c.path, c.path_hash, COALESCE(c.existing_intent_id, ''), COALESCE(c.new_intent_id, ''),
+		SELECT c.conflict_id, c.event_id, c.path, c.path_hash, COALESCE(c.canonical_path_hash, ''),
+		       COALESCE(c.existing_intent_id, ''), COALESCE(c.new_intent_id, ''),
 		       c.policy, c.status, c.detected_at, COALESCE(c.acknowledged_at, ''), COALESCE(c.acknowledged_by_agent_id, ''),
 		       COALESCE(c.resolution, ''), c.metadata_json
 		FROM conflicts c
@@ -1248,7 +1315,7 @@ func (s *Store) ListConflicts(ctx context.Context, taskID, status string) ([]Con
 	for rows.Next() {
 		var c Conflict
 		var meta string
-		if err := rows.Scan(&c.ConflictID, &c.EventID, &c.Path, &c.PathHash, &c.ExistingIntentID, &c.NewIntentID, &c.Policy, &c.Status, &c.DetectedAt, &c.AcknowledgedAt, &c.AcknowledgedByAgentID, &c.Resolution, &meta); err != nil {
+		if err := rows.Scan(&c.ConflictID, &c.EventID, &c.Path, &c.PathHash, &c.CanonicalHash, &c.ExistingIntentID, &c.NewIntentID, &c.Policy, &c.Status, &c.DetectedAt, &c.AcknowledgedAt, &c.AcknowledgedByAgentID, &c.Resolution, &meta); err != nil {
 			return nil, err
 		}
 		decoded, err := decodeMeta(meta, "conflicts.metadata_json", c.ConflictID)

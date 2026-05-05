@@ -99,8 +99,12 @@ func runClose(streams Streams, o *closeOpts) error {
 
 // cleanupExclusiveSentinels removes <ledger-dir>/locks/<hash>.lock for
 // every path of an exclusive intent that has just transitioned out of
-// active. The call is best-effort: any error is dropped on the floor
-// to honor SPEC §28's "DB row is authoritative" rule.
+// active. SPEC §14 #8: sentinels are keyed by canonical_path_hash for
+// claims taken after the canonical-hash migration; legacy sentinels
+// keyed by path_hash from older claims are also swept.
+//
+// The call is best-effort: any error is dropped on the floor to honor
+// SPEC §28's "DB row is authoritative" rule.
 //
 // ctx is reserved for future telemetry. The signature accepts it so
 // callers can wire structured logs without churning this surface.
@@ -111,6 +115,11 @@ func cleanupExclusiveSentinels(ctx context.Context, store *sqlite.Store, policy 
 	}
 	dir := storage.Layout{Dir: store.LedgerDir()}.LocksDir()
 	for _, p := range paths {
-		_ = locks.RemoveSentinel(dir, p.PathHash)
+		if p.CanonicalHash != "" {
+			_ = locks.RemoveSentinel(dir, p.CanonicalHash)
+		}
+		if p.PathHash != "" {
+			_ = locks.RemoveSentinel(dir, p.PathHash)
+		}
 	}
 }

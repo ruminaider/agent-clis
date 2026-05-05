@@ -4,6 +4,7 @@
 package git
 
 import (
+	"bufio"
 	"errors"
 	"os/exec"
 	"path/filepath"
@@ -68,6 +69,43 @@ func runGit(dir string, args ...string) (string, bool) {
 		return "", false
 	}
 	return string(out), true
+}
+
+// Worktrees returns the realpath-resolved toplevel directories of every
+// worktree (main + linked) for the repo containing dir. The list is
+// deduplicated and ordered as git reports it, with realpaths.
+//
+// Returns ErrNoGit when git is unavailable. Returns an empty slice when
+// dir is not inside a git repo or `git worktree list --porcelain` fails;
+// callers should fall back to a single-root view in that case.
+func Worktrees(dir string) ([]string, error) {
+	if _, err := exec.LookPath("git"); err != nil {
+		return nil, ErrNoGit
+	}
+	out, ok := runGit(dir, "worktree", "list", "--porcelain")
+	if !ok {
+		return nil, nil
+	}
+	var tops []string
+	seen := map[string]struct{}{}
+	sc := bufio.NewScanner(strings.NewReader(out))
+	for sc.Scan() {
+		line := sc.Text()
+		if !strings.HasPrefix(line, "worktree ") {
+			continue
+		}
+		p := strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
+		if p == "" {
+			continue
+		}
+		rp := realpath(p)
+		if _, dup := seen[rp]; dup {
+			continue
+		}
+		seen[rp] = struct{}{}
+		tops = append(tops, rp)
+	}
+	return tops, nil
 }
 
 // realpath resolves symlinks in p; if it cannot, returns the absolute form.

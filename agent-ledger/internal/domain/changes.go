@@ -56,17 +56,18 @@ type Change struct {
 
 // ChangePath mirrors a row in change_paths.
 type ChangePath struct {
-	ChangeID   string
-	Path       string
-	RealPath   string
-	PathHash   string
-	BeforeSHA  string
-	AfterSHA   string
-	PatchSHA   string
-	LineRanges []map[string]any
-	Status     string
-	OutputRef  string
-	PatchRef   string // not stored; passthrough for callers
+	ChangeID      string
+	Path          string
+	RealPath      string
+	PathHash      string
+	CanonicalHash string
+	BeforeSHA     string
+	AfterSHA      string
+	PatchSHA      string
+	LineRanges    []map[string]any
+	Status        string
+	OutputRef     string
+	PatchRef      string // not stored; passthrough for callers
 }
 
 // Validation mirrors a row in validations.
@@ -201,9 +202,9 @@ func (s *Store) InsertChange(ctx context.Context, in RecordChangeInput) (Change,
 				status = PathStatusUnknown
 			}
 			if _, ierr := tx.ExecContext(ctx, `
-				INSERT INTO change_paths(change_id, path, realpath, path_hash, before_sha256, after_sha256, patch_sha256, line_ranges_json, status)
-				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`, c.ChangeID, p.Path, p.RealPath, p.PathHash, nullable(p.BeforeSHA), nullable(p.AfterSHA), nullable(p.PatchSHA), lr, status); ierr != nil {
+				INSERT INTO change_paths(change_id, path, realpath, path_hash, canonical_path_hash, before_sha256, after_sha256, patch_sha256, line_ranges_json, status)
+				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, c.ChangeID, p.Path, p.RealPath, p.PathHash, nullable(p.CanonicalHash), nullable(p.BeforeSHA), nullable(p.AfterSHA), nullable(p.PatchSHA), lr, status); ierr != nil {
 				return ierr
 			}
 		}
@@ -275,21 +276,31 @@ func (s *Store) InsertValidation(ctx context.Context, v Validation) (Validation,
 }
 
 // IntentPathHashes returns the set of path hashes attached to an
-// intent. Used by `record` to validate that every supplied path is
-// already claimed.
+// intent. The map keys include both legacy path_hash values and the
+// canonical_path_hash (when populated) so callers can validate a
+// supplied path against either form during the canonical backfill
+// transition (SPEC §14 #8).
+//
+// `record` uses this to confirm a supplied path is already claimed.
+// A claim made before backfill has only path_hash; a claim made after
+// has both, and a record made by a worker in a different worktree of
+// the same repo will only match via canonical_path_hash.
 func (s *Store) IntentPathHashes(ctx context.Context, intentID string) (map[string]string, error) {
-	rows, err := s.S.DB().QueryContext(ctx, `SELECT path_hash, path FROM intent_paths WHERE intent_id = ?`, intentID)
+	rows, err := s.S.DB().QueryContext(ctx, `SELECT path_hash, COALESCE(canonical_path_hash, ''), path FROM intent_paths WHERE intent_id = ?`, intentID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := map[string]string{}
 	for rows.Next() {
-		var h, p string
-		if err := rows.Scan(&h, &p); err != nil {
+		var h, ch, p string
+		if err := rows.Scan(&h, &ch, &p); err != nil {
 			return nil, err
 		}
 		out[h] = p
+		if ch != "" {
+			out[ch] = p
+		}
 	}
 	return out, rows.Err()
 }
@@ -327,7 +338,7 @@ func (s *Store) ChangesForTask(ctx context.Context, taskID string) ([]Change, er
 // path so the resulting slice is deterministic.
 func (s *Store) ChangePaths(ctx context.Context, changeID string) ([]ChangePath, error) {
 	rows, err := s.S.DB().QueryContext(ctx, `
-		SELECT change_id, path, realpath, path_hash,
+		SELECT change_id, path, realpath, path_hash, COALESCE(canonical_path_hash, ''),
 		       COALESCE(before_sha256, ''), COALESCE(after_sha256, ''), COALESCE(patch_sha256, ''),
 		       line_ranges_json, status
 		FROM change_paths WHERE change_id = ? ORDER BY path
@@ -340,7 +351,7 @@ func (s *Store) ChangePaths(ctx context.Context, changeID string) ([]ChangePath,
 	for rows.Next() {
 		var p ChangePath
 		var lr string
-		if err := rows.Scan(&p.ChangeID, &p.Path, &p.RealPath, &p.PathHash, &p.BeforeSHA, &p.AfterSHA, &p.PatchSHA, &lr, &p.Status); err != nil {
+		if err := rows.Scan(&p.ChangeID, &p.Path, &p.RealPath, &p.PathHash, &p.CanonicalHash, &p.BeforeSHA, &p.AfterSHA, &p.PatchSHA, &lr, &p.Status); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
