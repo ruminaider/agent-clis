@@ -1,6 +1,6 @@
 ---
 name: linear
-description: Use when the user wants to work in Linear through `linear-cli`: authenticate, inspect MCP capabilities, or read and write any supported entity (projects, issues, comments, attachments, cycles, documents, milestones, teams, users, labels, statuses). Also use when the user explicitly asks for `linear-cli`. Do NOT use for Linear's built-in connector, MCP plugin, or unrelated local files.
+description: "Use when the user wants to work in Linear through `linear-cli`: authenticate, inspect MCP capabilities, or read and write any supported entity (projects, issues, comments, attachments, cycles, documents, milestones, teams, users, labels, statuses). Also use when the user explicitly asks for `linear-cli`. Do NOT use for Linear's built-in connector, MCP plugin, or unrelated local files."
 ---
 
 # Linear CLI

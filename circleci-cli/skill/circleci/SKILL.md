@@ -1,6 +1,6 @@
 ---
 name: circleci
-description: Use when the user wants to inspect CircleCI through `circleci-cli`: check pipeline status, pull failure logs, investigate flaky tests, validate `.circleci/config.yml`, or diagnose auth and project-slug setup. Also use when the user explicitly asks for `circleci-cli`. Do NOT use for the official `circleci` binary, CircleCI's web UI, or write operations (rerun, cancel, approve); this wrapper is read-only.
+description: "Use when the user wants to inspect CircleCI through `circleci-cli`: check pipeline status, pull failure logs, investigate flaky tests, validate `.circleci/config.yml`, or diagnose auth and project-slug setup. Also use when the user explicitly asks for `circleci-cli`. Do NOT use for the official `circleci` binary, CircleCI's web UI, or write operations (rerun, cancel, approve); this wrapper is read-only."
 ---
 
 # CircleCI CLI
