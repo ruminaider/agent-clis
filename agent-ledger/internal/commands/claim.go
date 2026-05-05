@@ -118,9 +118,10 @@ func runClaim(streams Streams, o *claimOpts, args []string) error {
 		return cli.NewError(cli.ExitGeneric, "path_expand_failed", err.Error())
 	}
 	type req struct {
-		display string
-		hash    string
-		real    string
+		display   string
+		hash      string
+		canonical string
+		real      string
 	}
 	requested := make([]req, 0, len(abspaths))
 	for _, p := range abspaths {
@@ -132,7 +133,7 @@ func runClaim(streams Streams, o *claimOpts, args []string) error {
 			}
 			return cli.NewError(cli.ExitGeneric, "path_normalize_failed", err.Error())
 		}
-		requested = append(requested, req{display: n.Display, hash: n.PathHash, real: n.RealPath})
+		requested = append(requested, req{display: n.Display, hash: n.PathHash, canonical: n.CanonicalHash, real: n.RealPath})
 	}
 
 	// Scope check against assignment allow/forbid.
@@ -169,17 +170,21 @@ func runClaim(streams Streams, o *claimOpts, args []string) error {
 		hasOverride = true
 	}
 
-	// Build IntentPaths and path hashes.
+	// Build IntentPaths and the canonical hash list used for lock
+	// sentinel acquisition. The canonical hash is the equality key
+	// (SPEC §14 #8); legacy path_hash is also stored for forensics and
+	// for transitional fallback while pre-backfill rows still exist.
 	ipaths := make([]domain.IntentPath, 0, len(requested))
 	hashes := make([]string, 0, len(requested))
 	for _, r := range requested {
 		ipaths = append(ipaths, domain.IntentPath{
-			Path:       r.display,
-			RealPath:   r.real,
-			PathHash:   r.hash,
-			AccessMode: o.access,
+			Path:          r.display,
+			RealPath:      r.real,
+			PathHash:      r.hash,
+			CanonicalHash: r.canonical,
+			AccessMode:    o.access,
 		})
-		hashes = append(hashes, r.hash)
+		hashes = append(hashes, r.canonical)
 	}
 
 	intent := domain.Intent{
@@ -226,6 +231,7 @@ func runClaim(streams Streams, o *claimOpts, args []string) error {
 			c, cerr := d.InsertConflict(ctx, domain.Conflict{
 				Path:             ov.NewPath,
 				PathHash:         ov.NewPathHash,
+				CanonicalHash:    ov.NewCanonicalHash,
 				ExistingIntentID: ov.ExistingIntent,
 				Policy:           policy,
 				Status:           domain.ConflictDetected,
@@ -251,6 +257,7 @@ func runClaim(streams Streams, o *claimOpts, args []string) error {
 			c, cerr := d.InsertConflict(ctx, domain.Conflict{
 				Path:             ov.NewPath,
 				PathHash:         ov.NewPathHash,
+				CanonicalHash:    ov.NewCanonicalHash,
 				ExistingIntentID: ov.ExistingIntent,
 				NewIntentID:      claimRes.Intent.IntentID,
 				Policy:           policy,

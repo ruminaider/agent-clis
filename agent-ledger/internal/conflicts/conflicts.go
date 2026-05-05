@@ -32,10 +32,11 @@ const (
 // Overlap pairs an incoming claim path with the existing active intent
 // path that conflicts with it.
 type Overlap struct {
-	NewPath        string
-	NewPathHash    string
-	ExistingIntent string
-	ExistingPath   string
+	NewPath          string
+	NewPathHash      string
+	NewCanonicalHash string
+	ExistingIntent   string
+	ExistingPath     string
 }
 
 // Resolve computes a decision given the requested policy, the list of

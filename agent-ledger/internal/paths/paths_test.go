@@ -221,6 +221,97 @@ func TestNormalizeAt_SingleRootMatchesNormalize(t *testing.T) {
 	}
 }
 
+// TestCanonicalHash_CaseFolds asserts that the canonical hash collapses
+// case differences. Two display paths that differ only in case must hash
+// equal so that conflict detection on a case-insensitive filesystem
+// (macOS APFS, Windows NTFS) does not silently miss collisions.
+// SPEC §14 #8.
+func TestCanonicalHash_CaseFolds(t *testing.T) {
+	if CanonicalHash("Foo.go") != CanonicalHash("foo.go") {
+		t.Fatal("canonical hash should fold case")
+	}
+	if CanonicalHash("apps/Worldbuilder/X") != CanonicalHash("apps/worldbuilder/x") {
+		t.Fatal("canonical hash should fold across path components")
+	}
+}
+
+// TestCanonicalHash_NFCNormalizes asserts the input is NFC-normalized
+// before hashing so APFS round-tripping (which often emits NFD) does not
+// split the same logical name into two hash values.
+func TestCanonicalHash_NFCNormalizes(t *testing.T) {
+	nfd := "caf\u0065\u0301.txt"
+	nfc := norm.NFC.String(nfd)
+	if nfc == nfd {
+		t.Fatal("test fixture not actually NFD")
+	}
+	if CanonicalHash(nfd) != CanonicalHash(nfc) {
+		t.Fatal("canonical hash should normalize Unicode to NFC")
+	}
+}
+
+// TestCanonicalHash_DistinctPathsDistinctHashes is a sanity check that
+// folding and normalization do not collapse logically distinct paths.
+func TestCanonicalHash_DistinctPathsDistinctHashes(t *testing.T) {
+	if CanonicalHash("a/b") == CanonicalHash("a/c") {
+		t.Fatal("distinct paths should hash differently")
+	}
+}
+
+// TestNormalize_PopulatesCanonicalHash asserts Normalize fills the
+// CanonicalHash field. Storage layer relies on this for new rows.
+func TestNormalize_PopulatesCanonicalHash(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a", "f.go"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	n, err := Normalize(root, "a/f.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.CanonicalHash != CanonicalHash("a/f.go") {
+		t.Fatalf("CanonicalHash=%q want %q", n.CanonicalHash, CanonicalHash("a/f.go"))
+	}
+}
+
+// TestNormalizeAt_CrossWorktreeYieldsSameCanonical asserts the same
+// logical file claimed from two worktrees produces the same canonical
+// hash even though the realpath-derived PathHash differs. This is the
+// core invariant for cross-worktree conflict detection.
+func TestNormalizeAt_CrossWorktreeYieldsSameCanonical(t *testing.T) {
+	base := t.TempDir()
+	wtA := filepath.Join(base, "a")
+	wtB := filepath.Join(base, "b")
+	if err := os.MkdirAll(filepath.Join(wtA, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(wtB, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wtA, "src", "x.go"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wtB, "src", "x.go"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	nA, err := NormalizeAt([]string{wtA, wtB}, filepath.Join(wtA, "src", "x.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nB, err := NormalizeAt([]string{wtA, wtB}, filepath.Join(wtB, "src", "x.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nA.PathHash == nB.PathHash {
+		t.Fatal("PathHash should differ across worktrees (different realpaths)")
+	}
+	if nA.CanonicalHash != nB.CanonicalHash {
+		t.Fatalf("CanonicalHash should match: %q vs %q", nA.CanonicalHash, nB.CanonicalHash)
+	}
+}
+
 // TestPortableHash_NoBackslashCoercion asserts that PortableHash does NOT
 // fold backslashes to forward slashes (RV3-001). On POSIX, backslash is a
 // valid filename character; aliasing "a\\b" to "a/b" would silently corrupt

@@ -119,7 +119,7 @@ func runRecord(streams Streams, o *recordOpts, args []string) error {
 		return cli.NewError(cli.ExitGeneric, "path_expand_failed", err.Error())
 	}
 	type cp struct {
-		display, real, hash string
+		display, real, hash, canonical string
 	}
 	want := make([]cp, 0, len(abspaths))
 	for _, p := range abspaths {
@@ -131,7 +131,12 @@ func runRecord(streams Streams, o *recordOpts, args []string) error {
 			}
 			return cli.NewError(cli.ExitGeneric, "path_normalize_failed", err.Error())
 		}
-		if _, ok := claimed[n.PathHash]; !ok {
+		// SPEC §14 #8: a record made by a worker in a different worktree
+		// of the same repo carries the canonical hash; the legacy path_hash
+		// can differ from the originally claimed value, so check both.
+		_, byPathHash := claimed[n.PathHash]
+		_, byCanonical := claimed[n.CanonicalHash]
+		if !byPathHash && !byCanonical {
 			// SPEC §18.6: write no event, exit 1.
 			return cli.NewError(cli.ExitGeneric, "unclaimed_path",
 				fmt.Sprintf("path %q is not in intent %s claimed paths; claim it first or use 'agent-ledger adopt'", n.Display, intent.IntentID)).
@@ -141,7 +146,7 @@ func runRecord(streams Streams, o *recordOpts, args []string) error {
 					"finding":   "UNCLAIMED_CHANGE",
 				})
 		}
-		want = append(want, cp{display: n.Display, real: n.RealPath, hash: n.PathHash})
+		want = append(want, cp{display: n.Display, real: n.RealPath, hash: n.PathHash, canonical: n.CanonicalHash})
 	}
 
 	// Optional diff capture.
@@ -174,11 +179,12 @@ func runRecord(streams Streams, o *recordOpts, args []string) error {
 	chPaths := make([]domain.ChangePath, 0, len(want))
 	for _, w := range want {
 		chPaths = append(chPaths, domain.ChangePath{
-			Path:     w.display,
-			RealPath: w.real,
-			PathHash: w.hash,
-			PatchSHA: patchHash,
-			Status:   domain.PathStatusModified,
+			Path:          w.display,
+			RealPath:      w.real,
+			PathHash:      w.hash,
+			CanonicalHash: w.canonical,
+			PatchSHA:      patchHash,
+			Status:        domain.PathStatusModified,
 		})
 	}
 

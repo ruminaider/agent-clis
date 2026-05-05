@@ -93,10 +93,11 @@ func runAdopt(streams Streams, o *adoptOpts, args []string) error {
 			return cli.NewError(cli.ExitGeneric, "path_normalize_failed", err.Error())
 		}
 		chPaths = append(chPaths, domain.ChangePath{
-			Path:     n.Display,
-			RealPath: n.RealPath,
-			PathHash: n.PathHash,
-			Status:   domain.PathStatusUnknown,
+			Path:          n.Display,
+			RealPath:      n.RealPath,
+			PathHash:      n.PathHash,
+			CanonicalHash: n.CanonicalHash,
+			Status:        domain.PathStatusUnknown,
 		})
 	}
 

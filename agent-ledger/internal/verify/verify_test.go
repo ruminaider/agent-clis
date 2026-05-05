@@ -353,6 +353,52 @@ func TestVerify_ActiveConflict(t *testing.T) {
 	}
 }
 
+// TestVerify_SymlinkAlias asserts SPEC §14 #8: when two active intents
+// share a realpath but differ in canonical_path_hash, the verifier
+// surfaces them via SYMLINK_ALIAS so operators can pick one canonical
+// display per logical file. PR2 introduced this check because the
+// switch from realpath-keyed to display-keyed equality lost free
+// symlink-aliasing.
+func TestVerify_SymlinkAlias(t *testing.T) {
+	root, ledger := setupProject(t)
+	store := openTestStore(t, ledger)
+	d := domain.New(store)
+	ctx := context.Background()
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: "pi.worker.a", AgentKind: "worker"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.InsertAssignment(ctx, domain.Assignment{
+		TaskID: "TC", OrchestratorID: "pi.main.test", AssignedAgentID: "pi.worker.a",
+		AllowedPaths: []string{"**"}, ConflictPolicy: domain.PolicyWarn, Reason: "x",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Two display paths that resolve to the same realpath but compute
+	// different canonical hashes. The check is a property of the
+	// stored rows; we synthesize them directly so the test does not
+	// depend on filesystem symlink semantics.
+	sharedReal := filepath.Join(root, "src", "real.go")
+	ipathsA := []domain.IntentPath{{Path: "src/real.go", RealPath: sharedReal, PathHash: "hashA", CanonicalHash: "canonA", AccessMode: domain.AccessWrite}}
+	ipathsB := []domain.IntentPath{{Path: "src/alias.go", RealPath: sharedReal, PathHash: "hashB", CanonicalHash: "canonB", AccessMode: domain.AccessWrite}}
+	if _, err := d.InsertIntent(ctx, domain.Intent{TaskID: "TC", AgentID: "pi.worker.a", AccessMode: domain.AccessWrite, ConflictPolicy: domain.PolicyWarn, Reason: "a"}, ipathsA); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.InsertIntent(ctx, domain.Intent{TaskID: "TC", AgentID: "pi.worker.a", AccessMode: domain.AccessWrite, ConflictPolicy: domain.PolicyWarn, Reason: "b"}, ipathsB); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	rep := runVerify(t, verify.Inputs{
+		Root:                 root,
+		LedgerDirFlag:        ledger,
+		ChangedPathsOverride: []string{},
+	})
+	codes := findingsByCode(rep)
+	if len(codes[verify.CodeSymlinkAlias]) == 0 {
+		t.Fatalf("expected SYMLINK_ALIAS finding; got %+v", rep.Findings)
+	}
+}
+
 func TestVerify_ReviewOnlyWrite(t *testing.T) {
 	root, ledger := setupProject(t)
 	writeFile(t, filepath.Join(root, "src/foo.go"), "x")

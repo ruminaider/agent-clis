@@ -120,6 +120,15 @@ const (
 	CodeConfigError       = "CONFIG_ERROR"
 	CodeStorageError      = "STORAGE_ERROR"
 	CodeSummaryMismatch   = "SUMMARY_MISMATCH"
+	// CodeSymlinkAlias fires when two active intents share the same
+	// realpath but have distinct canonical_path_hash values. The
+	// canonical hash is computed from the display path, so this means
+	// two different display strings resolve through symlinks to the
+	// same physical file. SPEC §14 #8 retains realpath specifically
+	// so this regression is observable rather than silent. Severity is
+	// warning: the work is attributable, but the operator should pick
+	// one canonical path or close one of the intents.
+	CodeSymlinkAlias = "SYMLINK_ALIAS"
 )
 
 // DefaultStaleAfter is the heartbeat-expiry window applied when a
@@ -543,6 +552,17 @@ func Run(ctx context.Context, in Inputs) (*Report, error) {
 		r.Findings = append(r.Findings, r2...)
 	}
 
+	// SYMLINK_ALIAS: two active intents share a realpath but have
+	// distinct canonical_path_hash values, meaning two display strings
+	// resolve through symlinks to the same physical file. Surfaces the
+	// regression introduced when SPEC §14 #8 switched the equality key
+	// from realpath to display.
+	if aliasFindings, err := scanSymlinkAliases(ctx, d); err != nil {
+		return errorReport(StatusError, CodeStorageError, "scan symlink aliases: "+err.Error(), now), nil
+	} else if len(aliasFindings) > 0 {
+		r.Findings = append(r.Findings, aliasFindings...)
+	}
+
 	// Task-mode integrity checks across changes for this task.
 	if in.TaskID != "" {
 		changes, err := d.ChangesForTask(ctx, in.TaskID)
@@ -925,6 +945,75 @@ func intentHasChanges(ctx context.Context, store *sqlite.Store, intentID string)
 // flagged. Pre-v0.1.x code path-checked against an empty set, which
 // produced one finding per sentinel even when the owning intent was
 // alive; that bug is fixed here.
+// scanSymlinkAliases looks for active intents whose intent_paths rows
+// share a realpath but have distinct canonical_path_hash values, which
+// indicates two different display paths resolve through symlinks to the
+// same file. SPEC §14 #8 captures this trade-off explicitly: switching
+// the equality key from realpath to display lost free symlink-aliasing,
+// and this verifier check makes the regression observable.
+func scanSymlinkAliases(ctx context.Context, d *domain.Store) ([]Finding, error) {
+	rows, err := d.S.DB().QueryContext(ctx, `
+		SELECT ip.intent_id, ip.path, ip.realpath, COALESCE(ip.canonical_path_hash, '')
+		FROM intent_paths ip
+		JOIN intents i ON i.intent_id = ip.intent_id
+		WHERE i.status = 'active' AND ip.realpath != ''
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type row struct {
+		intentID, path, realpath, canonical string
+	}
+	byReal := map[string][]row{}
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.intentID, &r.path, &r.realpath, &r.canonical); err != nil {
+			return nil, err
+		}
+		if r.canonical == "" {
+			// Pre-backfill rows do not have a canonical hash yet, so
+			// the check would mis-flag every legacy realpath duplicate.
+			// Skip them; the operator should run `agent-ledger migrate`
+			// to populate the column before this finding is meaningful.
+			continue
+		}
+		byReal[r.realpath] = append(byReal[r.realpath], r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var findings []Finding
+	for real, group := range byReal {
+		if len(group) < 2 {
+			continue
+		}
+		canonicals := map[string]struct{}{}
+		displays := make([]string, 0, len(group))
+		intents := make([]string, 0, len(group))
+		for _, r := range group {
+			canonicals[r.canonical] = struct{}{}
+			displays = append(displays, r.path)
+			intents = append(intents, r.intentID)
+		}
+		if len(canonicals) < 2 {
+			continue
+		}
+		findings = append(findings, Finding{
+			Code:     CodeSymlinkAlias,
+			Severity: SevWarning,
+			Message:  fmt.Sprintf("%d active intents reference different display paths that resolve to the same file %s; conflict detection cannot collapse them", len(group), real),
+			Details: map[string]any{
+				"realpath":   real,
+				"displays":   displays,
+				"intent_ids": intents,
+			},
+			SuggestedRecovery: "Pick one canonical display path per logical file. Close one of the intents or rename the symlink target so callers converge on the same path.",
+		})
+	}
+	return findings, nil
+}
+
 func scanExclusiveLocks(ctx context.Context, d *domain.Store, ledgerDir string, intents []domain.Intent) ([]Finding, error) {
 	dir := filepath.Join(ledgerDir, "locks")
 	entries, err := os.ReadDir(dir)

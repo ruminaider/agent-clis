@@ -121,7 +121,16 @@ func Run(ctx context.Context, store *sqlite.Store, opts Options) (Result, error)
 		case err == nil:
 			res.Orphaned = append(res.Orphaned, si.IntentID)
 			for _, p := range exclusivePaths {
-				_ = locks.RemoveSentinel(lockDir, p.PathHash)
+				// SPEC §14 #8: sweep both the canonical and legacy
+				// sentinel files. Either may exist depending on when
+				// the claim was taken relative to the canonical hash
+				// migration.
+				if p.CanonicalHash != "" {
+					_ = locks.RemoveSentinel(lockDir, p.CanonicalHash)
+				}
+				if p.PathHash != "" {
+					_ = locks.RemoveSentinel(lockDir, p.PathHash)
+				}
 			}
 		case errors.Is(err, sqlite.ErrIntentNotActive):
 			res.Skipped = append(res.Skipped, si.IntentID)

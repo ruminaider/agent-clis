@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -16,6 +17,7 @@ import (
 type migrateOpts struct {
 	env    envOpener
 	status bool
+	force  bool
 	asJSON bool
 }
 
@@ -29,9 +31,15 @@ type migrateOpts struct {
 func NewMigrateCommand(streams Streams) *cobra.Command {
 	o := &migrateOpts{env: envOpener{streams: streams}}
 	cmd := &cobra.Command{
-		Use:           "migrate",
-		Short:         "Apply schema migrations",
-		Long:          "Apply schema migrations to the agent-ledger SQLite database. Idempotent: re-running with no pending migrations is a no-op.",
+		Use:   "migrate",
+		Short: "Apply schema migrations",
+		Long: "Apply schema migrations to the agent-ledger SQLite database, then\n" +
+			"backfill canonical_path_hash for any rows still keyed only by the\n" +
+			"legacy realpath-based path_hash. The backfill refuses to run while\n" +
+			"any intent is active; pass --force to proceed despite the brief\n" +
+			"lock-correctness gap that introduces (SPEC §14 #8, §28).\n\n" +
+			"Idempotent: re-running with no pending migrations or no NULL\n" +
+			"canonical_path_hash rows is a no-op.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -42,6 +50,7 @@ func NewMigrateCommand(streams Streams) *cobra.Command {
 	addStoreFlags(cmd, &o.env)
 	f := cmd.Flags()
 	f.BoolVar(&o.status, "status", false, "Report applied and pending migrations without applying any")
+	f.BoolVar(&o.force, "force", false, "Backfill canonical_path_hash even when active intents exist")
 	f.BoolVar(&o.asJSON, "json", false, "Render output as JSON")
 	return cmd
 }
@@ -66,9 +75,29 @@ func runMigrate(streams Streams, o *migrateOpts) error {
 	}
 	defer store.Close()
 
+	var bf migrations.BackfillResult
 	if !o.status {
 		if err := store.Migrator().Up(ctx); err != nil {
 			return cli.NewError(cli.ExitStorageIO, "migrate_failed", err.Error())
+		}
+		// SPEC §14 #8: backfill canonical_path_hash for legacy rows.
+		// The schema migration only adds the column; this Go-side step
+		// rewrites the value from each row's `path`. Idempotent.
+		var bferr error
+		bf, bferr = migrations.BackfillCanonicalHash(ctx, store.DB(), migrations.BackfillOptions{Force: o.force})
+		if bferr != nil {
+			switch {
+			case errors.Is(bferr, migrations.ErrActiveIntents):
+				return cli.NewError(cli.ExitConflict, "backfill_blocked_active_intents",
+					"refusing to backfill canonical_path_hash while "+bf.SkipReason+" exist; close them or pass --force").
+					WithDetails(map[string]any{"finding": "BACKFILL_BLOCKED"})
+			case errors.Is(bferr, migrations.ErrMalformedPaths):
+				return cli.NewError(cli.ExitStorageIO, "backfill_malformed_paths",
+					fmt.Sprintf("%d row(s) have malformed `path` values; inspect and repair before re-running", len(bf.MalformedPaths))).
+					WithDetails(map[string]any{"malformed": flattenMalformed(bf.MalformedPaths)})
+			default:
+				return cli.NewError(cli.ExitStorageIO, "backfill_failed", bferr.Error())
+			}
 		}
 	}
 
@@ -84,11 +113,18 @@ func runMigrate(streams Streams, o *migrateOpts) error {
 			"applied":        h.Applied,
 			"pending":        pendingForJSON(h.Pending),
 			"status_only":    o.status,
+			"backfill": map[string]any{
+				"intent_paths": bf.IntentPathsBackfilled,
+				"change_paths": bf.ChangePathsBackfilled,
+				"conflicts":    bf.ConflictsBackfilled,
+			},
 		})
 	}
 
-	fmt.Fprintf(streams.Out, "schema_version=%d ledger_dir=%s\n",
-		h.SchemaVersion, res.LedgerDir)
+	fmt.Fprintf(streams.Out,
+		"schema_version=%d ledger_dir=%s backfill_intent_paths=%d backfill_change_paths=%d backfill_conflicts=%d\n",
+		h.SchemaVersion, res.LedgerDir,
+		bf.IntentPathsBackfilled, bf.ChangePathsBackfilled, bf.ConflictsBackfilled)
 	if len(h.Applied) > 0 {
 		fmt.Fprintf(streams.Out, "applied (%d):\n", len(h.Applied))
 		for _, a := range h.Applied {
@@ -112,6 +148,21 @@ func pendingForJSON(in []migrations.Migration) []map[string]any {
 		out = append(out, map[string]any{
 			"version": m.Version,
 			"name":    m.Name,
+		})
+	}
+	return out
+}
+
+// flattenMalformed renders the canonical-hash backfill manifest as a
+// JSON-friendly slice for the CLI error envelope.
+func flattenMalformed(in []migrations.MalformedPath) []map[string]any {
+	out := make([]map[string]any, 0, len(in))
+	for _, m := range in {
+		out = append(out, map[string]any{
+			"table":   m.Table,
+			"row_key": m.RowKey,
+			"path":    m.Path,
+			"reason":  m.Reason,
 		})
 	}
 	return out
