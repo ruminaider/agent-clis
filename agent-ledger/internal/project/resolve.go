@@ -67,6 +67,14 @@ type Resolution struct {
 	Policy          *config.Policy
 	LedgerDir       string
 	LedgerDirSource Source
+	// Roots are every realpath-resolved directory considered "in the
+	// project" for path scope checks. For git repos, this is the set of
+	// worktree toplevels sharing the same common dir, with Root listed
+	// first when present. For non-git projects, this is just [Root].
+	// Path normalization picks the longest-prefix match across these
+	// roots so that paths inside any worktree of the same repo are
+	// accepted regardless of the invocation cwd.
+	Roots []string
 }
 
 // Resolve performs the full discovery flow described in SPEC §8 and §8.1.
@@ -120,8 +128,51 @@ func Resolve(opts Options) (Resolution, error) {
 	})
 
 	res.LedgerDir, res.LedgerDirSource = resolveLedgerDir(opts, res.Identity, gi, ptr)
+	res.Roots = resolveRoots(root, gi)
 
 	return res, nil
+}
+
+// resolveRoots returns the set of project roots used for path scope
+// checks. For git repos it enumerates worktrees of the same common dir
+// (best-effort; falls back to [root] if git fails). For non-git projects
+// it returns just [root]. The supplied root is always present and listed
+// first so relative-path joins remain stable.
+func resolveRoots(root string, gi git.Info) []string {
+	rootReal := realpath(root)
+	if !gi.IsRepo {
+		return []string{rootReal}
+	}
+	tops, err := git.Worktrees(rootReal)
+	if err != nil || len(tops) == 0 {
+		return []string{rootReal}
+	}
+	// Place rootReal first when it is one of the toplevels; otherwise
+	// prepend it so relative-path joins still work from arbitrary cwds
+	// (subdirectories of the main checkout, for example).
+	out := make([]string, 0, len(tops)+1)
+	seen := map[string]struct{}{}
+	if _, ok := indexOf(tops, rootReal); !ok {
+		out = append(out, rootReal)
+		seen[rootReal] = struct{}{}
+	}
+	for _, t := range tops {
+		if _, dup := seen[t]; dup {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	return out
+}
+
+func indexOf(ss []string, want string) (int, bool) {
+	for i, s := range ss {
+		if s == want {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 func resolveLedgerDir(opts Options, id Identity, gi git.Info, ptr *config.Pointer) (string, Source) {

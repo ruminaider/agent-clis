@@ -34,6 +34,51 @@ func TestDiscover_NonGit(t *testing.T) {
 	}
 }
 
+func TestWorktrees_NonGit(t *testing.T) {
+	gitAvailable(t)
+	dir := t.TempDir()
+	tops, err := Worktrees(dir)
+	if err != nil {
+		t.Fatalf("Worktrees: %v", err)
+	}
+	if len(tops) != 0 {
+		t.Fatalf("expected no worktrees, got %v", tops)
+	}
+}
+
+func TestWorktrees_MainPlusLinked(t *testing.T) {
+	gitAvailable(t)
+	primary := t.TempDir()
+	runOrFatal(t, primary, "git", "init", "-q")
+	runOrFatal(t, primary, "git", "-c", "user.email=t@t", "-c", "user.name=t",
+		"commit", "--allow-empty", "-m", "init", "--quiet")
+
+	linked := filepath.Join(t.TempDir(), "linked")
+	runOrFatal(t, primary, "git", "worktree", "add", "-b", "feature", linked)
+
+	tops, err := Worktrees(primary)
+	if err != nil {
+		t.Fatalf("Worktrees: %v", err)
+	}
+	if len(tops) != 2 {
+		t.Fatalf("expected 2 worktrees, got %d: %v", len(tops), tops)
+	}
+	primaryReal, _ := filepath.EvalSymlinks(primary)
+	linkedReal, _ := filepath.EvalSymlinks(linked)
+	found := map[string]bool{tops[0]: true, tops[1]: true}
+	if !found[primaryReal] || !found[linkedReal] {
+		t.Fatalf("expected %q and %q in tops, got %v", primaryReal, linkedReal, tops)
+	}
+	// Calling from the linked checkout should produce the same set.
+	tops2, err := Worktrees(linked)
+	if err != nil {
+		t.Fatalf("Worktrees from linked: %v", err)
+	}
+	if len(tops2) != 2 {
+		t.Fatalf("expected 2 from linked, got %d: %v", len(tops2), tops2)
+	}
+}
+
 func TestDiscover_Repo(t *testing.T) {
 	gitAvailable(t)
 	dir := t.TempDir()

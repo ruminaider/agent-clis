@@ -132,6 +132,95 @@ func TestNormalize_SlashSeparators(t *testing.T) {
 	}
 }
 
+// TestNormalizeAt_LongestPrefixWins covers the multi-root scope expansion
+// used for git worktrees (PR1: worktree-aware paths). When the same input
+// could resolve under two roots, the longer realpath prefix wins, so a
+// path under /repo/.worktrees/foo/sub picks the worktree root rather than
+// the main checkout root.
+func TestNormalizeAt_LongestPrefixWins(t *testing.T) {
+	base := t.TempDir()
+	main := filepath.Join(base, "main")
+	wt := filepath.Join(base, "main", ".worktrees", "feature")
+	if err := os.MkdirAll(filepath.Join(wt, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := filepath.Join(wt, "src", "x.go")
+	if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Main is listed first; if matching were first-wins instead of
+	// longest-prefix, the display would be ".worktrees/feature/src/x.go".
+	n, err := NormalizeAt([]string{main, wt}, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.Display != "src/x.go" {
+		t.Fatalf("Display=%q want src/x.go", n.Display)
+	}
+}
+
+func TestNormalizeAt_FallbackToFirstRootForRelative(t *testing.T) {
+	root := t.TempDir()
+	other := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a", "f.go"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	n, err := NormalizeAt([]string{root, other}, "a/f.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.Display != "a/f.go" {
+		t.Fatalf("Display=%q", n.Display)
+	}
+}
+
+func TestNormalizeAt_OutsideAllRoots(t *testing.T) {
+	r1 := t.TempDir()
+	r2 := t.TempDir()
+	stray := filepath.Join(t.TempDir(), "x")
+	if err := os.WriteFile(stray, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := NormalizeAt([]string{r1, r2}, stray)
+	if !IsOutsideProject(err) {
+		t.Fatalf("expected OutsideProjectError, got %v", err)
+	}
+}
+
+func TestNormalizeAt_EmptyRootsRejected(t *testing.T) {
+	if _, err := NormalizeAt(nil, "/tmp"); err == nil {
+		t.Fatal("expected error for empty roots")
+	}
+	if _, err := NormalizeAt([]string{"", "  "}, "/tmp"); err == nil {
+		t.Fatal("expected error when every root is blank")
+	}
+}
+
+func TestNormalizeAt_SingleRootMatchesNormalize(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := filepath.Join(root, "a", "f.go")
+	if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	n1, err := Normalize(root, "a/f.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n2, err := NormalizeAt([]string{root}, "a/f.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n1.Display != n2.Display || n1.PathHash != n2.PathHash {
+		t.Fatalf("single-root NormalizeAt diverged from Normalize: %#v vs %#v", n1, n2)
+	}
+}
+
 // TestPortableHash_NoBackslashCoercion asserts that PortableHash does NOT
 // fold backslashes to forward slashes (RV3-001). On POSIX, backslash is a
 // valid filename character; aliasing "a\\b" to "a/b" would silently corrupt

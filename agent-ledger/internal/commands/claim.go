@@ -110,7 +110,9 @@ func runClaim(streams Streams, o *claimOpts, args []string) error {
 		policy = domain.PolicyWarn
 	}
 
-	// Normalize requested paths.
+	// Normalize requested paths against every project root (worktree
+	// toplevels for git repos), so a claim made from cwd in checkout A
+	// can target an absolute path inside sibling worktree B.
 	abspaths, err := expandPaths(res.Root, args)
 	if err != nil {
 		return cli.NewError(cli.ExitGeneric, "path_expand_failed", err.Error())
@@ -122,7 +124,7 @@ func runClaim(streams Streams, o *claimOpts, args []string) error {
 	}
 	requested := make([]req, 0, len(abspaths))
 	for _, p := range abspaths {
-		n, err := paths.Normalize(res.Root, p)
+		n, err := paths.NormalizeAt(res.Roots, p)
 		if err != nil {
 			if paths.IsOutsideProject(err) {
 				return cli.NewError(cli.ExitConflict, "path_outside_project", err.Error()).

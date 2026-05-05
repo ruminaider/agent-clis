@@ -123,7 +123,7 @@ func runRecord(streams Streams, o *recordOpts, args []string) error {
 	}
 	want := make([]cp, 0, len(abspaths))
 	for _, p := range abspaths {
-		n, err := paths.Normalize(res.Root, p)
+		n, err := paths.NormalizeAt(res.Roots, p)
 		if err != nil {
 			if paths.IsOutsideProject(err) {
 				return cli.NewError(cli.ExitGeneric, "path_outside_project", err.Error()).

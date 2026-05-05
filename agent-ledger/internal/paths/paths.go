@@ -137,6 +137,105 @@ func evalSymlinksBestEffort(p string) string {
 	}
 }
 
+// NormalizeAt is a multi-root variant of Normalize. It accepts a list of
+// candidate project roots (typically the toplevels of every git worktree
+// sharing a common dir) and picks the one that is the longest realpath
+// prefix of the resolved input path. The display path is computed
+// relative to that chosen root.
+//
+// Roots are tried in order; ties are broken by longest match length, then
+// by appearance order. An input that escapes every root returns
+// OutsideProjectError keyed to the first root, matching the historical
+// single-root error shape.
+//
+// Empty roots are silently skipped. An empty roots slice yields an error.
+func NormalizeAt(roots []string, input string) (Normalized, error) {
+	if len(roots) == 0 {
+		return Normalized{}, errors.New("paths: no roots")
+	}
+	if input == "" {
+		return Normalized{}, errors.New("paths: empty path")
+	}
+
+	// Resolve each root to a realpath up front so prefix matching is
+	// stable. Skip empties; preserve order for tie breaks.
+	type rootEntry struct {
+		display string // realpath form used for filepath.Rel and length compare
+	}
+	rrs := make([]rootEntry, 0, len(roots))
+	var firstReal string
+	for _, r := range roots {
+		if strings.TrimSpace(r) == "" {
+			continue
+		}
+		abs, err := filepath.Abs(r)
+		if err != nil {
+			continue
+		}
+		real := evalSymlinksBestEffort(abs)
+		if firstReal == "" {
+			firstReal = real
+		}
+		rrs = append(rrs, rootEntry{display: real})
+	}
+	if len(rrs) == 0 {
+		return Normalized{}, errors.New("paths: no usable roots")
+	}
+
+	// Resolve the input. Use the first root as the base for relative
+	// inputs; this preserves the historical "join with cwd-derived root"
+	// behavior.
+	abs := input
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(firstReal, abs)
+	}
+	abs, err := filepath.Abs(abs)
+	if err != nil {
+		return Normalized{}, err
+	}
+	real := evalSymlinksBestEffort(abs)
+	realNFC := norm.NFC.String(real)
+
+	// Pick the longest matching root prefix. A root matches when real is
+	// equal to it or starts with root + separator.
+	sep := string(filepath.Separator)
+	bestRoot := ""
+	bestLen := -1
+	for _, e := range rrs {
+		switch {
+		case real == e.display:
+			if len(e.display) > bestLen {
+				bestRoot = e.display
+				bestLen = len(e.display)
+			}
+		case strings.HasPrefix(real, e.display+sep):
+			if len(e.display) > bestLen {
+				bestRoot = e.display
+				bestLen = len(e.display)
+			}
+		}
+	}
+	if bestRoot == "" {
+		return Normalized{}, &OutsideProjectError{Root: firstReal, Path: real}
+	}
+
+	rel, err := filepath.Rel(bestRoot, real)
+	if err != nil {
+		return Normalized{}, fmt.Errorf("paths: rel: %w", err)
+	}
+	if rel == "." {
+		rel = ""
+	}
+	display := filepath.ToSlash(norm.NFC.String(rel))
+
+	sum := sha256.Sum256([]byte(realNFC))
+	return Normalized{
+		Display:  display,
+		RealPath: realNFC,
+		PathHash: hex.EncodeToString(sum[:]),
+	}, nil
+}
+
 // Hash returns sha256 hex of the NFC-normalized realpath of p.
 func Hash(p string) string {
 	abs, _ := filepath.Abs(p)
