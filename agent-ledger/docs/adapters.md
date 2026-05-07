@@ -26,8 +26,11 @@ wrapper, future Claude Code hooks) implements the same shape.
 
 ## Task id resolution
 
-At session bootstrap the adapter resolves a task id through this
-chain (first match wins):
+At session bootstrap the adapter first checks whether the process is a
+pi subagent child. When `PI_SUBAGENT_CHILD=1` is set in the environment,
+the bootstrap selects the dedicated `subagent` source described below
+and short-circuits the rest of the chain. Otherwise the adapter
+resolves a task id through this chain (first match wins):
 
 1. **`--task-id` flag** supplied by the orchestrator. Marked
    `TASK_SOURCE=flag`. The bootstrap first checks for an active
@@ -63,6 +66,56 @@ Sources 3-6 are derived; the bootstrap writes an assignment with a
 marker in the reason text so reviewers can audit how the task id was
 sourced.
 
+### Source: `subagent` (pi subagent children)
+
+When the pi extension loads in a child process and
+`process.env.PI_SUBAGENT_CHILD === "1"`, the bootstrap selects
+`TASK_SOURCE=subagent` and skips the chain above. This source is
+exclusive to pi subagents children and runs at extension load time, not
+lazily on first tool call: the assignment row exists before the child
+can issue any `claim`, `record`, `heartbeat`, or `close`. Children that
+never invoke a tool still leave a row.
+
+The bootstrap requires four inputs (any missing input is a hard fail
+with a clear diagnostic, no fallback to `branch` or `auto`):
+
+- `AGENT_LEDGER_TASK_ID`: the inherited parent task id.
+- `PI_SUBAGENT_CHILD_AGENT`: the child agent name from pi-subagents.
+- `PI_SUBAGENT_RUN_ID`: the run id from pi-subagents.
+- `PI_SUBAGENT_CHILD_INDEX`: the child index from pi-subagents.
+
+The child task id is deterministic, with no random suffix and no
+timestamp:
+
+```
+<parent_task>/<child_agent>/<run_id>-<child_index>
+```
+
+where `<child_index>` is `PI_SUBAGENT_CHILD_INDEX` rendered as a decimal
+integer string with no padding.
+
+The child `AGENT_ID` is also deterministic:
+
+```
+agent:pi:subagent:<run_id>:<child_index>
+```
+
+This child `AGENT_ID` is the value the child uses for its own `claim`,
+`record`, `heartbeat`, and `close` events. It is distinct from the
+inherited parent `AGENT_ID`. The bootstrap captures the parent
+`AGENT_ID` separately and passes it to
+`agent-ledger assign --orchestrator <parent-agent-id>`, so the
+assignment row's `orchestrator_id` records the parent identity while
+`assigned_agent_id` records the child identity. The same logical child
+on a respawn (same `run_id`, same `child_index`) reuses both ids, so
+`assign --if-absent` is a no-op and `verify` does not surface
+`AGENT_MISMATCH` on the retry.
+
+The bootstrap calls `agent-ledger assign --if-absent` with the
+structured metadata schema (see the audit-trail section below) and the
+`subagent` reason marker source. See SPEC.md section 21.1 for the full
+invariant.
+
 The pi extension passes `--cwd $(process.cwd())` and (when
 `AGENT_LEDGER_DETECT_PR=1`) `--detect-pr 1` to the bootstrap, then
 reads `AGENT_LEDGER_TASK_SOURCE` from the bootstrap output and only
@@ -97,8 +150,9 @@ agent-ledger assignments --task "$TASK_ID" --status active --json
 
 Do not rely on explicit-task bootstrap repair for this flow. Repair is
 an emergency fallback for process launch mistakes, not an orchestration
-protocol. The pi `subagent` tool is different: its adapter hook creates
-child assignments before the child process starts.
+protocol. The pi `subagent` tool is different: each subagent child
+creates its own assignment row from its own session bootstrap, eagerly,
+before the child issues any tool call.
 
 ## Auto-derived task ids: solving "the orchestrator forgot"
 
@@ -143,10 +197,10 @@ Adapters write the audit signal in two complementary forms:
   [auto-assigned by <by> auto-derived task=<id> agent=<id>] <human reason>
   ```
 
-- **Harness-derived** (task id sourced from PR, branch, or detached HEAD):
+- **Harness-derived** (task id sourced from PR, branch, detached HEAD, or pi subagent child bootstrap):
 
   ```
-  [harness-derived by <by> source=<branch|pr|detached> task=<id> agent=<id>] <human reason>
+  [harness-derived by <by> source=<branch|pr|detached|subagent> task=<id> agent=<id>] <human reason>
   ```
 
 Assignments without either marker prefix were supplied explicitly
@@ -190,11 +244,41 @@ classifies any reason starting with `[auto-assigned` or
 Verify emits an `AUTO_ASSIGNED_TASK` warning for adapter-derived or
 repaired tasks so CI can surface them without blocking the merge.
 `MISSING_ASSIGNMENT` remains reserved for the true no-assignment-row
-case.
+case. The `subagent` source is treated separately: subagent children
+are orchestrator-initiated even though the assignment row is written
+from the child's bootstrap, so verify suppresses `AUTO_ASSIGNED_TASK`
+for any assignment whose `metadata.dispatch_origin` is
+`"pi-subagent-bootstrap"`.
+
+### Subagent child metadata schema
+
+A pi subagent child writes its own assignment with a fixed metadata
+shape so verify, audit, and cross-tool correlation can read it without
+regex-matching reason text. The `agent-ledger assign --metadata` JSON
+payload must include exactly these fields:
+
+- `parent_task`: string. Inherited parent task id. When the child
+  resolves a different ledger than its parent (different `cwd` per
+  task), this field is informational cross-ledger linkage. It is not a
+  relational foreign key, and `verify` running inside the child's
+  ledger cannot follow it back to the parent's assignment in the
+  parent's ledger.
+- `parent_agent_id`: string. Inherited parent `AGENT_ID`. This is the
+  same value the bootstrap passes to `assign --orchestrator`.
+- `subagent_run_id`: string. `PI_SUBAGENT_RUN_ID` verbatim.
+- `subagent_child_index`: number (decimal integer, JSON number type).
+  `PI_SUBAGENT_CHILD_INDEX` parsed as int.
+- `subagent_child_agent`: string. `PI_SUBAGENT_CHILD_AGENT` verbatim.
+- `dispatch_origin`: string literal `"pi-subagent-bootstrap"`. This
+  is the discriminator verify reads to classify the row as a subagent
+  child and suppress `AUTO_ASSIGNED_TASK`.
+
+Reason text remains an audit hint. Metadata is the authoritative
+surface for programmatic readers.
 
 ### Replay idempotency
 
-Bootstrap calls `agent-ledger assign --if-absent` for non-explicit sources (pr, branch, detached, and auto), so repeated pi launches on the same branch do not create duplicate `task.assigned` events. Dedupe is scoped to `(task_id, assigned_agent_id)`: a genuinely new `AGENT_ID` for the same branch still creates a new assignment, which is correct because the agent is new. Changes to `--allow`, `--forbid`, or `--policy` always create a new assignment, so policy drift remains visible to reviewers. Explicit `--task-id` and `AGENT_LEDGER_TASK_ID` paths first query for an active assignment. They skip assignment when one exists, fail when none exists, and create a repair assignment only when `AGENT_LEDGER_REPAIR_EXPLICIT_ASSIGNMENT=1` and `AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW` are set.
+Bootstrap calls `agent-ledger assign --if-absent` for non-explicit sources (pr, branch, detached, auto, and subagent), so repeated pi launches on the same branch do not create duplicate `task.assigned` events. For the `subagent` source, both the child task id and the child `AGENT_ID` are deterministic functions of `(parent_task, child_agent, run_id, child_index)`, so a respawn of the same logical child is a true no-op on `assign --if-absent`. Dedupe is scoped to `(task_id, assigned_agent_id)`: a genuinely new `AGENT_ID` for the same branch still creates a new assignment, which is correct because the agent is new. Changes to `--allow`, `--forbid`, or `--policy` always create a new assignment, so policy drift remains visible to reviewers. Explicit `--task-id` and `AGENT_LEDGER_TASK_ID` paths first query for an active assignment. They skip assignment when one exists, fail when none exists, and create a repair assignment only when `AGENT_LEDGER_REPAIR_EXPLICIT_ASSIGNMENT=1` and `AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW` are set.
 
 ### Future audit work
 
@@ -229,9 +313,27 @@ Every adapter runs the same bootstrap once per session, idempotent:
    first claim. If emergency repair is explicitly enabled, write a
    repair assignment with an `[auto-assigned ...]` reason marker,
    `metadata.explicit_missing_assignment == true`, and the
-   operator-supplied `AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW` scope.
+   operator-supplied `AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW` scope. For
+   source `subagent`, write a fresh assignment with `agent-ledger
+   assign --if-absent --task <child-task-id> --orchestrator
+   <parent-agent-id> --agent <child-agent-id>`, the structured metadata
+   schema from the audit-trail section above, and a reason that starts
+   with the `subagent` harness-derived marker. The bootstrap derives
+   the child task id and the child `AGENT_ID` deterministically from
+   `(parent_task, child_agent, run_id, child_index)` before issuing the
+   assign call.
 4. Export the resolved env vars for child processes. Shell callers use
    export lines; pi uses the helper's `--json` mode.
+
+For subagent children, step 1 is constrained: the child `AGENT_ID` is
+not derived from the generic non-PII opaque path. It is the
+deterministic format `agent:pi:subagent:<run_id>:<child_index>`,
+which preserves identity across retries of the same logical child. The
+inherited parent `AGENT_ID` is captured into a separate variable and
+passed only on `assign --orchestrator`. Step 2 is also constrained:
+the `subagent` source short-circuits the chain in "Task id resolution"
+above. Step 3 must complete before any child-side `claim`, `record`,
+`heartbeat`, or `close`.
 
 The shared shell helper `adapters/shared/session-bootstrap.sh`
 implements this and is sourced by both the pi extension launcher and
@@ -252,17 +354,19 @@ the babysitter wrapper.
   that became newly dirty against an "auto-bash" intent.
   `AGENT_LEDGER_BASH_MODE=block` blocks all bash tool calls because
   shell mutation detection is not complete.
-- Hooks `tool_call` for `subagent`. Auto-creates a child task id and
-  passes it to the subagent via env so the child's pi extension picks
-  up where the parent left off. The extension sets `process.env` for
-  the duration of the subagent tool call because current pi-subagents
-  spawns children from `process.env`; it also keeps `event.input.env`
-  populated for future subagent versions. Child assignment is written
-  from the requested subagent cwd when one is supplied, so cross-repo
-  subagents use the same ledger their child bootstrap will resolve.
-  Overlapping subagent calls are blocked while this temporary env
-  override is active. This is how subagent inheritance is enforced
-  deterministically.
+- Hooks `tool_call` for `subagent`. The hook is observation-only: it
+  records that a dispatch was initiated (parent task id, child agent
+  name, dispatch timestamp) for correlation and telemetry. It does not
+  mutate `process.env`, does not call `agent-ledger assign`, and does
+  not block the dispatch. Each spawned child runs its own session
+  bootstrap, detects `PI_SUBAGENT_CHILD=1`, and self-assigns its own
+  task with a deterministic child task id and a deterministic child
+  `AGENT_ID`. The child writes the assignment row in the ledger its
+  own `cwd` resolves, so cross-repo subagents land in the correct
+  ledger; in that case `metadata.parent_task` is informational
+  cross-ledger linkage rather than a relational guarantee. See SPEC.md
+  section 21.1 and the `subagent` source above for the full child
+  bootstrap contract.
 - Hooks `agent_end` and `session_end` to close any open intents.
 
 ### babysitter wrapper (`adapters/babysitter/define-ledger-task.js`)
