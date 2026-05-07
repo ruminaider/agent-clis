@@ -50,6 +50,67 @@ PYEXT
 #    PI_SUBAGENT_CHILD === "1".
 grep -n 'process.env.PI_SUBAGENT_CHILD === "1"' adapters/pi/agent-ledger.ts >/dev/null
 
+# 2a. shouldBlockBootstrapFailure() must hard-fail in child mode so a
+#     misconfigured subagent child cannot soft-fail past bootstrap and
+#     write files without a durable assignment row. The check appears
+#     inside the function body alongside the existing
+#     AGENT_LEDGER_REQUIRE_TASK and AGENT_LEDGER_TASK_ID checks. See
+#     `tasks/option-d-context.md` decision 3.
+python3 - <<'PYEXT'
+from pathlib import Path
+import re
+import sys
+
+src = Path('adapters/pi/agent-ledger.ts').read_text()
+m = re.search(r'function\s+shouldBlockBootstrapFailure\s*\([^)]*\)\s*:\s*boolean\s*\{(.*?)\n\}', src, re.S)
+if not m:
+    sys.exit('shouldBlockBootstrapFailure() not found')
+body = m.group(1)
+if 'PI_SUBAGENT_CHILD' not in body or '"1"' not in body:
+    sys.exit('shouldBlockBootstrapFailure must hard-fail when PI_SUBAGENT_CHILD === "1"')
+if 'AGENT_LEDGER_REQUIRE_TASK' not in body or 'AGENT_LEDGER_TASK_ID' not in body:
+    sys.exit('shouldBlockBootstrapFailure must keep its existing AGENT_LEDGER_REQUIRE_TASK / AGENT_LEDGER_TASK_ID checks')
+PYEXT
+
+# 2b. Eager child bootstrap rejection must persist on the BootstrapState
+#     so the first `tool_call` hook can observe it and block. Without
+#     this the rejection only logs to stderr and subsequent tool calls
+#     proceed as if bootstrap had not been attempted, which violates
+#     the locked decision 3 contract.
+python3 - <<'PYEXT'
+from pathlib import Path
+import re
+import sys
+
+src = Path('adapters/pi/agent-ledger.ts').read_text()
+if 'eagerBootstrapError' not in src:
+    sys.exit('BootstrapState must track an eager bootstrap failure (e.g. eagerBootstrapError)')
+# The state field must be declared on the interface.
+m = re.search(r'interface\s+BootstrapState\s*\{(.*?)\n\}', src, re.S)
+if not m or 'eagerBootstrapError' not in m.group(1):
+    sys.exit('BootstrapState interface must declare eagerBootstrapError')
+# The eager bootstrap rejection path must assign to it.
+m = re.search(r'PI_SUBAGENT_CHILD === "1"\s*\)\s*\{(.*?)\n  \}', src, re.S)
+if not m or 'state.eagerBootstrapError' not in m.group(1):
+    sys.exit('eager bootstrap rejection must persist state.eagerBootstrapError')
+# The tool_call hook must read it and return block: true under
+# shouldBlockBootstrapFailure() semantics.
+hook_start = src.index('pi.on("tool_call"')
+hook = src[hook_start:hook_start + 4000]
+if 'state.eagerBootstrapError' not in hook:
+    sys.exit('tool_call hook must read state.eagerBootstrapError')
+if 'shouldBlockBootstrapFailure()' not in hook:
+    sys.exit('tool_call hook must gate the eager-failure block on shouldBlockBootstrapFailure()')
+if 'block: true' not in hook:
+    sys.exit('tool_call hook must return block: true on eager bootstrap failure')
+# The block reason should connect the failure back to the bootstrap path.
+block_marker = 'block: true'
+block_idx = hook.index(block_marker)
+window = hook[max(0, block_idx - 200):block_idx + 200]
+if 'agent-ledger bootstrap failed' not in window and 'PI_SUBAGENT_CHILD' not in window and 'subagent' not in window.lower():
+    sys.exit('eager-failure block reason must mention agent-ledger bootstrap, subagent, or PI_SUBAGENT_CHILD')
+PYEXT
+
 # 3. The subagent `tool_call` block exists, but its body is
 #    observation-only: no env mutation, no parent-side assign call,
 #    no overlap guard, and no `block: true` return.

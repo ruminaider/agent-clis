@@ -57,6 +57,12 @@ interface BootstrapState {
   resolvedTaskSource: TaskSource | null;
   autoAssigned: boolean;
   bootstrapPromise: Promise<void> | null;
+  // Persists a fatal error from the eager child bootstrap path so the
+  // first `tool_call` hook can observe it and block. The lazy
+  // bootstrap path on the hook itself does not need this field because
+  // its rejection is awaited synchronously inside the hook. See
+  // `tasks/option-d-context.md` decision 3.
+  eagerBootstrapError: Error | null;
   liveClaims: Map<string, IntentRef>;
   bashSnapshots: Map<string, Set<string>>;
 }
@@ -111,6 +117,12 @@ function errorMessage(err: any): string {
 }
 
 function shouldBlockBootstrapFailure(): boolean {
+  // Hard-fail in subagent child mode. The harness has identified this
+  // process as a self-assigning child (see `adapters/shared/session-
+  // bootstrap.sh` and `tasks/option-d-context.md` decision 3), so
+  // ledger enforcement is mandatory: a misconfigured child must not
+  // proceed to write files without a durable assignment row.
+  if (process.env.PI_SUBAGENT_CHILD === "1") return true;
   return process.env.AGENT_LEDGER_REQUIRE_TASK === "1" || Boolean(process.env.AGENT_LEDGER_TASK_ID);
 }
 
@@ -299,6 +311,7 @@ export default function (pi: ExtensionAPI) {
     resolvedTaskSource: null,
     autoAssigned: false,
     bootstrapPromise: null,
+    eagerBootstrapError: null,
     liveClaims: new Map(),
     bashSnapshots: new Map(),
   };
@@ -312,7 +325,15 @@ export default function (pi: ExtensionAPI) {
   // skip re-bootstrapping. See `tasks/option-d-context.md` decision 2.
   if (process.env.PI_SUBAGENT_CHILD === "1") {
     void bootstrapSession(state, "pi", "worker").catch((err) => {
-      console.error(`agent-ledger eager child bootstrap failed: ${errorMessage(err)}`);
+      const message = errorMessage(err);
+      console.error(`agent-ledger eager child bootstrap failed: ${message}`);
+      // Persist the failure so the first `tool_call` hook can observe
+      // it and block. Without this the hook would race with the
+      // already-rejected eager promise, see `state.bootstrapped` is
+      // false, run the lazy path, and likely succeed or fail in a way
+      // the operator cannot connect back to the eager rejection. See
+      // decision 3 in `tasks/option-d-context.md`.
+      state.eagerBootstrapError = err instanceof Error ? err : new Error(message);
     });
   }
 
@@ -322,6 +343,18 @@ export default function (pi: ExtensionAPI) {
   // already in-flight bootstrap promise.
   pi.on("tool_call", async (event, ctx) => {
     const toolName = normalizeToolName(event.toolName);
+
+    // Eager child bootstrap already failed fatally. Surface the
+    // failure on the first tool call rather than silently retrying
+    // (which would just fail the same way and obscure the original
+    // diagnostic). Only blocks under `shouldBlockBootstrapFailure()`
+    // semantics, which include `PI_SUBAGENT_CHILD=1`.
+    if (state.eagerBootstrapError && shouldBlockBootstrapFailure()) {
+      return {
+        block: true,
+        reason: `agent-ledger bootstrap failed: ${errorMessage(state.eagerBootstrapError)}`,
+      };
+    }
 
     if (!state.bootstrapped) {
       try {
