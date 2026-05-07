@@ -587,6 +587,305 @@ func TestVerify_ExplicitAssignment_NoAutoFinding(t *testing.T) {
 	}
 }
 
+// TestVerify_SubagentBootstrap_NoAutoAssignedTask confirms that an
+// assignment created by the pi-subagents child bootstrap
+// (dispatch_origin == "pi-subagent-bootstrap") does NOT trigger
+// AUTO_ASSIGNED_TASK. The orchestrator explicitly dispatched the
+// child; the child self-assigned on bootstrap. That is not an
+// adapter-invented, orchestrator-forgotten session.
+func TestVerify_SubagentBootstrap_NoAutoAssignedTask(t *testing.T) {
+	root, ledger := setupProject(t)
+	store := openTestStore(t, ledger)
+	t.Cleanup(func() { store.Close() })
+	d := domain.New(store)
+	ctx := context.Background()
+
+	const childAgent = "agent:pi:subagent:run-abc-001:0"
+	const parentAgent = "agent:pi:main:001"
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: childAgent, AgentKind: "worker"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: parentAgent, AgentKind: "orchestrator"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.InsertAssignment(ctx, domain.Assignment{
+		TaskID:          "SUBAGENT-BOOTSTRAP",
+		OrchestratorID:  parentAgent,
+		AssignedAgentID: childAgent,
+		AllowedPaths:    []string{"**"},
+		ConflictPolicy:  domain.PolicyWarn,
+		Reason:          "[harness-derived by pi-adapter source=subagent task=parent-task/worker/run-abc-001-0] child self-assignment",
+		Metadata: map[string]any{
+			"dispatch_origin":      "pi-subagent-bootstrap",
+			"task_source":          "subagent",
+			"parent_task":          "parent-task",
+			"parent_agent_id":      parentAgent,
+			"subagent_run_id":      "run-abc-001",
+			"subagent_child_index": float64(0),
+			"subagent_child_agent": "worker",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rep := runVerify(t, verify.Inputs{
+		Root:                 root,
+		LedgerDirFlag:        ledger,
+		TaskID:               "SUBAGENT-BOOTSTRAP",
+		ChangedPathsOverride: nil,
+	})
+	codes := findingsByCode(rep)
+	if len(codes[verify.CodeAutoAssignedTask]) != 0 {
+		t.Errorf("AUTO_ASSIGNED_TASK must not fire for a subagent-bootstrap assignment; got %+v", codes[verify.CodeAutoAssignedTask])
+	}
+	if len(codes[verify.CodeMissingAssignment]) != 0 {
+		t.Errorf("MISSING_ASSIGNMENT must not fire when an assignment row exists; got %+v", codes[verify.CodeMissingAssignment])
+	}
+}
+
+// TestVerify_SubagentBootstrap_NoAgentMismatch confirms that a
+// subagent child recording changes under its own agent id does NOT
+// trigger AGENT_MISMATCH, even though the child agent differs from
+// the orchestrator stored in OrchestratorID. For subagent-bootstrap
+// rows, parent != child by design.
+func TestVerify_SubagentBootstrap_NoAgentMismatch(t *testing.T) {
+	root, ledger := setupProject(t)
+	store := openTestStore(t, ledger)
+	t.Cleanup(func() { store.Close() })
+	d := domain.New(store)
+	ctx := context.Background()
+
+	const childAgent = "agent:pi:subagent:run-abc-001:0"
+	const parentAgent = "agent:pi:main:001"
+	writeFile(t, filepath.Join(root, "src/child.go"), "x")
+
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: childAgent, AgentKind: "worker"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: parentAgent, AgentKind: "orchestrator"}); err != nil {
+		t.Fatal(err)
+	}
+	assignment, err := d.InsertAssignment(ctx, domain.Assignment{
+		TaskID:          "SUBAGENT-MISMATCH",
+		OrchestratorID:  parentAgent,
+		AssignedAgentID: childAgent,
+		AllowedPaths:    []string{"**"},
+		ConflictPolicy:  domain.PolicyWarn,
+		Reason:          "child self-assignment",
+		Metadata: map[string]any{
+			"dispatch_origin":      "pi-subagent-bootstrap",
+			"task_source":          "subagent",
+			"parent_task":          "parent-task",
+			"parent_agent_id":      parentAgent,
+			"subagent_run_id":      "run-abc-001",
+			"subagent_child_index": float64(0),
+			"subagent_child_agent": "worker",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := paths.Normalize(root, "src/child.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Record a change attributed to the child agent. The child agent
+	// is not the orchestrator, which is by design for subagent rows.
+	if _, err := d.InsertChange(ctx, domain.RecordChangeInput{
+		Change: domain.Change{
+			TaskID:       "SUBAGENT-MISMATCH",
+			AgentID:      childAgent,
+			AssignmentID: assignment.AssignmentID,
+			Summary:      "child change",
+		},
+		Paths: []domain.ChangePath{{
+			Path:     n.Display,
+			RealPath: n.RealPath,
+			PathHash: n.PathHash,
+			Status:   domain.PathStatusModified,
+		}},
+		EventType: "change.recorded",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rep := runVerify(t, verify.Inputs{
+		Root:                 root,
+		LedgerDirFlag:        ledger,
+		TaskID:               "SUBAGENT-MISMATCH",
+		ChangedPathsOverride: []string{"src/child.go"},
+	})
+	codes := findingsByCode(rep)
+	if len(codes[verify.CodeAgentMismatch]) != 0 {
+		t.Errorf("AGENT_MISMATCH must not fire when the child agent records under its own subagent-bootstrap assignment; got %+v", codes[verify.CodeAgentMismatch])
+	}
+}
+
+// TestVerify_AutoAssignedTask_SourceDetached confirms that an
+// assignment with task_source="detached" (HEAD-derived task id)
+// still fires AUTO_ASSIGNED_TASK. Regression guard: the
+// pi-subagent-bootstrap suppression must not affect other sources.
+func TestVerify_AutoAssignedTask_SourceDetached(t *testing.T) {
+	root, ledger := setupProject(t)
+	store := openTestStore(t, ledger)
+	t.Cleanup(func() { store.Close() })
+	d := domain.New(store)
+	ctx := context.Background()
+
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: "pi.worker.test", AgentKind: "worker"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.InsertAssignment(ctx, domain.Assignment{
+		TaskID:          "DETACHED",
+		OrchestratorID:  "pi-adapter",
+		AssignedAgentID: "pi.worker.test",
+		AllowedPaths:    []string{"**"},
+		ConflictPolicy:  domain.PolicyWarn,
+		Reason:          "[harness-derived by pi-adapter source=detached task=abc1234] session bootstrap",
+		Metadata: map[string]any{
+			"auto_assigned":    true,
+			"auto_assigned_by": "pi-adapter",
+			"task_source":      "detached",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rep := runVerify(t, verify.Inputs{
+		Root:                 root,
+		LedgerDirFlag:        ledger,
+		TaskID:               "DETACHED",
+		ChangedPathsOverride: nil,
+	})
+	codes := findingsByCode(rep)
+	if len(codes[verify.CodeAutoAssignedTask]) == 0 {
+		t.Errorf("AUTO_ASSIGNED_TASK must still fire for task_source=detached; got %+v", rep.Findings)
+	}
+}
+
+// TestVerify_AutoAssignedTask_SourceAuto confirms that an assignment
+// with task_source="auto" (harness auto-generated id) still fires
+// AUTO_ASSIGNED_TASK. Regression guard: the pi-subagent-bootstrap
+// suppression must not affect other sources.
+func TestVerify_AutoAssignedTask_SourceAuto(t *testing.T) {
+	root, ledger := setupProject(t)
+	store := openTestStore(t, ledger)
+	t.Cleanup(func() { store.Close() })
+	d := domain.New(store)
+	ctx := context.Background()
+
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: "pi.worker.test", AgentKind: "worker"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.InsertAssignment(ctx, domain.Assignment{
+		TaskID:          "AUTO-DERIVED",
+		OrchestratorID:  "pi-adapter",
+		AssignedAgentID: "pi.worker.test",
+		AllowedPaths:    []string{"**"},
+		ConflictPolicy:  domain.PolicyWarn,
+		Reason:          "[harness-derived by pi-adapter source=auto task=auto/some-id] session bootstrap",
+		Metadata: map[string]any{
+			"auto_assigned":    true,
+			"auto_assigned_by": "pi-adapter",
+			"task_source":      "auto",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rep := runVerify(t, verify.Inputs{
+		Root:                 root,
+		LedgerDirFlag:        ledger,
+		TaskID:               "AUTO-DERIVED",
+		ChangedPathsOverride: nil,
+	})
+	codes := findingsByCode(rep)
+	if len(codes[verify.CodeAutoAssignedTask]) == 0 {
+		t.Errorf("AUTO_ASSIGNED_TASK must still fire for task_source=auto; got %+v", rep.Findings)
+	}
+}
+
+// TestVerify_AgentMismatch_ThirdPartyStillFires confirms that
+// AGENT_MISMATCH still fires when a third-party agent records a
+// change under a subagent-bootstrap task. The suppression applies
+// only to the correct assignee; it must not over-suppress.
+func TestVerify_AgentMismatch_ThirdPartyStillFires(t *testing.T) {
+	root, ledger := setupProject(t)
+	store := openTestStore(t, ledger)
+	t.Cleanup(func() { store.Close() })
+	d := domain.New(store)
+	ctx := context.Background()
+
+	const childAgent = "agent:pi:subagent:run-abc-001:0"
+	const parentAgent = "agent:pi:main:001"
+	const rogueAgent = "pi.rogue.agent"
+	writeFile(t, filepath.Join(root, "src/child.go"), "x")
+
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: childAgent, AgentKind: "worker"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: parentAgent, AgentKind: "orchestrator"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: rogueAgent, AgentKind: "worker"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.InsertAssignment(ctx, domain.Assignment{
+		TaskID:          "SUBAGENT-THIRD-PARTY",
+		OrchestratorID:  parentAgent,
+		AssignedAgentID: childAgent,
+		AllowedPaths:    []string{"**"},
+		ConflictPolicy:  domain.PolicyWarn,
+		Reason:          "child self-assignment",
+		Metadata: map[string]any{
+			"dispatch_origin":      "pi-subagent-bootstrap",
+			"task_source":          "subagent",
+			"parent_task":          "parent-task",
+			"parent_agent_id":      parentAgent,
+			"subagent_run_id":      "run-abc-001",
+			"subagent_child_index": float64(0),
+			"subagent_child_agent": "worker",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := paths.Normalize(root, "src/child.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A third-party agent records a change on the child's task.
+	// AGENT_MISMATCH must still fire.
+	if _, err := d.InsertChange(ctx, domain.RecordChangeInput{
+		Change: domain.Change{
+			TaskID:  "SUBAGENT-THIRD-PARTY",
+			AgentID: rogueAgent,
+			Summary: "unauthorized change",
+		},
+		Paths: []domain.ChangePath{{
+			Path:     n.Display,
+			RealPath: n.RealPath,
+			PathHash: n.PathHash,
+			Status:   domain.PathStatusModified,
+		}},
+		EventType: "change.recorded",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rep := runVerify(t, verify.Inputs{
+		Root:                 root,
+		LedgerDirFlag:        ledger,
+		TaskID:               "SUBAGENT-THIRD-PARTY",
+		ChangedPathsOverride: []string{"src/child.go"},
+	})
+	codes := findingsByCode(rep)
+	if len(codes[verify.CodeAgentMismatch]) == 0 {
+		t.Errorf("AGENT_MISMATCH must still fire when a third-party agent records a change on a subagent-bootstrap task; got %+v", rep.Findings)
+	}
+}
+
 func TestVerify_ExclusiveLockHeld(t *testing.T) {
 	root, ledger := setupProject(t)
 	writeFile(t, filepath.Join(ledger, "locks/abc.lock"), "")

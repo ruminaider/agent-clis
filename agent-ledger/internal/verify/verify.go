@@ -604,6 +604,18 @@ func Run(ctx context.Context, in Inputs) (*Report, error) {
 						if owner == "" || owner == c.AgentID {
 							continue
 						}
+						// Suppress for subagent-bootstrap rows when the
+						// recording agent is the latest active assignee.
+						// A retry or respawn may have produced a new
+						// assignment row while a historic row carries a
+						// different AssignedAgentID; that mismatch is
+						// benign when the orchestrator dispatched the
+						// child. Third-party callers (neither the
+						// orchestrator nor the assignee) still surface
+						// the finding.
+						if isSubagentBootstrapAssignment(*assignment) && c.AgentID == assignment.AssignedAgentID {
+							continue
+						}
 						r.Findings = append(r.Findings, Finding{
 							Code:              CodeAgentMismatch,
 							Severity:          SevError,
@@ -618,6 +630,13 @@ func Run(ctx context.Context, in Inputs) (*Report, error) {
 				// not populated. Accept the change if its agent_id has
 				// ever held an assignment on this task; otherwise flag.
 				if _, ok := agentSet[c.AgentID]; ok {
+					continue
+				}
+				// Suppress for subagent-bootstrap rows when the recording
+				// agent is the correct assignee but falls outside agentSet
+				// (e.g., a data-consistency edge case or mid-migration
+				// ledger). Third-party callers are not suppressed.
+				if isSubagentBootstrapAssignment(*assignment) && c.AgentID == assignment.AssignedAgentID {
 					continue
 				}
 				r.Findings = append(r.Findings, Finding{
@@ -1076,13 +1095,35 @@ func recomputeAssignmentHash(s summary.AssignmentSnapshot) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+// isSubagentBootstrapAssignment reports whether a was created by the
+// pi-subagents child bootstrap. These assignments are orchestrator-
+// initiated: the orchestrator dispatched a subagent, and the child
+// self-assigned on bootstrap. They carry
+// metadata.dispatch_origin == "pi-subagent-bootstrap".
+func isSubagentBootstrapAssignment(a domain.Assignment) bool {
+	v, _ := a.Metadata["dispatch_origin"].(string)
+	return v == "pi-subagent-bootstrap"
+}
+
 // assignmentIsAutoDerived reports whether a was created by an
 // adapter's auto-derivation path rather than by an explicit
 // orchestrator. The signal is the v0.1.1+ structured metadata flag
 // metadata.auto_assigned == true; the v0.2.0-rc1 reason marker
 // prefix ("[auto-assigned by ...]" or "[harness-derived by ...]")
 // is honored as a fallback for ledgers written before v0.1.1.
+//
+// Orchestrator-dispatched subagent children (dispatch_origin ==
+// "pi-subagent-bootstrap") are NOT treated as auto-derived: the
+// orchestrator explicitly initiated the dispatch, and the child
+// self-assigned on bootstrap. Suppress the AUTO_ASSIGNED_TASK
+// warning for those rows.
 func assignmentIsAutoDerived(a domain.Assignment) bool {
+	// Subagent-bootstrap rows are orchestrator-dispatched, not
+	// adapter-invented. Skip the auto-derived classification so
+	// AUTO_ASSIGNED_TASK does not fire for healthy subagent children.
+	if isSubagentBootstrapAssignment(a) {
+		return false
+	}
 	if v, ok := a.Metadata["auto_assigned"].(bool); ok && v {
 		return true
 	}
