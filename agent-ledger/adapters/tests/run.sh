@@ -4,6 +4,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
+# Build the real agent-ledger binary for adapter E2E tests.
+# Guard: only rebuild when the binary is absent; the Go build cache
+# makes subsequent builds fast when sources have not changed.
+if [[ ! -f "bin/agent-ledger" ]]; then
+  echo "adapters/tests/run.sh: building agent-ledger binary..." >&2
+  make build >&2
+fi
+export AGENT_LEDGER_BIN="$ROOT/bin/agent-ledger"
+
 node --test adapters/tests/*.test.mjs
 bash -n adapters/shared/session-bootstrap.sh adapters/shared/marker.sh adapters/pi/install.sh
 node --check adapters/shared/marker.js
