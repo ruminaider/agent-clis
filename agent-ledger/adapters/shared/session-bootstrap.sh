@@ -106,6 +106,60 @@ git_in() {
   command git -C "$DETECT_CWD" "$@" 2>/dev/null
 }
 
+# agent_ledger_derive_agent_id
+#
+# Single source of truth for AGENT_ID derivation. Branches on
+# PI_SUBAGENT_CHILD=1 to produce one of two byte-stable shapes:
+#
+#   subagent mode (PI_SUBAGENT_CHILD=1):
+#     agent:pi:subagent:<PI_SUBAGENT_RUN_ID>:<child_index>
+#     where <child_index> is PI_SUBAGENT_CHILD_INDEX normalized as a
+#     base-10 integer. Deterministic. No randomness, no sanitization.
+#
+#   legacy mode (otherwise):
+#     agent:<harness>:<utc>:<nonce>             (default)
+#     <user>@<host>:<harness>:<utc>             (when
+#                                                AGENT_LEDGER_HUMAN_READABLE_AGENT_ID=1)
+#     The result is sanitized through tr -c 'A-Za-z0-9.:@_-' '-'.
+#
+# The caller decides when to invoke this. The legacy branch only
+# derives when the inherited AGENT_ID is empty. The subagent branch
+# always derives (after preserving the inherited parent AGENT_ID in a
+# separate variable for use as --orchestrator).
+#
+# Args:
+#   $1  harness name (used by the legacy path; defaults to "unknown").
+#
+# Required env in subagent mode:
+#   PI_SUBAGENT_RUN_ID, PI_SUBAGENT_CHILD_INDEX. The caller must have
+#   already validated these before invoking the helper. The helper does
+#   not enforce presence so the surrounding error messages stay where
+#   they are.
+#
+# Prints the derived AGENT_ID to stdout. No side effects on caller env.
+agent_ledger_derive_agent_id() {
+  local harness="${1:-unknown}"
+  local agent_id=""
+  if [[ "${PI_SUBAGENT_CHILD:-}" == "1" ]]; then
+    local child_index
+    child_index="$((10#${PI_SUBAGENT_CHILD_INDEX}))"
+    agent_id="agent:pi:subagent:${PI_SUBAGENT_RUN_ID}:${child_index}"
+  else
+    local ts nonce user host
+    ts="$(date -u +%Y%m%dT%H%M%SZ)"
+    if [[ "${AGENT_LEDGER_HUMAN_READABLE_AGENT_ID:-0}" == "1" ]]; then
+      user="${USER:-${USERNAME:-anon}}"
+      host="$(hostname -s 2>/dev/null || echo localhost)"
+      agent_id="${user}@${host}:${harness}:${ts}"
+    else
+      nonce="${RANDOM}${RANDOM}$$"
+      agent_id="agent:${harness}:${ts}:${nonce}"
+    fi
+    agent_id="$(printf '%s' "$agent_id" | tr -c 'A-Za-z0-9.:@_-' '-')"
+  fi
+  printf '%s' "$agent_id"
+}
+
 # 0. Pi subagent child source. Runs before the legacy task-source
 # chain. When pi-subagents spawns this process with PI_SUBAGENT_CHILD=1,
 # derive a deterministic child task id and child AGENT_ID from the
@@ -135,7 +189,7 @@ if [[ "${PI_SUBAGENT_CHILD:-}" == "1" ]]; then
   subagent_parent_task_id="$AGENT_LEDGER_TASK_ID"
   subagent_child_index="$((10#${PI_SUBAGENT_CHILD_INDEX}))"
 
-  AGENT_ID="agent:pi:subagent:${PI_SUBAGENT_RUN_ID}:${subagent_child_index}"
+  AGENT_ID="$(agent_ledger_derive_agent_id "$HARNESS")"
   export AGENT_ID
 
   TASK_ID="${subagent_parent_task_id}/${PI_SUBAGENT_CHILD_AGENT}/${PI_SUBAGENT_RUN_ID}-${subagent_child_index}"
@@ -222,16 +276,7 @@ fi
 
 # 1. Resolve AGENT_ID.
 if [[ -z "${AGENT_ID:-}" ]]; then
-  ts="$(date -u +%Y%m%dT%H%M%SZ)"
-  if [[ "${AGENT_LEDGER_HUMAN_READABLE_AGENT_ID:-0}" == "1" ]]; then
-    user="${USER:-${USERNAME:-anon}}"
-    host="$(hostname -s 2>/dev/null || echo localhost)"
-    AGENT_ID="${user}@${host}:${HARNESS}:${ts}"
-  else
-    nonce="${RANDOM}${RANDOM}$$"
-    AGENT_ID="agent:${HARNESS}:${ts}:${nonce}"
-  fi
-  AGENT_ID="$(printf '%s' "$AGENT_ID" | tr -c 'A-Za-z0-9.:@_-' '-')"
+  AGENT_ID="$(agent_ledger_derive_agent_id "$HARNESS")"
   echo "session-bootstrap: derived AGENT_ID=$AGENT_ID" >&2
 fi
 export AGENT_ID
