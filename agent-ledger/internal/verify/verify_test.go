@@ -886,6 +886,101 @@ func TestVerify_AgentMismatch_ThirdPartyStillFires(t *testing.T) {
 	}
 }
 
+// TestVerify_AgentMismatch_HistoricBootstrapMismatchEmitted confirms
+// that a mismatch on a historic assignment row is still reported when
+// the latest active assignment is a subagent-bootstrap row owned by
+// the recording agent.
+func TestVerify_AgentMismatch_HistoricBootstrapMismatchEmitted(t *testing.T) {
+	root, ledger := setupProject(t)
+	store := openTestStore(t, ledger)
+	t.Cleanup(func() { store.Close() })
+	d := domain.New(store)
+	ctx := context.Background()
+
+	const childAgent = "agent:pi:subagent:run-abc-001:0"
+	const parentAgent = "agent:pi:main:001"
+	const rogueAgent = "pi.rogue.agent"
+	writeFile(t, filepath.Join(root, "src/child.go"), "x")
+
+	for _, ag := range []struct {
+		id   string
+		kind string
+	}{
+		{id: childAgent, kind: "worker"},
+		{id: parentAgent, kind: "orchestrator"},
+		{id: rogueAgent, kind: "worker"},
+	} {
+		if err := d.UpsertAgent(ctx, domain.Agent{AgentID: ag.id, AgentKind: ag.kind}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	historic, err := d.InsertAssignment(ctx, domain.Assignment{
+		TaskID:          "SUBAGENT-HISTORIC-MISMATCH",
+		OrchestratorID:  parentAgent,
+		AssignedAgentID: rogueAgent,
+		AllowedPaths:    []string{"**"},
+		ConflictPolicy:  domain.PolicyWarn,
+		Reason:          "historic assignment",
+		Status:          "superseded",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.InsertAssignment(ctx, domain.Assignment{
+		TaskID:          "SUBAGENT-HISTORIC-MISMATCH",
+		OrchestratorID:  parentAgent,
+		AssignedAgentID: childAgent,
+		AllowedPaths:    []string{"**"},
+		ConflictPolicy:  domain.PolicyWarn,
+		Reason:          "child bootstrap",
+		Metadata: map[string]any{
+			"dispatch_origin":      "pi-subagent-bootstrap",
+			"task_source":          "subagent",
+			"parent_task":          "parent-task",
+			"parent_agent_id":      parentAgent,
+			"subagent_run_id":      "run-abc-001",
+			"subagent_child_index": float64(0),
+			"subagent_child_agent": "worker",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := paths.Normalize(root, "src/child.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.InsertChange(ctx, domain.RecordChangeInput{
+		Change: domain.Change{
+			TaskID:       "SUBAGENT-HISTORIC-MISMATCH",
+			AgentID:      childAgent,
+			AssignmentID: historic.AssignmentID,
+			Summary:      "mismatch on historic row",
+		},
+		Paths: []domain.ChangePath{{
+			Path:     n.Display,
+			RealPath: n.RealPath,
+			PathHash: n.PathHash,
+			Status:   domain.PathStatusModified,
+		}},
+		EventType: "change.recorded",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rep := runVerify(t, verify.Inputs{
+		Root:                 root,
+		LedgerDirFlag:        ledger,
+		TaskID:               "SUBAGENT-HISTORIC-MISMATCH",
+		ChangedPathsOverride: []string{"src/child.go"},
+	})
+	codes := findingsByCode(rep)
+	if len(codes[verify.CodeAgentMismatch]) == 0 {
+		t.Fatalf("expected AGENT_MISMATCH for a mismatched historic assignment row, got %+v", rep.Findings)
+	}
+}
+
 func TestVerify_ExclusiveLockHeld(t *testing.T) {
 	root, ledger := setupProject(t)
 	writeFile(t, filepath.Join(ledger, "locks/abc.lock"), "")

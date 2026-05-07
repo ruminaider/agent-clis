@@ -585,10 +585,10 @@ func Run(ctx context.Context, in Inputs) (*Report, error) {
 			if err != nil {
 				return errorReport(StatusError, CodeStorageError, "load historic assignments: "+err.Error(), now), nil
 			}
-			byID := make(map[string]string, len(historic))
+			byID := make(map[string]domain.Assignment, len(historic))
 			agentSet := make(map[string]struct{}, len(historic))
 			for _, a := range historic {
-				byID[a.AssignmentID] = a.AssignedAgentID
+				byID[a.AssignmentID] = a
 				if a.AssignedAgentID != "" {
 					agentSet[a.AssignedAgentID] = struct{}{}
 				}
@@ -600,28 +600,24 @@ func Run(ctx context.Context, in Inputs) (*Report, error) {
 				// Prefer the assignment under which the change was
 				// recorded.
 				if c.AssignmentID != "" {
-					if owner, ok := byID[c.AssignmentID]; ok {
-						if owner == "" || owner == c.AgentID {
+					if historic, ok := byID[c.AssignmentID]; ok {
+						// Suppress only for the historic row itself when it
+						// is a subagent-bootstrap assignment owned by the
+						// recording agent. That keeps a legitimate child
+						// bootstrap row in policy without masking a mismatch
+						// on some other historic assignment row.
+						if isSubagentBootstrapAssignment(historic) && historic.AssignedAgentID == c.AgentID {
 							continue
 						}
-						// Suppress for subagent-bootstrap rows when the
-						// recording agent is the latest active assignee.
-						// A retry or respawn may have produced a new
-						// assignment row while a historic row carries a
-						// different AssignedAgentID; that mismatch is
-						// benign when the orchestrator dispatched the
-						// child. Third-party callers (neither the
-						// orchestrator nor the assignee) still surface
-						// the finding.
-						if isSubagentBootstrapAssignment(*assignment) && c.AgentID == assignment.AssignedAgentID {
+						if historic.AssignedAgentID == "" || historic.AssignedAgentID == c.AgentID {
 							continue
 						}
 						r.Findings = append(r.Findings, Finding{
 							Code:              CodeAgentMismatch,
 							Severity:          SevError,
-							Message:           fmt.Sprintf("change %s recorded by %s but assignment %s is assigned to %s", c.ChangeID, c.AgentID, c.AssignmentID, owner),
-							Details:           map[string]any{"change_id": c.ChangeID, "agent_id": c.AgentID, "assignment_id": c.AssignmentID, "assigned_agent_id": owner},
-							SuggestedRecovery: fmt.Sprintf("Reassign with `agent-ledger assign --task %s --agent %s ...` or have %s record the change.", in.TaskID, c.AgentID, owner),
+							Message:           fmt.Sprintf("change %s recorded by %s but assignment %s is assigned to %s", c.ChangeID, c.AgentID, c.AssignmentID, historic.AssignedAgentID),
+							Details:           map[string]any{"change_id": c.ChangeID, "agent_id": c.AgentID, "assignment_id": c.AssignmentID, "assigned_agent_id": historic.AssignedAgentID},
+							SuggestedRecovery: fmt.Sprintf("Reassign with `agent-ledger assign --task %s --agent %s ...` or have %s record the change.", in.TaskID, c.AgentID, historic.AssignedAgentID),
 						})
 						continue
 					}
