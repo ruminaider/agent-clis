@@ -76,13 +76,15 @@ lazily on first tool call: the assignment row exists before the child
 can issue any `claim`, `record`, `heartbeat`, or `close`. Children that
 never invoke a tool still leave a row.
 
-The bootstrap requires four inputs (any missing input is a hard fail
+The bootstrap requires five inputs (any missing input is a hard fail
 with a clear diagnostic, no fallback to `branch` or `auto`):
 
 - `AGENT_LEDGER_TASK_ID`: the inherited parent task id.
 - `PI_SUBAGENT_CHILD_AGENT`: the child agent name from pi-subagents.
 - `PI_SUBAGENT_RUN_ID`: the run id from pi-subagents.
 - `PI_SUBAGENT_CHILD_INDEX`: the child index from pi-subagents.
+- `AGENT_ID`: the inherited parent agent id, used as
+  `--orchestrator` when the child writes its assignment row.
 
 The child task id is deterministic, with no random suffix and no
 timestamp:
