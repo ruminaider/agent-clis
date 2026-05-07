@@ -17,6 +17,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { promises as fs } from "node:fs";
+import { randomBytes } from "node:crypto";
 import * as path from "node:path";
 
 const exec = promisify(execFile);
@@ -303,6 +304,20 @@ function resolveSubagentLedgerCwd(input: any): string {
   return cwds.length === 1 ? path.resolve(process.cwd(), cwds[0]!) : process.cwd();
 }
 
+// generateChildTaskId mints a child task id of the form
+// `<parent>/<agent>/<base36-time>-<hex8>`. The base36 timestamp keeps
+// ids time-sortable in logs and ledger queries; the random hex suffix
+// keeps them unique even when two siblings are minted in the same
+// millisecond under the same parent and agent. Same-ms collisions
+// became reachable once we considered relaxing the single-flight env
+// injection guard, but they are also possible today between sequential
+// fast-returning calls, so the random suffix is defensive regardless.
+function generateChildTaskId(parent: string, agent: string): string {
+  const ts = Date.now().toString(36);
+  const suffix = randomBytes(4).toString("hex");
+  return `${parent}/${agent}/${ts}-${suffix}`;
+}
+
 // --- Extension entry -----------------------------------------------------
 
 export default function (pi: ExtensionAPI) {
@@ -345,18 +360,30 @@ export default function (pi: ExtensionAPI) {
     }
 
     // Subagent dispatch: assign a child task and inject env so the
-    // child pi process picks up where the parent left off. The current
-    // pi-subagents tool reads process.env when it spawns children, not
-    // an event.input.env field, so set process.env for the duration of
-    // this tool call and restore it in tool_result. Keep event.input.env
-    // populated for future subagent versions that may accept it.
+    // child pi process picks up where the parent left off.
+    //
+    // pi-subagents (verified against 0.24.0) has no per-task `env`
+    // field on its tool input schema and never reads `event.input.env`,
+    // so the only working channel for propagating ledger context to a
+    // spawned child is the parent's `process.env`, which the child
+    // inherits at spawn time. We therefore mutate `process.env` for
+    // the duration of this tool call and restore it in `tool_result`.
+    //
+    // Because `process.env` is a single mutable global, two overlapping
+    // subagent calls would race on it: sibling B could snapshot A's
+    // injected env (not the parent's), then A's restore could leave the
+    // parent stuck on B's task id. Until pi-subagents adds a per-call
+    // `env` channel we defend by serializing here. The cost is that
+    // the orchestrator cannot fan out two `subagent` tool calls in the
+    // same assistant turn; a single `subagent({ tasks: [...] })`
+    // parallel dispatch is unaffected.
     if (SUBAGENT_TOOLS.has(toolName)) {
       if (!isExecutionSubagentCall(event.input)) return undefined;
       if (state.subagentEnvRestores.size > 0) {
         return { block: true, reason: "agent-ledger refused overlapping subagent env injection; wait for the active subagent call to finish" };
       }
       const childAgent = (event.input?.agent as string) ?? "subagent";
-      const childTask = `${state.resolvedTaskId}/${childAgent}/${Date.now().toString(36)}`;
+      const childTask = generateChildTaskId(state.resolvedTaskId ?? "", childAgent);
       const childLedgerCwd = resolveSubagentLedgerCwd(event.input);
       const policy = process.env.AGENT_LEDGER_AUTO_ASSIGN_POLICY ?? "warn";
       const allowArgs = splitAllowGlobs(process.env.AGENT_LEDGER_AUTO_ASSIGN_ALLOW).flatMap((g) => ["--allow", g]);
@@ -383,12 +410,6 @@ export default function (pi: ExtensionAPI) {
       }
 
       for (const [key, value] of Object.entries(childEnv)) process.env[key] = value;
-
-      if (event.input && typeof event.input === "object") {
-        const env = (event.input.env as Record<string, string> | undefined) ?? {};
-        Object.assign(env, childEnv);
-        (event.input as any).env = env;
-      }
       return undefined;
     }
 
@@ -472,6 +493,7 @@ export {
   decodeShellSingleQuoted,
   diffPaths,
   extractEditPaths,
+  generateChildTaskId,
   normalizeToolName,
   parseBootstrapOutput,
   collectSubagentCwds,

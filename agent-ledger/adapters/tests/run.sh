@@ -35,6 +35,15 @@ PYEXT
 grep -n "file_path" adapters/pi/agent-ledger.ts >/dev/null
 grep -n "filePath" adapters/pi/agent-ledger.ts >/dev/null
 
+# Child task id must use a random suffix, not just Date.now(), to stay
+# collision-safe under bursty or parallel dispatch. Verify the helper
+# is wired up and seeded from node:crypto.
+grep -n 'from "node:crypto"' adapters/pi/agent-ledger.ts >/dev/null
+grep -n "function generateChildTaskId" adapters/pi/agent-ledger.ts >/dev/null
+grep -n "randomBytes(4).toString(\"hex\")" adapters/pi/agent-ledger.ts >/dev/null
+# Old format (timestamp only) must not reappear inline.
+! grep -n 'childTask = `\${state.resolvedTaskId}/\${childAgent}/\${Date.now().toString(36)}`' adapters/pi/agent-ledger.ts
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin"
