@@ -886,11 +886,14 @@ REVIEW_ONLY_WRITE
 EXCLUSIVE_LOCK_HELD
 SUMMARY_MISMATCH
 SYMLINK_ALIAS
+AUTO_ASSIGNED_TASK
 CONFIG_ERROR
 STORAGE_ERROR
 ```
 
 `SYMLINK_ALIAS` warns that two active intents reference different display paths that resolve through symlinks to the same realpath but compute distinct `canonical_path_hash` values. SPEC §14 #8: switching the equality key from realpath to display lost free symlink-aliasing, so this finding makes the regression observable. Operators should pick one canonical display path or close one of the intents.
+
+`AUTO_ASSIGNED_TASK` (severity: warning) fires when a verified task has an assignment row but that row was created by an adapter's auto-derivation path rather than an explicit orchestrator assignment. Detection keys on `metadata.auto_assigned == true`; falls back to a leading `[auto-assigned by ...]` or `[harness-derived by ...]` reason marker for rows written by older adapter versions. Assignments whose `metadata.dispatch_origin` is `"pi-subagent-bootstrap"` are explicitly exempt: pi subagent children write their own assignment rows from their session bootstrap, but their dispatches are orchestrator-initiated, not adapter fallbacks. This finding is additive with `MISSING_ASSIGNMENT`: the no-row case still reports `MISSING_ASSIGNMENT`; `AUTO_ASSIGNED_TASK` fires only when a row exists but was adapter-derived. See section 21.1 for the subagent bootstrap contract and the verify suppression rule.
 
 ## 20. Babysitter integration
 

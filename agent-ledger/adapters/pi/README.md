@@ -3,9 +3,9 @@
 Deterministic, workflow-wrapped enforcement of `agent-ledger` claim
 and record discipline for any pi session. Hooks pi's `tool_call` and
 `tool_result` events to call the kernel CLI on every `Edit`, `Write`,
-`MultiEdit`, and (with caveats) `Bash`. Every subagent dispatched
-through the `subagent` tool inherits the discipline by env-var
-injection.
+`MultiEdit`, and (with caveats) `Bash`. Every subagent spawned through
+the `subagent` tool self-assigns its own task from its own session
+bootstrap.
 
 See `agent-ledger/docs/adapters.md` for the env var contract and
 auto-assignment design.
@@ -57,23 +57,44 @@ set explicitly:
 | ------- | ----------------------- |
 | `write` / `edit` / `multi_edit` | Pre: `agent-ledger claim` for the path(s). Post: `agent-ledger record` with summary derived from input. Block on claim failure. |
 | `bash` | Default: warn and let it run, snapshotting `git status --porcelain` before the call and claim/recording paths that become newly dirty after it returns. `AGENT_LEDGER_BASH_MODE=block` blocks all bash tool calls because shell mutation detection is not complete. |
-| `subagent` | Pre: auto-assign a child task (`<parent>/<subagent>/<base36-time>-<hex8>`), inject `AGENT_LEDGER_TASK_ID` and `AGENT_LEDGER_PARENT_TASK_ID` into the subagent's env so its own pi extension picks up the chain. The hex suffix keeps ids unique even when two siblings are minted in the same millisecond. |
+| `subagent` | Pre (observation-only): record that a dispatch was initiated (parent task id, child agent name, dispatch timestamp) for correlation. The parent extension does not mutate `process.env` and does not call `agent-ledger assign`. Each spawned child detects `PI_SUBAGENT_CHILD=1` at extension load, derives a deterministic child task id (`<parent>/<agent>/<run_id>-<index>`) and a fresh child `AGENT_ID` (`agent:pi:subagent:<run_id>:<index>`), and self-assigns via `agent-ledger assign --if-absent`. Parallel fan-outs, async dispatch, and multiple `subagent()` calls in one turn all work correctly because every child is independent. |
 
 ## Subagent inheritance
 
 When the parent pi extension intercepts a `subagent` execution call,
-it auto-creates a child task id and exposes it through the environment
-used to spawn the subagent. The child pi process loads the same
-extension from `~/.pi/agent/extensions/`, picks up the env vars in its
-own `tool_call` bootstrap, and proceeds with claim/record against the
-child task. The parent's task id is recorded in the child task's
-reason marker as `parent=<task>` for audit.
+it records the dispatch event (parent task id, child agent name,
+dispatch timestamp) for correlation and telemetry. It does not
+mutate the child's environment and does not write a ledger assignment
+on the child's behalf.
 
-This means the orchestrator does not have to manually call
-`agent-ledger assign` before each pi `subagent` dispatch. The
-extension does it on every `subagent` execution call. Management
-calls such as `subagent({ action: "list" })` do not create ledger
-assignments.
+Each spawned child loads the same pi extension. Because pi-subagents
+sets `PI_SUBAGENT_CHILD=1` in the child's environment, the extension
+runs its bootstrap eagerly at extension load, before any tool call,
+and selects `task_source=subagent`. The bootstrap derives a
+deterministic child task id from four inherited inputs (parent task id,
+child agent name, run id, and child index):
+
+```
+<parent_task>/<child_agent>/<run_id>-<child_index>
+```
+
+It also derives a fresh child `AGENT_ID`:
+
+```
+agent:pi:subagent:<run_id>:<child_index>
+```
+
+The child uses this id for every `claim`, `record`, `heartbeat`, and
+`close` event. The inherited parent `AGENT_ID` is recorded as
+`orchestrator_id` on the child's assignment row. Attribution stays
+correct across parallel fan-outs: two children launched simultaneously
+each get distinct task ids and agent ids with no coordination needed
+between them.
+
+A retry of the same logical child (same run id and child index)
+produces the same task id and agent id, so `assign --if-absent` is a
+no-op on retry. A new dispatch (different run id or child index)
+produces a fresh task id and agent id.
 
 For long-lived workers instructed later through intercom or prompt
 text, the orchestrator still must run `agent-ledger assign --if-absent`
@@ -104,31 +125,21 @@ still reports `MISSING_ASSIGNMENT`.
   root or via `chmod`. SPEC §33 open decision #2 covers the design
   trade-off. For high-trust workflows, use `AGENT_LEDGER_BASH_MODE=block`
   to block bash entirely.
-- **Subagent dispatch is serialized.** pi-subagents (verified against
-  0.24.0) has no per-task `env` field on the `subagent` tool input
-  schema and never reads caller-supplied env from `event.input`. The
-  only working channel for getting `AGENT_LEDGER_TASK_ID` into a child
-  pi process is the parent's `process.env`, which the child inherits
-  at spawn time. Because `process.env` is a single mutable global, the
-  extension takes a single-flight lock around the mutation: a second
-  `subagent` tool call is refused while a first one is still between
-  its `tool_call` and `tool_result` hooks. The cost is that the
-  orchestrator cannot fan out two `subagent` tool calls in the same
-  assistant turn. A single `subagent({ tasks: [...] })` parallel
-  dispatch is unaffected because it is one tool call. The constraint
-  will lift once pi-subagents accepts a per-call `env` field; until
-  then the lock is structural, not a preference. The extension also
-  writes the child assignment from the requested subagent cwd when one
-  is supplied, so cross-repo subagents use the same ledger their child
-  bootstrap will resolve.
-- **Background subagent dispatch loses ledger inheritance.**
-  `subagent({ async: true })` launches the child through a separate
-  background runner process whose `process.env` is captured before the
-  extension's `tool_call` hook runs. The child therefore does not see
-  the injected `AGENT_LEDGER_TASK_ID`. It still bootstraps via branch
-  or PR detection (or the `auto` fallback), so ledger continuity is
-  best-effort, not guaranteed. Same upstream dependency as the
-  serialization caveat above.
+- **Parallel subagent dispatch is supported.** Each spawned child
+  self-assigns from its own bootstrap, so two `subagent()` calls in
+  the same assistant turn each land in their own assignment row with
+  distinct task ids and agent ids. No env-mutation guard or
+  serialization lock exists. Parallel `subagent({ tasks: [...] })`
+  fan-outs, multiple independent `subagent()` calls, and `count: N`
+  expansions all work correctly without any ordering constraint.
+- **Async subagent dispatch works correctly.** `subagent({ async: true })`
+  launches the child in a background runner. The child inherits
+  `PI_SUBAGENT_CHILD=1` and its run context from pi-subagents, so the
+  child's session bootstrap runs eagerly at extension load, reads the
+  inherited parent task id and run context, and self-assigns a
+  deterministic child task id. Ledger attribution is guaranteed rather
+  than best-effort; the child does not fall back to branch or auto
+  detection.
 - **Concurrent exclusive claims have a known race** in v0.1.0
   (tracked for v0.1.x). Two parallel pi sessions both claiming an
   exclusive path may both win. Until the kernel fix lands, serialize
