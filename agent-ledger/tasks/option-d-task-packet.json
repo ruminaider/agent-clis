@@ -1,0 +1,23 @@
+{
+  "context": "This packet turns the approved self-assigning child plan into executable work with per-task `gate-reviewer` handoffs and per-wave review gates. The only wave change is inside the second wave: the bootstrap refactor must land before the child agent-id helper and subagent metadata work, because approved plan tasks 3 and 4 both depend on task 2.",
+  "tasks": [
+    {"id":"task-001","wave":"A","agent":"worker","description":"Lock the child bootstrap invariant in the spec and adapter design docs.","files":["SPEC.md","docs/adapters.md"]},
+    {"id":"task-002","wave":"A","agent":"wave-review-orchestrator","description":"Review Wave A (task-001).","reviews":["task-001"]},
+    {"id":"task-003","wave":"B1","agent":"worker","description":"Add subagent child mode to session-bootstrap.sh before the old task-source chain runs.","files":["adapters/shared/session-bootstrap.sh"],"depends_on":["task-002"]},
+    {"id":"task-004","wave":"B2","agent":"worker","description":"Extract deterministic child agent identity derivation.","files":["adapters/shared/session-bootstrap.sh"],"depends_on":["task-003"],"parallel_with":["task-005"]},
+    {"id":"task-005","wave":"B2","agent":"worker","description":"Add subagent marker support and lock the subagent assignment metadata shape.","files":["adapters/shared/marker.sh","adapters/shared/marker.js","adapters/pi/agent-ledger.ts","adapters/tests/marker.test.mjs"],"depends_on":["task-003"],"parallel_with":["task-004"]},
+    {"id":"task-006","wave":"B","agent":"wave-review-orchestrator","description":"Review Wave B (task-003, task-004, task-005).","reviews":["task-003","task-004","task-005"]},
+    {"id":"task-007","wave":"C","agent":"worker","description":"Remove parent-side child assignment from the pi extension and add eager child bootstrap at extension load.","files":["adapters/pi/agent-ledger.ts"],"depends_on":["task-006"],"parallel_with":["task-008"]},
+    {"id":"task-008","wave":"C","agent":"worker","description":"Audit assign semantics for parent orchestrator plus child assignee rows, pin with regression tests.","files":["internal/commands/assign.go","internal/commands/assign_internal_test.go"],"depends_on":["task-006"],"parallel_with":["task-007"]},
+    {"id":"task-009","wave":"C","agent":"wave-review-orchestrator","description":"Review Wave C (task-007, task-008).","reviews":["task-007","task-008"]},
+    {"id":"task-010","wave":"D","agent":"worker","description":"Teach verify to recognize orchestrator-initiated subagent child assignments.","files":["internal/verify/verify.go","internal/verify/verify_test.go"],"depends_on":["task-009"],"parallel_with":["task-011"]},
+    {"id":"task-011","wave":"D","agent":"worker","description":"Replace obsolete parent-side adapter checks with bootstrap-focused tests and scoped extension contract checks.","files":["adapters/tests/run.sh","adapters/tests/marker.test.mjs","adapters/tests/pi-subagent-bootstrap.test.mjs"],"depends_on":["task-009"],"parallel_with":["task-010"]},
+    {"id":"task-012","wave":"D","agent":"wave-review-orchestrator","description":"Review Wave D (task-010, task-011).","reviews":["task-010","task-011"]},
+    {"id":"task-013","wave":"E","agent":"worker","description":"Rewrite shipped pi adapter docs and release notes around child self-assignment.","files":["adapters/pi/README.md","docs/adapters.md","CHANGELOG.md"],"depends_on":["task-012"],"parallel_with":["task-014"]},
+    {"id":"task-014","wave":"E","agent":"worker","description":"Add end-to-end adapter scenarios for all required child-bootstrap cases, including zero-tool children.","files":["adapters/tests/run.sh","adapters/tests/pi-subagent-e2e.test.mjs"],"depends_on":["task-012"],"parallel_with":["task-013"]},
+    {"id":"task-015","wave":"E","agent":"wave-review-orchestrator","description":"Review Wave E (task-013, task-014).","reviews":["task-013","task-014"]},
+    {"id":"task-016","wave":"F","agent":"worker","description":"Final repository sweep for superseded parent-minted child-id code and comments.","files":["adapters/pi/agent-ledger.ts","adapters/pi/README.md","CHANGELOG.md"],"depends_on":["task-015"]},
+    {"id":"task-017","wave":"F","agent":"wave-review-orchestrator","description":"Review Wave F (task-016).","reviews":["task-016"]}
+  ],
+  "note": "Full assignment text per task lives in tasks/option-d-task-packet-full.md. This summary is for orchestrator dispatch decisions."
+}
