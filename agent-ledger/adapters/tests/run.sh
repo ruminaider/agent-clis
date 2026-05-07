@@ -96,6 +96,11 @@ export PATH="$tmp/bin:$PATH"
 export AGENT_LEDGER_STUB_LOG="$tmp/ledger.log"
 export AGENT_LEDGER_AUTO_ASSIGN_ALLOW='src/**:tests/**'
 unset AGENT_ID AGENT_LEDGER_TASK_ID AGENT_LEDGER_PARENT_TASK_ID AGENT_LEDGER_DIR || true
+# Pi subagent child env may be inherited from a parent session that
+# itself runs as a subagent. Clear it so the legacy task-source chain
+# tests below behave as if the script were invoked from a normal
+# (non-subagent) shell.
+unset PI_SUBAGENT_CHILD PI_SUBAGENT_RUN_ID PI_SUBAGENT_CHILD_INDEX PI_SUBAGENT_CHILD_AGENT || true
 
 # Auto-fallback: outside any git repo, with no env or flag, the bootstrap
 # must produce the timestamp-based id and emit the auto-assigned marker.
@@ -374,5 +379,75 @@ git -C "$repo_shell" -c user.email=t@t -c user.name=t commit --allow-empty -qm i
 git -C "$repo_shell" checkout -q -b feature/shell-export
 shell_line="$(bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --orchestrator test --cwd "$repo_shell")"
 grep -q 'export AGENT_LEDGER_AUTO_ASSIGNED=0' <<<"$shell_line"
+
+# Subagent source: PI_SUBAGENT_CHILD=1 with the four required env vars
+# must derive a deterministic child task id, a deterministic child
+# AGENT_ID, preserve the inherited parent AGENT_ID as --orchestrator,
+# emit TASK_SOURCE=subagent, and write a metadata payload matching the
+# locked decision 7 schema (subagent_child_index is a JSON number).
+: > "$AGENT_LEDGER_STUB_LOG"
+subagent_metadata="$tmp/subagent-metadata.json"
+export AGENT_LEDGER_STUB_METADATA_LOG="$subagent_metadata"
+subagent_line="$(
+  PI_SUBAGENT_CHILD=1 \
+  PI_SUBAGENT_RUN_ID=run-abc \
+  PI_SUBAGENT_CHILD_INDEX=0 \
+  PI_SUBAGENT_CHILD_AGENT=worker \
+  AGENT_LEDGER_TASK_ID=parent/task \
+  AGENT_ID=agent:pi:parent:42 \
+  bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --cwd "$nogit" --json
+)"
+node -e '
+const env = JSON.parse(process.argv[1].slice("AGENT_LEDGER_BOOTSTRAP_JSON=".length));
+if (env.AGENT_LEDGER_TASK_ID !== "parent/task/worker/run-abc-0") throw new Error(`task=${env.AGENT_LEDGER_TASK_ID}`);
+if (env.AGENT_LEDGER_TASK_SOURCE !== "subagent") throw new Error(`source=${env.AGENT_LEDGER_TASK_SOURCE}`);
+if (env.AGENT_LEDGER_AUTO_ASSIGNED !== "0") throw new Error(`AUTO_ASSIGNED=${env.AGENT_LEDGER_AUTO_ASSIGNED}`);
+if (env.AGENT_ID !== "agent:pi:subagent:run-abc:0") throw new Error(`AGENT_ID=${env.AGENT_ID}`);
+if (env.AGENT_LEDGER_PARENT_TASK_ID !== "parent/task") throw new Error(`PARENT_TASK_ID=${env.AGENT_LEDGER_PARENT_TASK_ID}`);
+' "$subagent_line"
+grep -q -- "--orchestrator agent:pi:parent:42" "$AGENT_LEDGER_STUB_LOG"
+grep -q -- "--agent agent:pi:subagent:run-abc:0" "$AGENT_LEDGER_STUB_LOG"
+grep -q -- "--task parent/task/worker/run-abc-0" "$AGENT_LEDGER_STUB_LOG"
+grep -q -- "--if-absent" "$AGENT_LEDGER_STUB_LOG"
+grep -q -- "\[harness-derived by pi-adapter source=subagent" "$AGENT_LEDGER_STUB_LOG"
+python3 - "$subagent_metadata" <<'PYSUB'
+import json
+import sys
+with open(sys.argv[1], encoding='utf-8') as fh:
+    raw = fh.read()
+    meta = json.loads(raw)
+if meta.get("parent_task") != "parent/task":
+    raise SystemExit(meta)
+if meta.get("parent_agent_id") != "agent:pi:parent:42":
+    raise SystemExit(meta)
+if meta.get("subagent_run_id") != "run-abc":
+    raise SystemExit(meta)
+if meta.get("subagent_child_index") != 0:
+    raise SystemExit(meta)
+if not isinstance(meta.get("subagent_child_index"), int):
+    raise SystemExit("subagent_child_index must be a JSON number")
+if meta.get("subagent_child_agent") != "worker":
+    raise SystemExit(meta)
+if meta.get("dispatch_origin") != "pi-subagent-bootstrap":
+    raise SystemExit(meta)
+PYSUB
+unset AGENT_LEDGER_STUB_METADATA_LOG
+
+# Subagent source: a missing required env var must hard-fail with a
+# clear diagnostic and must NOT fall back to branch or auto.
+: > "$AGENT_LEDGER_STUB_LOG"
+if PI_SUBAGENT_CHILD=1 \
+   PI_SUBAGENT_RUN_ID=run-abc \
+   PI_SUBAGENT_CHILD_INDEX=0 \
+   PI_SUBAGENT_CHILD_AGENT=worker \
+   AGENT_ID=agent:pi:parent:42 \
+   bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --cwd "$repo" --json \
+     >/dev/null 2>"$tmp/subagent-missing-parent-task.err"; then
+  echo "expected subagent bootstrap to fail when AGENT_LEDGER_TASK_ID is unset" >&2
+  exit 1
+fi
+grep -q -- 'AGENT_LEDGER_TASK_ID' "$tmp/subagent-missing-parent-task.err"
+grep -q -- 'refusing to fall back' "$tmp/subagent-missing-parent-task.err"
+grep -q '^assign ' "$AGENT_LEDGER_STUB_LOG" && { echo "missing-env subagent bootstrap should not call assign" >&2; exit 1; } || true
 
 printf 'adapter tests passed\n'
