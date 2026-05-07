@@ -41,6 +41,12 @@ of the binary version.
     `AGENT_ID`. Claims, records, heartbeats, and closes in the child are
     attributed to the child identity; `orchestrator_id` on the
     assignment row records the parent identity for cross-session audit.
+    Verify recognizes the split: it does not raise `AGENT_MISMATCH` on a
+    subagent-bootstrap row when the calling agent matches the child
+    assignee, even though the orchestrator field holds the parent's
+    identity. A retry of the same logical child also reuses the same
+    deterministic child `AGENT_ID`, so the second spawn's claims and
+    records do not trigger `AGENT_MISMATCH`.
 
   - **Async and background dispatch work correctly.** Children launched
     via `subagent({ async: true })` inherit `PI_SUBAGENT_CHILD=1` and
