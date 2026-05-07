@@ -200,7 +200,30 @@ function sanitizeMarkerToken(value: string): string {
   return String(value).replace(/[^A-Za-z0-9._:@/-]/g, "-");
 }
 
-function buildAssignmentMarker({ by, parent, task, agent, effect }: { by: string; parent?: string | null; task?: string | null; agent?: string | null; effect?: string | null }): string {
+// buildAssignmentMarker keeps byte-for-byte parity with the shared
+// helpers in `adapters/shared/marker.sh` and `adapters/shared/marker.js`.
+// Source values recognized as harness-derived produce the
+// `[harness-derived by <by> source=<source> ...]` form. All other
+// inputs (including the default and explicit `auto`) preserve the
+// `[auto-assigned by <by> auto-derived ...]` form for backward
+// compatibility with v0.2.0-rc1 marker readers.
+//
+// The authoritative metadata schema for subagent-created child
+// assignment rows lives in `adapters/shared/marker.js` as the
+// `SubagentAssignmentMetadata` JSDoc typedef. Bootstrap and verify
+// must keep their structured assignment metadata payloads aligned
+// with that schema; the reason-text marker emitted here is only an
+// audit hint.
+function buildAssignmentMarker({ by, parent, task, agent, effect, source }: { by: string; parent?: string | null; task?: string | null; agent?: string | null; effect?: string | null; source?: string | null }): string {
+  const sourceTag = (source ?? "auto").toLowerCase();
+  if (sourceTag === "subagent") {
+    const parts = [`[harness-derived by ${sanitizeMarkerToken(by)}`, `source=${sanitizeMarkerToken(sourceTag)}`];
+    if (parent) parts.push(`parent=${sanitizeMarkerToken(parent)}`);
+    if (task) parts.push(`task=${sanitizeMarkerToken(task)}`);
+    if (agent) parts.push(`agent=${sanitizeMarkerToken(agent)}`);
+    if (effect) parts.push(`effect=${sanitizeMarkerToken(effect)}`);
+    return `${parts.join(" ")}]`;
+  }
   const parts = [`[auto-assigned by ${sanitizeMarkerToken(by)}`, "auto-derived"];
   if (parent) parts.push(`parent=${sanitizeMarkerToken(parent)}`);
   if (task) parts.push(`task=${sanitizeMarkerToken(task)}`);

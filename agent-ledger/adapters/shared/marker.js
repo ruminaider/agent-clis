@@ -16,8 +16,35 @@
 //
 // Assignments without either prefix were supplied explicitly by an
 // orchestrator (env var or --task-id flag).
+//
+// Subagent assignment metadata schema (authoritative).
+//
+// When a pi subagent child bootstraps and calls
+// `agent-ledger assign --metadata <json>`, the JSON payload must carry
+// the six fields below. Programmatic readers (verify, audit tooling,
+// cross-tool correlation) treat this metadata, not the reason-text
+// marker, as the authoritative surface. The reason-text marker remains
+// an audit hint.
+//
+// @typedef {object} SubagentAssignmentMetadata
+// @property {string} parent_task         Inherited parent task id
+//                                        (`AGENT_LEDGER_TASK_ID` from
+//                                        the parent process).
+// @property {string} parent_agent_id     Inherited parent `AGENT_ID`.
+// @property {string} subagent_run_id     `PI_SUBAGENT_RUN_ID` verbatim.
+// @property {number} subagent_child_index `PI_SUBAGENT_CHILD_INDEX`
+//                                         parsed as a decimal integer
+//                                         (JSON number type).
+// @property {string} subagent_child_agent `PI_SUBAGENT_CHILD_AGENT`
+//                                         verbatim.
+// @property {"pi-subagent-bootstrap"} dispatch_origin
+//                                         Discriminator literal that
+//                                         `verify` reads to suppress
+//                                         the `AUTO_ASSIGNED_TASK`
+//                                         finding for subagent
+//                                         children.
 
-const HARNESS_DERIVED_SOURCES = new Set(["branch", "pr", "detached"]);
+const HARNESS_DERIVED_SOURCES = new Set(["branch", "pr", "detached", "subagent"]);
 
 export function buildAssignmentMarker({ by, parent, task, agent, effect, source } = {}) {
   if (!by) throw new Error("buildAssignmentMarker: by is required");

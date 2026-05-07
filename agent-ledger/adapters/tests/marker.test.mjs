@@ -50,6 +50,28 @@ test("harness-derived marker for detached source", () => {
   assert.equal(js, "[harness-derived by pi-adapter source=detached task=detached/abc1234]");
 });
 
+test("harness-derived marker for subagent source has shell parity", () => {
+  const input = {
+    by: "pi-adapter",
+    source: "subagent",
+    task: "parent-task/worker/run-abc-0",
+    agent: "agent:pi:subagent:run-abc:0",
+  };
+  const js = buildAssignmentMarker(input);
+  assert.equal(
+    js,
+    "[harness-derived by pi-adapter source=subagent task=parent-task/worker/run-abc-0 agent=agent:pi:subagent:run-abc:0]",
+  );
+  const sh = execFileSync("bash", [
+    markerSh,
+    "--by", input.by,
+    "--source", input.source,
+    "--task", input.task,
+    "--agent", input.agent,
+  ], { encoding: "utf8" });
+  assert.equal(sh, js);
+});
+
 test("unknown source falls back to auto-assigned format", () => {
   const js = buildAssignmentMarker({ by: "pi-adapter", source: "some-future-mode", task: "x" });
   assert(js.startsWith("[auto-assigned by pi-adapter auto-derived"), `got ${js}`);
