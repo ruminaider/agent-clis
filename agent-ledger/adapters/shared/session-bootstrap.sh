@@ -8,6 +8,13 @@
 #
 # Task id resolution chain (first match wins):
 #
+#   0. Pi subagent child       (PI_SUBAGENT_CHILD=1)
+#                              => `<parent_task>/<child_agent>/<run_id>-<child_index>`
+#                              and a deterministic child AGENT_ID of
+#                              `agent:pi:subagent:<run_id>:<child_index>`.
+#                              Runs before every other source. Hard-fails
+#                              when any required pi-subagents env var is
+#                              missing instead of falling back.
 #   1. --task-id <id>          (orchestrator-supplied flag)
 #   2. AGENT_LEDGER_TASK_ID    (orchestrator-supplied env var)
 #   3. PR detection            (--detect-pr 1 or AGENT_LEDGER_DETECT_PR=1)
@@ -99,18 +106,177 @@ git_in() {
   command git -C "$DETECT_CWD" "$@" 2>/dev/null
 }
 
+# agent_ledger_derive_agent_id
+#
+# Single source of truth for AGENT_ID derivation. Branches on
+# PI_SUBAGENT_CHILD=1 to produce one of two byte-stable shapes:
+#
+#   subagent mode (PI_SUBAGENT_CHILD=1):
+#     agent:pi:subagent:<PI_SUBAGENT_RUN_ID>:<child_index>
+#     where <child_index> is PI_SUBAGENT_CHILD_INDEX normalized as a
+#     base-10 integer. Deterministic. No randomness, no sanitization.
+#
+#   legacy mode (otherwise):
+#     agent:<harness>:<utc>:<nonce>             (default)
+#     <user>@<host>:<harness>:<utc>             (when
+#                                                AGENT_LEDGER_HUMAN_READABLE_AGENT_ID=1)
+#     The result is sanitized through tr -c 'A-Za-z0-9.:@_-' '-'.
+#
+# The caller decides when to invoke this. The legacy branch only
+# derives when the inherited AGENT_ID is empty. The subagent branch
+# always derives (after preserving the inherited parent AGENT_ID in a
+# separate variable for use as --orchestrator).
+#
+# Args:
+#   $1  harness name (used by the legacy path; defaults to "unknown").
+#
+# Required env in subagent mode:
+#   PI_SUBAGENT_RUN_ID, PI_SUBAGENT_CHILD_INDEX. The caller must have
+#   already validated these before invoking the helper. The helper does
+#   not enforce presence so the surrounding error messages stay where
+#   they are.
+#
+# Prints the derived AGENT_ID to stdout. No side effects on caller env.
+agent_ledger_derive_agent_id() {
+  local harness="${1:-unknown}"
+  local agent_id=""
+  if [[ "${PI_SUBAGENT_CHILD:-}" == "1" ]]; then
+    local child_index
+    child_index="$((10#${PI_SUBAGENT_CHILD_INDEX}))"
+    agent_id="agent:pi:subagent:${PI_SUBAGENT_RUN_ID}:${child_index}"
+  else
+    local ts nonce user host
+    ts="$(date -u +%Y%m%dT%H%M%SZ)"
+    if [[ "${AGENT_LEDGER_HUMAN_READABLE_AGENT_ID:-0}" == "1" ]]; then
+      user="${USER:-${USERNAME:-anon}}"
+      host="$(hostname -s 2>/dev/null || echo localhost)"
+      agent_id="${user}@${host}:${harness}:${ts}"
+    else
+      nonce="${RANDOM}${RANDOM}$$"
+      agent_id="agent:${harness}:${ts}:${nonce}"
+    fi
+    agent_id="$(printf '%s' "$agent_id" | tr -c 'A-Za-z0-9.:@_-' '-')"
+  fi
+  printf '%s' "$agent_id"
+}
+
+# 0. Pi subagent child source. Runs before the legacy task-source
+# chain. When pi-subagents spawns this process with PI_SUBAGENT_CHILD=1,
+# derive a deterministic child task id and child AGENT_ID from the
+# pi-subagents run identifiers, preserve the inherited parent AGENT_ID
+# for use as the assignment's orchestrator, write the assignment row
+# with structured metadata, emit the env, and exit. The branch never
+# falls back to flag, env, pr, branch, detached, or auto sources.
+if [[ "${PI_SUBAGENT_CHILD:-}" == "1" ]]; then
+  subagent_missing=()
+  [[ -z "${PI_SUBAGENT_RUN_ID:-}" ]]      && subagent_missing+=( "PI_SUBAGENT_RUN_ID" )
+  [[ -z "${PI_SUBAGENT_CHILD_INDEX:-}" ]] && subagent_missing+=( "PI_SUBAGENT_CHILD_INDEX" )
+  [[ -z "${PI_SUBAGENT_CHILD_AGENT:-}" ]] && subagent_missing+=( "PI_SUBAGENT_CHILD_AGENT" )
+  [[ -z "${AGENT_LEDGER_TASK_ID:-}" ]]    && subagent_missing+=( "AGENT_LEDGER_TASK_ID" )
+  [[ -z "${AGENT_ID:-}" ]]                && subagent_missing+=( "AGENT_ID" )
+  if [[ ${#subagent_missing[@]} -gt 0 ]]; then
+    echo "session-bootstrap: PI_SUBAGENT_CHILD=1 but required env vars are unset or empty: ${subagent_missing[*]}" >&2
+    echo "session-bootstrap: a pi subagent child cannot self-assign without an inherited parent task and run identifiers; refusing to fall back." >&2
+    exit 4
+  fi
+
+  if [[ ! "${PI_SUBAGENT_CHILD_INDEX}" =~ ^[0-9]+$ ]]; then
+    echo "session-bootstrap: PI_SUBAGENT_CHILD_INDEX must be a non-negative decimal integer (got '${PI_SUBAGENT_CHILD_INDEX}')" >&2
+    exit 4
+  fi
+
+  subagent_parent_agent_id="$AGENT_ID"
+  subagent_parent_task_id="$AGENT_LEDGER_TASK_ID"
+  subagent_child_index="$((10#${PI_SUBAGENT_CHILD_INDEX}))"
+
+  AGENT_ID="$(agent_ledger_derive_agent_id "$HARNESS")"
+  export AGENT_ID
+
+  TASK_ID="${subagent_parent_task_id}/${PI_SUBAGENT_CHILD_AGENT}/${PI_SUBAGENT_RUN_ID}-${subagent_child_index}"
+  TASK_SOURCE="subagent"
+
+  echo "session-bootstrap: harness-derived task id from subagent: $TASK_ID (parent_task=$subagent_parent_task_id parent_agent=$subagent_parent_agent_id child_agent=$AGENT_ID)" >&2
+
+  agent-ledger identify --agent-kind "$AGENT_KIND" --harness "$HARNESS" >/dev/null 2>&1 || true
+
+  ledger_args=()
+  if [[ -n "${AGENT_LEDGER_DIR:-}" ]]; then
+    ledger_args+=( --ledger-dir "$AGENT_LEDGER_DIR" )
+  fi
+
+  subagent_policy="${AGENT_LEDGER_AUTO_ASSIGN_POLICY:-warn}"
+  subagent_allow="${AGENT_LEDGER_AUTO_ASSIGN_ALLOW:-**}"
+  subagent_allow_args=()
+  while IFS= read -r -d '' arg; do
+    subagent_allow_args+=( "$arg" )
+  done < <(split_allow_args "$subagent_allow")
+
+  subagent_marker="$(agent_ledger_auto_assigned_marker \
+    --by "${HARNESS}-adapter" \
+    --source subagent \
+    --parent "$subagent_parent_task_id" \
+    --task "$TASK_ID" \
+    --agent "$AGENT_ID")"
+  subagent_reason="${subagent_marker} session bootstrap (pi subagent child self-assignment)"
+
+  # Decision 7 metadata schema. subagent_child_index is a JSON number,
+  # not a quoted string. All string fields go through json_escape so a
+  # value containing a quote, backslash, or newline cannot break the
+  # payload.
+  subagent_metadata_json="{\"parent_task\":\"$(json_escape "$subagent_parent_task_id")\""
+  subagent_metadata_json="${subagent_metadata_json},\"parent_agent_id\":\"$(json_escape "$subagent_parent_agent_id")\""
+  subagent_metadata_json="${subagent_metadata_json},\"subagent_run_id\":\"$(json_escape "$PI_SUBAGENT_RUN_ID")\""
+  subagent_metadata_json="${subagent_metadata_json},\"subagent_child_index\":${subagent_child_index}"
+  subagent_metadata_json="${subagent_metadata_json},\"subagent_child_agent\":\"$(json_escape "$PI_SUBAGENT_CHILD_AGENT")\""
+  subagent_metadata_json="${subagent_metadata_json},\"dispatch_origin\":\"pi-subagent-bootstrap\""
+  subagent_metadata_json="${subagent_metadata_json}}"
+
+  if subagent_assign_help="$(agent-ledger assign --help 2>&1)"; then
+    if ! grep -q -- "--metadata" <<<"$subagent_assign_help"; then
+      echo "session-bootstrap: agent-ledger assign --help does not advertise required --metadata capability (kernel v0.1.1+ required)" >&2
+      exit 5
+    fi
+  else
+    echo "session-bootstrap: agent-ledger assign --help failed, cannot verify required --metadata capability (kernel v0.1.1+ required)" >&2
+    printf '%s\n' "$subagent_assign_help" >&2
+    exit 5
+  fi
+
+  if ! agent-ledger assign \
+      --task "$TASK_ID" \
+      --orchestrator "$subagent_parent_agent_id" \
+      --agent "$AGENT_ID" \
+      --policy "$subagent_policy" \
+      "${subagent_allow_args[@]+"${subagent_allow_args[@]}"}" \
+      --if-absent \
+      --reason "$subagent_reason" \
+      --metadata "$subagent_metadata_json" \
+      "${ledger_args[@]+"${ledger_args[@]}"}" >&2
+  then
+    echo "session-bootstrap: agent-ledger assign failed (task=$TASK_ID source=subagent)" >&2
+    exit 5
+  fi
+
+  if [[ "$JSON_OUTPUT" == "1" ]]; then
+    printf 'AGENT_LEDGER_BOOTSTRAP_JSON={"AGENT_ID":"%s","AGENT_LEDGER_TASK_ID":"%s","AGENT_LEDGER_TASK_SOURCE":"%s","AGENT_LEDGER_AUTO_ASSIGNED":"0","AGENT_LEDGER_PARENT_TASK_ID":"%s"}\n' \
+      "$(json_escape "$AGENT_ID")" \
+      "$(json_escape "$TASK_ID")" \
+      "$(json_escape "$TASK_SOURCE")" \
+      "$(json_escape "$subagent_parent_task_id")"
+  else
+    printf 'export AGENT_ID=%q\n' "$AGENT_ID"
+    printf 'export AGENT_LEDGER_TASK_ID=%q\n' "$TASK_ID"
+    printf 'export AGENT_LEDGER_TASK_SOURCE=%q\n' "$TASK_SOURCE"
+    printf 'export AGENT_LEDGER_AUTO_ASSIGNED=0\n'
+    printf 'export AGENT_LEDGER_PARENT_TASK_ID=%q\n' "$subagent_parent_task_id"
+  fi
+
+  exit 0
+fi
+
 # 1. Resolve AGENT_ID.
 if [[ -z "${AGENT_ID:-}" ]]; then
-  ts="$(date -u +%Y%m%dT%H%M%SZ)"
-  if [[ "${AGENT_LEDGER_HUMAN_READABLE_AGENT_ID:-0}" == "1" ]]; then
-    user="${USER:-${USERNAME:-anon}}"
-    host="$(hostname -s 2>/dev/null || echo localhost)"
-    AGENT_ID="${user}@${host}:${HARNESS}:${ts}"
-  else
-    nonce="${RANDOM}${RANDOM}$$"
-    AGENT_ID="agent:${HARNESS}:${ts}:${nonce}"
-  fi
-  AGENT_ID="$(printf '%s' "$AGENT_ID" | tr -c 'A-Za-z0-9.:@_-' '-')"
+  AGENT_ID="$(agent_ledger_derive_agent_id "$HARNESS")"
   echo "session-bootstrap: derived AGENT_ID=$AGENT_ID" >&2
 fi
 export AGENT_ID

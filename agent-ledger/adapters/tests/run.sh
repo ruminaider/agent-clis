@@ -4,6 +4,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
+# Build the real agent-ledger binary for adapter E2E tests.
+# The runner always rebuilds and relies on Go's build cache, so
+# incremental rebuilds stay cheap when sources have not changed.
+echo "adapters/tests/run.sh: building agent-ledger binary..." >&2
+make build >&2
+export AGENT_LEDGER_BIN="$ROOT/bin/agent-ledger"
+
 node --test adapters/tests/*.test.mjs
 bash -n adapters/shared/session-bootstrap.sh adapters/shared/marker.sh adapters/pi/install.sh
 node --check adapters/shared/marker.js
@@ -15,34 +22,149 @@ node --check adapters/babysitter/define-ledger-task.js
 ! grep -n "AGENT_LEDGER_DIR = process.env.AGENT_LEDGER_DIR ?? \"\"" adapters/pi/agent-ledger.ts
 grep -n "agent-ledger/session-bootstrap.sh" adapters/pi/agent-ledger.ts >/dev/null
 grep -n "bootstrapPromise" adapters/pi/agent-ledger.ts >/dev/null
-grep -n "subagentEnvRestores" adapters/pi/agent-ledger.ts >/dev/null
 grep -n "isExecutionSubagentCall" adapters/pi/agent-ledger.ts >/dev/null
 grep -n "shouldBlockBootstrapFailure" adapters/pi/agent-ledger.ts >/dev/null
-grep -n "resolveSubagentLedgerCwd" adapters/pi/agent-ledger.ts >/dev/null
-grep -n "input?.chain" adapters/pi/agent-ledger.ts >/dev/null
-grep -n "process.env\[key\] = value" adapters/pi/agent-ledger.ts >/dev/null
 grep -n "cwd," adapters/pi/agent-ledger.ts >/dev/null
-python3 - <<'PYEXT'
-from pathlib import Path
-src = Path('adapters/pi/agent-ledger.ts').read_text()
-reserve = src.index('state.subagentEnvRestores.set(event.toolCallId, restore);')
-assign = src.index('const assign = await runLedger([')
-mutate = src.index('for (const [key, value] of Object.entries(childEnv)) process.env[key] = value;')
-fail_delete = src.index('state.subagentEnvRestores.delete(event.toolCallId);')
-if not (reserve < assign < fail_delete < mutate):
-    raise SystemExit('subagent env reservation must happen before await and clear before mutation on failure')
-PYEXT
 grep -n "file_path" adapters/pi/agent-ledger.ts >/dev/null
 grep -n "filePath" adapters/pi/agent-ledger.ts >/dev/null
-
-# Child task id must use a random suffix, not just Date.now(), to stay
-# collision-safe under bursty or parallel dispatch. Verify the helper
-# is wired up and seeded from node:crypto.
-grep -n 'from "node:crypto"' adapters/pi/agent-ledger.ts >/dev/null
-grep -n "function generateChildTaskId" adapters/pi/agent-ledger.ts >/dev/null
-grep -n "randomBytes(4).toString(\"hex\")" adapters/pi/agent-ledger.ts >/dev/null
 # Old format (timestamp only) must not reappear inline.
 ! grep -n 'childTask = `\${state.resolvedTaskId}/\${childAgent}/\${Date.now().toString(36)}`' adapters/pi/agent-ledger.ts
+
+# Child self-assignment contract checks (Option D, task-007).
+#
+# These prove the parent extension does not mint child task ids,
+# does not call agent-ledger assign on behalf of the child, and does
+# not mutate process.env for any subagent dispatch. The child is
+# responsible for its own bootstrap.
+#
+# 1. The TaskSource union and KNOWN_TASK_SOURCES include `subagent`
+#    so parseTaskSource("subagent") returns "subagent".
+python3 - <<'PYEXT'
+import re
+import sys
+from pathlib import Path
+
+src = Path('adapters/pi/agent-ledger.ts').read_text()
+m = re.search(r'KNOWN_TASK_SOURCES\s*=\s*new Set<TaskSource>\(\[(.*?)\]\)', src, re.S)
+if not m or '"subagent"' not in m.group(1):
+    sys.exit('KNOWN_TASK_SOURCES must include "subagent"')
+m = re.search(r'type\s+TaskSource\s*=\s*([^;]+);', src)
+if not m or '"subagent"' not in m.group(1):
+    sys.exit('TaskSource union must include "subagent"')
+PYEXT
+
+# 2. Eager child bootstrap fires at extension load when
+#    PI_SUBAGENT_CHILD === "1".
+grep -n 'process.env.PI_SUBAGENT_CHILD === "1"' adapters/pi/agent-ledger.ts >/dev/null
+
+# 2a. shouldBlockBootstrapFailure() must hard-fail in child mode so a
+#     misconfigured subagent child cannot soft-fail past bootstrap and
+#     write files without a durable assignment row. The check appears
+#     inside the function body alongside the existing
+#     AGENT_LEDGER_REQUIRE_TASK and AGENT_LEDGER_TASK_ID checks. See
+#     `tasks/option-d-context.md` decision 3.
+python3 - <<'PYEXT'
+from pathlib import Path
+import re
+import sys
+
+src = Path('adapters/pi/agent-ledger.ts').read_text()
+m = re.search(r'function\s+shouldBlockBootstrapFailure\s*\([^)]*\)\s*:\s*boolean\s*\{(.*?)\n\}', src, re.S)
+if not m:
+    sys.exit('shouldBlockBootstrapFailure() not found')
+body = m.group(1)
+if 'PI_SUBAGENT_CHILD' not in body or '"1"' not in body:
+    sys.exit('shouldBlockBootstrapFailure must hard-fail when PI_SUBAGENT_CHILD === "1"')
+if 'AGENT_LEDGER_REQUIRE_TASK' not in body or 'AGENT_LEDGER_TASK_ID' not in body:
+    sys.exit('shouldBlockBootstrapFailure must keep its existing AGENT_LEDGER_REQUIRE_TASK / AGENT_LEDGER_TASK_ID checks')
+PYEXT
+
+# 2b. Eager child bootstrap rejection must persist on the BootstrapState
+#     so the first `tool_call` hook can observe it and block. Without
+#     this the rejection only logs to stderr and subsequent tool calls
+#     proceed as if bootstrap had not been attempted, which violates
+#     the locked decision 3 contract.
+python3 - <<'PYEXT'
+from pathlib import Path
+import re
+import sys
+
+src = Path('adapters/pi/agent-ledger.ts').read_text()
+if 'eagerBootstrapError' not in src:
+    sys.exit('BootstrapState must track an eager bootstrap failure (e.g. eagerBootstrapError)')
+# The state field must be declared on the interface.
+m = re.search(r'interface\s+BootstrapState\s*\{(.*?)\n\}', src, re.S)
+if not m or 'eagerBootstrapError' not in m.group(1):
+    sys.exit('BootstrapState interface must declare eagerBootstrapError')
+# The eager bootstrap rejection path must assign to it.
+m = re.search(r'PI_SUBAGENT_CHILD === "1"\s*\)\s*\{(.*?)\n  \}', src, re.S)
+if not m or 'state.eagerBootstrapError' not in m.group(1):
+    sys.exit('eager bootstrap rejection must persist state.eagerBootstrapError')
+# The tool_call hook must read it and return block: true under
+# shouldBlockBootstrapFailure() semantics.
+hook_start = src.index('pi.on("tool_call"')
+hook = src[hook_start:hook_start + 4000]
+if 'state.eagerBootstrapError' not in hook:
+    sys.exit('tool_call hook must read state.eagerBootstrapError')
+if 'shouldBlockBootstrapFailure()' not in hook:
+    sys.exit('tool_call hook must gate the eager-failure block on shouldBlockBootstrapFailure()')
+if 'block: true' not in hook:
+    sys.exit('tool_call hook must return block: true on eager bootstrap failure')
+# The block reason should connect the failure back to the bootstrap path.
+block_marker = 'block: true'
+block_idx = hook.index(block_marker)
+window = hook[max(0, block_idx - 200):block_idx + 200]
+if 'agent-ledger bootstrap failed' not in window and 'PI_SUBAGENT_CHILD' not in window and 'subagent' not in window.lower():
+    sys.exit('eager-failure block reason must mention agent-ledger bootstrap, subagent, or PI_SUBAGENT_CHILD')
+PYEXT
+
+# 3. The subagent `tool_call` block exists, but its body is
+#    observation-only: no env mutation, no parent-side assign call,
+#    no overlap guard, and no `block: true` return.
+python3 - <<'PYEXT'
+from pathlib import Path
+import re
+import sys
+
+src = Path('adapters/pi/agent-ledger.ts').read_text()
+start = src.index('if (SUBAGENT_TOOLS.has(toolName)) {')
+# Walk braces from the `{` after the `if (...)` to find the matching close.
+body_start = src.index('{', start)
+depth = 0
+end = None
+for i in range(body_start, len(src)):
+    ch = src[i]
+    if ch == '{':
+        depth += 1
+    elif ch == '}':
+        depth -= 1
+        if depth == 0:
+            end = i + 1
+            break
+if end is None:
+    sys.exit('could not find end of subagent tool_call block')
+block = src[body_start:end]
+forbidden = [
+    ('process.env[', 'subagent block must not mutate process.env'),
+    ('runLedger(["assign"', 'subagent block must not call agent-ledger assign'),
+    ('subagentEnvRestores', 'subagent block must not use a single-flight env guard'),
+    ('block: true', 'subagent block must not return block: true'),
+    ('snapshotEnv', 'subagent block must not snapshot env'),
+    ('restoreEnv', 'subagent block must not restore env'),
+]
+for token, message in forbidden:
+    if token in block:
+        sys.exit(message)
+PYEXT
+
+# 4. The deleted helpers must not reappear.
+! grep -n 'function generateChildTaskId' adapters/pi/agent-ledger.ts
+! grep -n 'from "node:crypto"' adapters/pi/agent-ledger.ts
+! grep -n 'function snapshotEnv' adapters/pi/agent-ledger.ts
+! grep -n 'function restoreEnv' adapters/pi/agent-ledger.ts
+! grep -n 'function collectSubagentCwds' adapters/pi/agent-ledger.ts
+! grep -n 'function resolveSubagentLedgerCwd' adapters/pi/agent-ledger.ts
+! grep -n 'subagentEnvRestores' adapters/pi/agent-ledger.ts
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -96,6 +218,11 @@ export PATH="$tmp/bin:$PATH"
 export AGENT_LEDGER_STUB_LOG="$tmp/ledger.log"
 export AGENT_LEDGER_AUTO_ASSIGN_ALLOW='src/**:tests/**'
 unset AGENT_ID AGENT_LEDGER_TASK_ID AGENT_LEDGER_PARENT_TASK_ID AGENT_LEDGER_DIR || true
+# Pi subagent child env may be inherited from a parent session that
+# itself runs as a subagent. Clear it so the legacy task-source chain
+# tests below behave as if the script were invoked from a normal
+# (non-subagent) shell.
+unset PI_SUBAGENT_CHILD PI_SUBAGENT_RUN_ID PI_SUBAGENT_CHILD_INDEX PI_SUBAGENT_CHILD_AGENT || true
 
 # Auto-fallback: outside any git repo, with no env or flag, the bootstrap
 # must produce the timestamp-based id and emit the auto-assigned marker.
@@ -374,5 +501,75 @@ git -C "$repo_shell" -c user.email=t@t -c user.name=t commit --allow-empty -qm i
 git -C "$repo_shell" checkout -q -b feature/shell-export
 shell_line="$(bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --orchestrator test --cwd "$repo_shell")"
 grep -q 'export AGENT_LEDGER_AUTO_ASSIGNED=0' <<<"$shell_line"
+
+# Subagent source: PI_SUBAGENT_CHILD=1 with the four required env vars
+# must derive a deterministic child task id, a deterministic child
+# AGENT_ID, preserve the inherited parent AGENT_ID as --orchestrator,
+# emit TASK_SOURCE=subagent, and write a metadata payload matching the
+# locked decision 7 schema (subagent_child_index is a JSON number).
+: > "$AGENT_LEDGER_STUB_LOG"
+subagent_metadata="$tmp/subagent-metadata.json"
+export AGENT_LEDGER_STUB_METADATA_LOG="$subagent_metadata"
+subagent_line="$(
+  PI_SUBAGENT_CHILD=1 \
+  PI_SUBAGENT_RUN_ID=run-abc \
+  PI_SUBAGENT_CHILD_INDEX=0 \
+  PI_SUBAGENT_CHILD_AGENT=worker \
+  AGENT_LEDGER_TASK_ID=parent/task \
+  AGENT_ID=agent:pi:parent:42 \
+  bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --cwd "$nogit" --json
+)"
+node -e '
+const env = JSON.parse(process.argv[1].slice("AGENT_LEDGER_BOOTSTRAP_JSON=".length));
+if (env.AGENT_LEDGER_TASK_ID !== "parent/task/worker/run-abc-0") throw new Error(`task=${env.AGENT_LEDGER_TASK_ID}`);
+if (env.AGENT_LEDGER_TASK_SOURCE !== "subagent") throw new Error(`source=${env.AGENT_LEDGER_TASK_SOURCE}`);
+if (env.AGENT_LEDGER_AUTO_ASSIGNED !== "0") throw new Error(`AUTO_ASSIGNED=${env.AGENT_LEDGER_AUTO_ASSIGNED}`);
+if (env.AGENT_ID !== "agent:pi:subagent:run-abc:0") throw new Error(`AGENT_ID=${env.AGENT_ID}`);
+if (env.AGENT_LEDGER_PARENT_TASK_ID !== "parent/task") throw new Error(`PARENT_TASK_ID=${env.AGENT_LEDGER_PARENT_TASK_ID}`);
+' "$subagent_line"
+grep -q -- "--orchestrator agent:pi:parent:42" "$AGENT_LEDGER_STUB_LOG"
+grep -q -- "--agent agent:pi:subagent:run-abc:0" "$AGENT_LEDGER_STUB_LOG"
+grep -q -- "--task parent/task/worker/run-abc-0" "$AGENT_LEDGER_STUB_LOG"
+grep -q -- "--if-absent" "$AGENT_LEDGER_STUB_LOG"
+grep -q -- "\[harness-derived by pi-adapter source=subagent" "$AGENT_LEDGER_STUB_LOG"
+python3 - "$subagent_metadata" <<'PYSUB'
+import json
+import sys
+with open(sys.argv[1], encoding='utf-8') as fh:
+    raw = fh.read()
+    meta = json.loads(raw)
+if meta.get("parent_task") != "parent/task":
+    raise SystemExit(meta)
+if meta.get("parent_agent_id") != "agent:pi:parent:42":
+    raise SystemExit(meta)
+if meta.get("subagent_run_id") != "run-abc":
+    raise SystemExit(meta)
+if meta.get("subagent_child_index") != 0:
+    raise SystemExit(meta)
+if not isinstance(meta.get("subagent_child_index"), int):
+    raise SystemExit("subagent_child_index must be a JSON number")
+if meta.get("subagent_child_agent") != "worker":
+    raise SystemExit(meta)
+if meta.get("dispatch_origin") != "pi-subagent-bootstrap":
+    raise SystemExit(meta)
+PYSUB
+unset AGENT_LEDGER_STUB_METADATA_LOG
+
+# Subagent source: a missing required env var must hard-fail with a
+# clear diagnostic and must NOT fall back to branch or auto.
+: > "$AGENT_LEDGER_STUB_LOG"
+if PI_SUBAGENT_CHILD=1 \
+   PI_SUBAGENT_RUN_ID=run-abc \
+   PI_SUBAGENT_CHILD_INDEX=0 \
+   PI_SUBAGENT_CHILD_AGENT=worker \
+   AGENT_ID=agent:pi:parent:42 \
+   bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --cwd "$repo" --json \
+     >/dev/null 2>"$tmp/subagent-missing-parent-task.err"; then
+  echo "expected subagent bootstrap to fail when AGENT_LEDGER_TASK_ID is unset" >&2
+  exit 1
+fi
+grep -q -- 'AGENT_LEDGER_TASK_ID' "$tmp/subagent-missing-parent-task.err"
+grep -q -- 'refusing to fall back' "$tmp/subagent-missing-parent-task.err"
+grep -q '^assign ' "$AGENT_LEDGER_STUB_LOG" && { echo "missing-env subagent bootstrap should not call assign" >&2; exit 1; } || true
 
 printf 'adapter tests passed\n'

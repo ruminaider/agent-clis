@@ -585,10 +585,10 @@ func Run(ctx context.Context, in Inputs) (*Report, error) {
 			if err != nil {
 				return errorReport(StatusError, CodeStorageError, "load historic assignments: "+err.Error(), now), nil
 			}
-			byID := make(map[string]string, len(historic))
+			byID := make(map[string]domain.Assignment, len(historic))
 			agentSet := make(map[string]struct{}, len(historic))
 			for _, a := range historic {
-				byID[a.AssignmentID] = a.AssignedAgentID
+				byID[a.AssignmentID] = a
 				if a.AssignedAgentID != "" {
 					agentSet[a.AssignedAgentID] = struct{}{}
 				}
@@ -600,16 +600,24 @@ func Run(ctx context.Context, in Inputs) (*Report, error) {
 				// Prefer the assignment under which the change was
 				// recorded.
 				if c.AssignmentID != "" {
-					if owner, ok := byID[c.AssignmentID]; ok {
-						if owner == "" || owner == c.AgentID {
+					if historic, ok := byID[c.AssignmentID]; ok {
+						// Suppress only for the historic row itself when it
+						// is a subagent-bootstrap assignment owned by the
+						// recording agent. That keeps a legitimate child
+						// bootstrap row in policy without masking a mismatch
+						// on some other historic assignment row.
+						if isSubagentBootstrapAssignment(historic) && historic.AssignedAgentID == c.AgentID {
+							continue
+						}
+						if historic.AssignedAgentID == "" || historic.AssignedAgentID == c.AgentID {
 							continue
 						}
 						r.Findings = append(r.Findings, Finding{
 							Code:              CodeAgentMismatch,
 							Severity:          SevError,
-							Message:           fmt.Sprintf("change %s recorded by %s but assignment %s is assigned to %s", c.ChangeID, c.AgentID, c.AssignmentID, owner),
-							Details:           map[string]any{"change_id": c.ChangeID, "agent_id": c.AgentID, "assignment_id": c.AssignmentID, "assigned_agent_id": owner},
-							SuggestedRecovery: fmt.Sprintf("Reassign with `agent-ledger assign --task %s --agent %s ...` or have %s record the change.", in.TaskID, c.AgentID, owner),
+							Message:           fmt.Sprintf("change %s recorded by %s but assignment %s is assigned to %s", c.ChangeID, c.AgentID, c.AssignmentID, historic.AssignedAgentID),
+							Details:           map[string]any{"change_id": c.ChangeID, "agent_id": c.AgentID, "assignment_id": c.AssignmentID, "assigned_agent_id": historic.AssignedAgentID},
+							SuggestedRecovery: fmt.Sprintf("Reassign with `agent-ledger assign --task %s --agent %s ...` or have %s record the change.", in.TaskID, c.AgentID, historic.AssignedAgentID),
 						})
 						continue
 					}
@@ -618,6 +626,13 @@ func Run(ctx context.Context, in Inputs) (*Report, error) {
 				// not populated. Accept the change if its agent_id has
 				// ever held an assignment on this task; otherwise flag.
 				if _, ok := agentSet[c.AgentID]; ok {
+					continue
+				}
+				// Suppress for subagent-bootstrap rows when the recording
+				// agent is the correct assignee but falls outside agentSet
+				// (e.g., a data-consistency edge case or mid-migration
+				// ledger). Third-party callers are not suppressed.
+				if isSubagentBootstrapAssignment(*assignment) && c.AgentID == assignment.AssignedAgentID {
 					continue
 				}
 				r.Findings = append(r.Findings, Finding{
@@ -1076,13 +1091,35 @@ func recomputeAssignmentHash(s summary.AssignmentSnapshot) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+// isSubagentBootstrapAssignment reports whether a was created by the
+// pi-subagents child bootstrap. These assignments are orchestrator-
+// initiated: the orchestrator dispatched a subagent, and the child
+// self-assigned on bootstrap. They carry
+// metadata.dispatch_origin == "pi-subagent-bootstrap".
+func isSubagentBootstrapAssignment(a domain.Assignment) bool {
+	v, _ := a.Metadata["dispatch_origin"].(string)
+	return v == "pi-subagent-bootstrap"
+}
+
 // assignmentIsAutoDerived reports whether a was created by an
 // adapter's auto-derivation path rather than by an explicit
 // orchestrator. The signal is the v0.1.1+ structured metadata flag
 // metadata.auto_assigned == true; the v0.2.0-rc1 reason marker
 // prefix ("[auto-assigned by ...]" or "[harness-derived by ...]")
 // is honored as a fallback for ledgers written before v0.1.1.
+//
+// Orchestrator-dispatched subagent children (dispatch_origin ==
+// "pi-subagent-bootstrap") are NOT treated as auto-derived: the
+// orchestrator explicitly initiated the dispatch, and the child
+// self-assigned on bootstrap. Suppress the AUTO_ASSIGNED_TASK
+// warning for those rows.
 func assignmentIsAutoDerived(a domain.Assignment) bool {
+	// Subagent-bootstrap rows are orchestrator-dispatched, not
+	// adapter-invented. Skip the auto-derived classification so
+	// AUTO_ASSIGNED_TASK does not fire for healthy subagent children.
+	if isSubagentBootstrapAssignment(a) {
+		return false
+	}
 	if v, ok := a.Metadata["auto_assigned"].(bool); ok && v {
 		return true
 	}

@@ -655,6 +655,8 @@ agent-ledger assign \
 
 Writes `task.assigned`. This command is for orchestrators and adapters.
 
+When a pi subagent child writes its own assignment from its session bootstrap, the child uses `--agent <child-agent-id>` for its own identity and `--orchestrator <parent-agent-id>` for the inherited parent identity, and supplies the structured metadata schema described in section 21.1. The child uses only its own `<child-agent-id>` for subsequent `claim`, `record`, `heartbeat`, and `close` events.
+
 ### 18.4 `claim`
 
 ```bash
@@ -884,11 +886,14 @@ REVIEW_ONLY_WRITE
 EXCLUSIVE_LOCK_HELD
 SUMMARY_MISMATCH
 SYMLINK_ALIAS
+AUTO_ASSIGNED_TASK
 CONFIG_ERROR
 STORAGE_ERROR
 ```
 
 `SYMLINK_ALIAS` warns that two active intents reference different display paths that resolve through symlinks to the same realpath but compute distinct `canonical_path_hash` values. SPEC §14 #8: switching the equality key from realpath to display lost free symlink-aliasing, so this finding makes the regression observable. Operators should pick one canonical display path or close one of the intents.
+
+`AUTO_ASSIGNED_TASK` (severity: warning) fires when a verified task has an assignment row but that row was created by an adapter's auto-derivation path rather than an explicit orchestrator assignment. Detection keys on `metadata.auto_assigned == true`; falls back to a leading `[auto-assigned by ...]` or `[harness-derived by ...]` reason marker for rows written by older adapter versions. Assignments whose `metadata.dispatch_origin` is `"pi-subagent-bootstrap"` are explicitly exempt: pi subagent children write their own assignment rows from their session bootstrap, but their dispatches are orchestrator-initiated, not adapter fallbacks. This finding is additive with `MISSING_ASSIGNMENT`: the no-row case still reports `MISSING_ASSIGNMENT`; `AUTO_ASSIGNED_TASK` fires only when a row exists but was adapter-derived. See section 21.1 for the subagent bootstrap contract and the verify suppression rule.
 
 ## 20. Babysitter integration
 
@@ -984,6 +989,66 @@ Requirements:
 9. Run `agent-ledger verify --json` before gate-reviewer marks a task complete.
 
 If pi cannot intercept edit/write at the tool layer, MVP may ship with a pi extension that wraps supported tools plus a documented limitation.
+
+### 21.1 Pi subagent child bootstrap invariant
+
+pi-subagents spawns child processes that load the pi extension afresh. Children inherit the parent's environment, including `AGENT_LEDGER_TASK_ID` and `AGENT_ID`, and pi-subagents adds `PI_SUBAGENT_CHILD=1`, `PI_SUBAGENT_CHILD_AGENT`, `PI_SUBAGENT_RUN_ID`, and `PI_SUBAGENT_CHILD_INDEX` to the child's environment. A pi subagent child must self-assign its own task instead of inheriting one from the parent.
+
+The invariant is:
+
+> For a pi subagent child, no `claim`, `record`, `heartbeat`, or `close`
+> may execute until a durable assignment exists for that child task in
+> the same ledger, and every child-side event must use a child `AGENT_ID`
+> while the assignment's `orchestrator_id` remains the parent agent
+> identity. Define explicitly whether assignment visibility is required
+> at dispatch time or only before first child action.
+
+This spec resolves the open clause: assignment visibility is required at extension load time in the child, before the child issues any tool call. A child cannot `claim`, `record`, `heartbeat`, or `close` until its own durable assignment row exists.
+
+The contract has six parts. They are user-approved decisions; see `tasks/option-d-context.md` for the full rationale. The format strings and metadata schema below are byte-for-byte authoritative.
+
+1. **New task source `subagent`.** When the pi extension loads in a child process and `process.env.PI_SUBAGENT_CHILD === "1"`, the bootstrap selects `task_source=subagent`. This source preempts the chain `flag`, `env`, `pr`, `branch`, `detached`, `auto` and short-circuits it. (`tasks/option-d-context.md` decision 1 also defines how `verify` treats this source: `AUTO_ASSIGNED_TASK` is suppressed for assignments whose `metadata.dispatch_origin = "pi-subagent-bootstrap"`. The warning continues to fire for true adapter-derived self-bootstrap such as `branch`, `detached`, `auto`, and explicit-repair.)
+
+2. **Eager bootstrap.** The bootstrap runs at extension load, not on the first tool call. The assignment row exists before the child can issue any `claim`, `record`, `heartbeat`, or `close`. This is the "before first child action" half of the invariant. Trade-off: every child pays one `agent-ledger assign --if-absent` round-trip even if it never edits anything. Benefit: audit chronology stays clean (`task.assigned` precedes any later `intent.opened`), and zero-tool children still leave an assignment row. (`tasks/option-d-context.md` decision 2.)
+
+3. **Hard-fail on missing parent task.** If `PI_SUBAGENT_CHILD=1` is set but the inherited parent task id (`AGENT_LEDGER_TASK_ID`), `PI_SUBAGENT_RUN_ID`, `PI_SUBAGENT_CHILD_INDEX`, or `PI_SUBAGENT_CHILD_AGENT` is missing, bootstrap exits non-zero with a clear diagnostic. It does not fall back to `branch`, `auto`, or any other task source. (`tasks/option-d-context.md` decision 3.)
+
+4. **Deterministic child task id.** The child task id is derived from four inputs: the inherited parent task id (`parent_task`), the child agent name (`child_agent`), the run id (`run_id`), and the child index (`child_index`). The format is fixed:
+
+   ```
+   <parent_task>/<child_agent>/<run_id>-<child_index>
+   ```
+
+   Inputs:
+   - `parent_task`: the inherited `AGENT_LEDGER_TASK_ID`.
+   - `child_agent`: `PI_SUBAGENT_CHILD_AGENT`.
+   - `run_id`: `PI_SUBAGENT_RUN_ID`.
+   - `child_index`: `PI_SUBAGENT_CHILD_INDEX` rendered as a decimal integer string with no padding.
+
+   No random suffix, no timestamp. A retry of the same logical child (same `run_id`, same `child_index`) produces the same task id, which lets `agent-ledger assign --if-absent` reuse the existing assignment row instead of creating a duplicate. A genuinely new dispatch (different `run_id` or different `child_index`) produces a fresh task id. (`tasks/option-d-context.md` decision 5.)
+
+5. **Deterministic child `AGENT_ID`, distinct from the parent.** The child `AGENT_ID` is derived from the same run inputs:
+
+   ```
+   agent:pi:subagent:<run_id>:<child_index>
+   ```
+
+   This child `AGENT_ID` is the value the child uses for every child-side event: `claim`, `record`, `heartbeat`, and `close`. It is distinct from the inherited parent `AGENT_ID`. The bootstrap captures the inherited parent `AGENT_ID` separately and passes it to `agent-ledger assign --orchestrator <parent-agent-id>`, so the assignment row's `orchestrator_id` records the parent identity while `assigned_agent_id` records the child identity. A retry of the same logical child reuses the same child `AGENT_ID`, so `assign --if-absent` is a no-op and `verify` does not surface `AGENT_MISMATCH` on the second spawn's claims and records. (`tasks/option-d-context.md` decision 6.)
+
+6. **Locked assignment metadata schema.** The `agent-ledger assign --metadata` JSON payload for a subagent child row must include exactly these fields:
+
+   - `parent_task`: string. Inherited parent task id.
+   - `parent_agent_id`: string. Inherited parent `AGENT_ID`.
+   - `subagent_run_id`: string. `PI_SUBAGENT_RUN_ID` verbatim.
+   - `subagent_child_index`: number (decimal integer, JSON number type). `PI_SUBAGENT_CHILD_INDEX` parsed as int.
+   - `subagent_child_agent`: string. `PI_SUBAGENT_CHILD_AGENT` verbatim.
+   - `dispatch_origin`: string literal `"pi-subagent-bootstrap"`.
+
+   `dispatch_origin` is the discriminator that `verify` reads to suppress `AUTO_ASSIGNED_TASK` per part 1. Reason text remains an audit hint. Metadata is the authoritative surface for programmatic readers (verify, audit, cross-tool correlation). (`tasks/option-d-context.md` decision 7.)
+
+The parent-side `subagent` `tool_call` hook in the pi extension is observation-only. It records that a dispatch was initiated (parent task id, child agent name, dispatch timestamp) for correlation and telemetry. It does not mutate `process.env`, does not call `agent-ledger assign`, and does not block the dispatch. The child does its own assignment from its own session bootstrap. (`tasks/option-d-context.md` decision 4.)
+
+When a child resolves a different ledger than its parent (different `cwd` per task), the child writes its assignment row to its own resolved ledger. In that case `metadata.parent_task` is informational cross-ledger linkage. It is not a relational guarantee, and a `verify` run inside the child's ledger cannot follow `metadata.parent_task` back to the parent assignment in the parent's ledger.
 
 ## 22. Claude Code adapter
 

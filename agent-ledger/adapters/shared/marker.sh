@@ -37,7 +37,7 @@ agent_ledger_auto_assigned_marker() {
 
   local marker
   case "$source_lower" in
-    branch|pr|detached)
+    branch|pr|detached|subagent)
       marker="[harness-derived by $(agent_ledger_sanitize_marker_token "$by") source=$(agent_ledger_sanitize_marker_token "$source_lower")"
       ;;
     *)

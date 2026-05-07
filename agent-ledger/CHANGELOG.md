@@ -10,18 +10,68 @@ of the binary version.
 
 ## [Unreleased]
 
+### Added
+
+- **pi adapter: subagent children now self-assign.** Each pi subagent
+  child self-assigns its own task from its session bootstrap. When
+  pi-subagents sets `PI_SUBAGENT_CHILD=1` in the child's environment,
+  the extension runs its bootstrap eagerly at extension load (before
+  any tool call) and writes a fresh assignment row. The parent
+  extension's `subagent` hook becomes observation-only: it records the
+  dispatch event for correlation and telemetry but does not mutate
+  `process.env` or call `agent-ledger assign`.
+
+  The practical consequences:
+
+  - **Parallel dispatch works.** Two `subagent()` tool calls in the
+    same assistant turn each produce separate assignment rows with
+    distinct task ids and agent ids. Parallel `tasks: [...]` fan-outs,
+    `count: N` expansions, and multiple independent `subagent()` calls
+    are all supported without any serialization constraint.
+
+  - **Child task ids are deterministic.** A child task id derives from
+    four inherited inputs (parent task id, child agent name, run id,
+    child index) with no random suffix and no timestamp:
+    `<parent>/<agent>/<run_id>-<index>`. A retry of the same logical
+    child reuses the same task id via `assign --if-absent`, keeping the
+    audit trail clean.
+
+  - **Child sessions have fresh agent identities.** The child `AGENT_ID`
+    is `agent:pi:subagent:<run_id>:<index>`, distinct from the parent's
+    `AGENT_ID`. Claims, records, heartbeats, and closes in the child are
+    attributed to the child identity; `orchestrator_id` on the
+    assignment row records the parent identity for cross-session audit.
+    Verify recognizes the split: it does not raise `AGENT_MISMATCH` on a
+    subagent-bootstrap row when the calling agent matches the child
+    assignee, even though the orchestrator field holds the parent's
+    identity. A retry of the same logical child also reuses the same
+    deterministic child `AGENT_ID`, so the second spawn's claims and
+    records do not trigger `AGENT_MISMATCH`.
+
+  - **Async and background dispatch work correctly.** Children launched
+    via `subagent({ async: true })` inherit `PI_SUBAGENT_CHILD=1` and
+    bootstrap eagerly, so they self-assign the correct child task id
+    instead of falling back to branch or auto detection.
+
+  This supersedes the approach added in PR #21
+  (`fix/pi-child-task-id-collision`). That PR added a random hex suffix
+  to parent-minted child task ids and documented why dispatch had to
+  be serialized. Under the new design the parent never mints child task
+  ids, so the hex suffix, the serialization lock, and the background
+  inheritance gap are all removed.
+
+- **Verify finding `AUTO_ASSIGNED_TASK`** added to the SPEC section
+  19.3 finding catalog. Severity: warning. Fires when an assignment
+  row exists but was created by an adapter's auto-derivation path
+  rather than an explicit orchestrator assignment. Pi subagent children
+  are exempt: their assignment rows are written by the child's own
+  bootstrap, but the dispatch that triggered them was
+  orchestrator-initiated. The discriminator is
+  `metadata.dispatch_origin = "pi-subagent-bootstrap"`. Complement to
+  `MISSING_ASSIGNMENT` (no-row case).
+
 ### Changed
 
-- pi adapter: child task ids now include a random hex suffix
-  (`<parent>/<agent>/<base36-time>-<hex8>`) so two siblings minted in
-  the same millisecond no longer collide. The previous format used
-  `Date.now().toString(36)` alone, which was masked by the
-  single-flight env injection guard but would have become reachable
-  the moment that guard was relaxed. Defensive regardless.
-- pi adapter: README now explains why subagent dispatch is serialized
-  (pi-subagents 0.24.0 has no per-call `env` channel; mutating
-  `process.env` is the only working mechanism for child inheritance).
-  Documents the related background-mode inheritance gap.
 - pi adapter: removed the no-op `event.input.env` annotation.
   pi-subagents validates input against a TypeBox schema that strips
   unknown fields, so the annotation never reached the spawner. The
