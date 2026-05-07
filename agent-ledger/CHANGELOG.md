@@ -10,6 +10,23 @@ of the binary version.
 
 ## [Unreleased]
 
+### Changed
+
+- pi adapter: child task ids now include a random hex suffix
+  (`<parent>/<agent>/<base36-time>-<hex8>`) so two siblings minted in
+  the same millisecond no longer collide. The previous format used
+  `Date.now().toString(36)` alone, which was masked by the
+  single-flight env injection guard but would have become reachable
+  the moment that guard was relaxed. Defensive regardless.
+- pi adapter: README now explains why subagent dispatch is serialized
+  (pi-subagents 0.24.0 has no per-call `env` channel; mutating
+  `process.env` is the only working mechanism for child inheritance).
+  Documents the related background-mode inheritance gap.
+- pi adapter: removed the no-op `event.input.env` annotation.
+  pi-subagents validates input against a TypeBox schema that strips
+  unknown fields, so the annotation never reached the spawner. The
+  comment claiming it was a forward-compatibility hook was misleading.
+
 ## [0.3.0] - 2026-05-04
 
 ### Added

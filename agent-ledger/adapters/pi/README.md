@@ -57,7 +57,7 @@ set explicitly:
 | ------- | ----------------------- |
 | `write` / `edit` / `multi_edit` | Pre: `agent-ledger claim` for the path(s). Post: `agent-ledger record` with summary derived from input. Block on claim failure. |
 | `bash` | Default: warn and let it run, snapshotting `git status --porcelain` before the call and claim/recording paths that become newly dirty after it returns. `AGENT_LEDGER_BASH_MODE=block` blocks all bash tool calls because shell mutation detection is not complete. |
-| `subagent` | Pre: auto-assign a child task (`<parent>/<subagent>/<id>`), inject `AGENT_LEDGER_TASK_ID` and `AGENT_LEDGER_PARENT_TASK_ID` into the subagent's env so its own pi extension picks up the chain. |
+| `subagent` | Pre: auto-assign a child task (`<parent>/<subagent>/<base36-time>-<hex8>`), inject `AGENT_LEDGER_TASK_ID` and `AGENT_LEDGER_PARENT_TASK_ID` into the subagent's env so its own pi extension picks up the chain. The hex suffix keeps ids unique even when two siblings are minted in the same millisecond. |
 
 ## Subagent inheritance
 
@@ -104,13 +104,31 @@ still reports `MISSING_ASSIGNMENT`.
   root or via `chmod`. SPEC §33 open decision #2 covers the design
   trade-off. For high-trust workflows, use `AGENT_LEDGER_BASH_MODE=block`
   to block bash entirely.
-- **Temporary env override for subagents is serialized.** The
-  extension sets child task env on `process.env` while the current
-  pi-subagents package spawns the child process. It writes the child
-  assignment from the requested subagent cwd when one is supplied, so
-  cross-repo subagents use the same ledger their child bootstrap will
-  resolve. It blocks overlapping subagent tool calls while that
-  override is active.
+- **Subagent dispatch is serialized.** pi-subagents (verified against
+  0.24.0) has no per-task `env` field on the `subagent` tool input
+  schema and never reads caller-supplied env from `event.input`. The
+  only working channel for getting `AGENT_LEDGER_TASK_ID` into a child
+  pi process is the parent's `process.env`, which the child inherits
+  at spawn time. Because `process.env` is a single mutable global, the
+  extension takes a single-flight lock around the mutation: a second
+  `subagent` tool call is refused while a first one is still between
+  its `tool_call` and `tool_result` hooks. The cost is that the
+  orchestrator cannot fan out two `subagent` tool calls in the same
+  assistant turn. A single `subagent({ tasks: [...] })` parallel
+  dispatch is unaffected because it is one tool call. The constraint
+  will lift once pi-subagents accepts a per-call `env` field; until
+  then the lock is structural, not a preference. The extension also
+  writes the child assignment from the requested subagent cwd when one
+  is supplied, so cross-repo subagents use the same ledger their child
+  bootstrap will resolve.
+- **Background subagent dispatch loses ledger inheritance.**
+  `subagent({ async: true })` launches the child through a separate
+  background runner process whose `process.env` is captured before the
+  extension's `tool_call` hook runs. The child therefore does not see
+  the injected `AGENT_LEDGER_TASK_ID`. It still bootstraps via branch
+  or PR detection (or the `auto` fallback), so ledger continuity is
+  best-effort, not guaranteed. Same upstream dependency as the
+  serialization caveat above.
 - **Concurrent exclusive claims have a known race** in v0.1.0
   (tracked for v0.1.x). Two parallel pi sessions both claiming an
   exclusive path may both win. Until the kernel fix lands, serialize
