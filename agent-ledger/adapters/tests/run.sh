@@ -15,34 +15,88 @@ node --check adapters/babysitter/define-ledger-task.js
 ! grep -n "AGENT_LEDGER_DIR = process.env.AGENT_LEDGER_DIR ?? \"\"" adapters/pi/agent-ledger.ts
 grep -n "agent-ledger/session-bootstrap.sh" adapters/pi/agent-ledger.ts >/dev/null
 grep -n "bootstrapPromise" adapters/pi/agent-ledger.ts >/dev/null
-grep -n "subagentEnvRestores" adapters/pi/agent-ledger.ts >/dev/null
 grep -n "isExecutionSubagentCall" adapters/pi/agent-ledger.ts >/dev/null
 grep -n "shouldBlockBootstrapFailure" adapters/pi/agent-ledger.ts >/dev/null
-grep -n "resolveSubagentLedgerCwd" adapters/pi/agent-ledger.ts >/dev/null
-grep -n "input?.chain" adapters/pi/agent-ledger.ts >/dev/null
-grep -n "process.env\[key\] = value" adapters/pi/agent-ledger.ts >/dev/null
 grep -n "cwd," adapters/pi/agent-ledger.ts >/dev/null
-python3 - <<'PYEXT'
-from pathlib import Path
-src = Path('adapters/pi/agent-ledger.ts').read_text()
-reserve = src.index('state.subagentEnvRestores.set(event.toolCallId, restore);')
-assign = src.index('const assign = await runLedger([')
-mutate = src.index('for (const [key, value] of Object.entries(childEnv)) process.env[key] = value;')
-fail_delete = src.index('state.subagentEnvRestores.delete(event.toolCallId);')
-if not (reserve < assign < fail_delete < mutate):
-    raise SystemExit('subagent env reservation must happen before await and clear before mutation on failure')
-PYEXT
 grep -n "file_path" adapters/pi/agent-ledger.ts >/dev/null
 grep -n "filePath" adapters/pi/agent-ledger.ts >/dev/null
-
-# Child task id must use a random suffix, not just Date.now(), to stay
-# collision-safe under bursty or parallel dispatch. Verify the helper
-# is wired up and seeded from node:crypto.
-grep -n 'from "node:crypto"' adapters/pi/agent-ledger.ts >/dev/null
-grep -n "function generateChildTaskId" adapters/pi/agent-ledger.ts >/dev/null
-grep -n "randomBytes(4).toString(\"hex\")" adapters/pi/agent-ledger.ts >/dev/null
 # Old format (timestamp only) must not reappear inline.
 ! grep -n 'childTask = `\${state.resolvedTaskId}/\${childAgent}/\${Date.now().toString(36)}`' adapters/pi/agent-ledger.ts
+
+# Child self-assignment contract checks (Option D, task-007).
+#
+# These prove the parent extension does not mint child task ids,
+# does not call agent-ledger assign on behalf of the child, and does
+# not mutate process.env for any subagent dispatch. The child is
+# responsible for its own bootstrap.
+#
+# 1. The TaskSource union and KNOWN_TASK_SOURCES include `subagent`
+#    so parseTaskSource("subagent") returns "subagent".
+python3 - <<'PYEXT'
+import re
+import sys
+from pathlib import Path
+
+src = Path('adapters/pi/agent-ledger.ts').read_text()
+m = re.search(r'KNOWN_TASK_SOURCES\s*=\s*new Set<TaskSource>\(\[(.*?)\]\)', src, re.S)
+if not m or '"subagent"' not in m.group(1):
+    sys.exit('KNOWN_TASK_SOURCES must include "subagent"')
+m = re.search(r'type\s+TaskSource\s*=\s*([^;]+);', src)
+if not m or '"subagent"' not in m.group(1):
+    sys.exit('TaskSource union must include "subagent"')
+PYEXT
+
+# 2. Eager child bootstrap fires at extension load when
+#    PI_SUBAGENT_CHILD === "1".
+grep -n 'process.env.PI_SUBAGENT_CHILD === "1"' adapters/pi/agent-ledger.ts >/dev/null
+
+# 3. The subagent `tool_call` block exists, but its body is
+#    observation-only: no env mutation, no parent-side assign call,
+#    no overlap guard, and no `block: true` return.
+python3 - <<'PYEXT'
+from pathlib import Path
+import re
+import sys
+
+src = Path('adapters/pi/agent-ledger.ts').read_text()
+start = src.index('if (SUBAGENT_TOOLS.has(toolName)) {')
+# Walk braces from the `{` after the `if (...)` to find the matching close.
+body_start = src.index('{', start)
+depth = 0
+end = None
+for i in range(body_start, len(src)):
+    ch = src[i]
+    if ch == '{':
+        depth += 1
+    elif ch == '}':
+        depth -= 1
+        if depth == 0:
+            end = i + 1
+            break
+if end is None:
+    sys.exit('could not find end of subagent tool_call block')
+block = src[body_start:end]
+forbidden = [
+    ('process.env[', 'subagent block must not mutate process.env'),
+    ('runLedger(["assign"', 'subagent block must not call agent-ledger assign'),
+    ('subagentEnvRestores', 'subagent block must not use a single-flight env guard'),
+    ('block: true', 'subagent block must not return block: true'),
+    ('snapshotEnv', 'subagent block must not snapshot env'),
+    ('restoreEnv', 'subagent block must not restore env'),
+]
+for token, message in forbidden:
+    if token in block:
+        sys.exit(message)
+PYEXT
+
+# 4. The deleted helpers must not reappear.
+! grep -n 'function generateChildTaskId' adapters/pi/agent-ledger.ts
+! grep -n 'from "node:crypto"' adapters/pi/agent-ledger.ts
+! grep -n 'function snapshotEnv' adapters/pi/agent-ledger.ts
+! grep -n 'function restoreEnv' adapters/pi/agent-ledger.ts
+! grep -n 'function collectSubagentCwds' adapters/pi/agent-ledger.ts
+! grep -n 'function resolveSubagentLedgerCwd' adapters/pi/agent-ledger.ts
+! grep -n 'subagentEnvRestores' adapters/pi/agent-ledger.ts
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

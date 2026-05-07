@@ -17,7 +17,6 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { promises as fs } from "node:fs";
-import { randomBytes } from "node:crypto";
 import * as path from "node:path";
 
 const exec = promisify(execFile);
@@ -30,7 +29,15 @@ const SUBAGENT_TOOLS = new Set(["subagent"]);
 const GIT_STATUS_MAX_BUFFER = 10 * 1024 * 1024;
 const GIT_STATUS_PATH_LIMIT = 1000;
 
-const KNOWN_TASK_SOURCES = new Set<TaskSource>(["flag", "env", "pr", "branch", "detached", "auto"]);
+const KNOWN_TASK_SOURCES = new Set<TaskSource>([
+  "flag",
+  "env",
+  "pr",
+  "branch",
+  "detached",
+  "auto",
+  "subagent",
+]);
 function parseTaskSource(value: string | undefined): TaskSource | null {
   if (!value) return null;
   return KNOWN_TASK_SOURCES.has(value as TaskSource) ? (value as TaskSource) : null;
@@ -41,9 +48,7 @@ interface IntentRef {
   paths: string[];
 }
 
-type EnvSnapshot = Record<string, string | undefined>;
-
-type TaskSource = "flag" | "env" | "pr" | "branch" | "detached" | "auto";
+type TaskSource = "flag" | "env" | "pr" | "branch" | "detached" | "auto" | "subagent";
 
 interface BootstrapState {
   bootstrapped: boolean;
@@ -54,7 +59,6 @@ interface BootstrapState {
   bootstrapPromise: Promise<void> | null;
   liveClaims: Map<string, IntentRef>;
   bashSnapshots: Map<string, Set<string>>;
-  subagentEnvRestores: Map<string, EnvSnapshot>;
 }
 
 // --- Helpers -------------------------------------------------------------
@@ -281,64 +285,8 @@ function diffPaths(after: Set<string>, before: Set<string>): string[] {
   return [...after].filter((p) => !before.has(p));
 }
 
-function snapshotEnv(keys: string[]): EnvSnapshot {
-  const snapshot: EnvSnapshot = {};
-  for (const key of keys) snapshot[key] = process.env[key];
-  return snapshot;
-}
-
-function restoreEnv(snapshot: EnvSnapshot): void {
-  for (const [key, value] of Object.entries(snapshot)) {
-    if (value === undefined) {
-      delete process.env[key];
-    } else {
-      process.env[key] = value;
-    }
-  }
-}
-
 function isExecutionSubagentCall(input: any): boolean {
   return !input?.action;
-}
-
-function collectSubagentCwds(input: any): string[] {
-  const cwds: string[] = [];
-  if (typeof input?.cwd === "string") cwds.push(input.cwd);
-  if (Array.isArray(input?.tasks)) {
-    for (const task of input.tasks) {
-      if (typeof task?.cwd === "string") cwds.push(task.cwd);
-    }
-  }
-  if (Array.isArray(input?.chain)) {
-    for (const step of input.chain) {
-      if (typeof step?.cwd === "string") cwds.push(step.cwd);
-      if (Array.isArray(step?.parallel)) {
-        for (const task of step.parallel) {
-          if (typeof task?.cwd === "string") cwds.push(task.cwd);
-        }
-      }
-    }
-  }
-  return [...new Set(cwds)];
-}
-
-function resolveSubagentLedgerCwd(input: any): string {
-  const cwds = collectSubagentCwds(input);
-  return cwds.length === 1 ? path.resolve(process.cwd(), cwds[0]!) : process.cwd();
-}
-
-// generateChildTaskId mints a child task id of the form
-// `<parent>/<agent>/<base36-time>-<hex8>`. The base36 timestamp keeps
-// ids time-sortable in logs and ledger queries; the random hex suffix
-// keeps them unique even when two siblings are minted in the same
-// millisecond under the same parent and agent. Same-ms collisions
-// became reachable once we considered relaxing the single-flight env
-// injection guard, but they are also possible today between sequential
-// fast-returning calls, so the random suffix is defensive regardless.
-function generateChildTaskId(parent: string, agent: string): string {
-  const ts = Date.now().toString(36);
-  const suffix = randomBytes(4).toString("hex");
-  return `${parent}/${agent}/${ts}-${suffix}`;
 }
 
 // --- Extension entry -----------------------------------------------------
@@ -353,11 +301,25 @@ export default function (pi: ExtensionAPI) {
     bootstrapPromise: null,
     liveClaims: new Map(),
     bashSnapshots: new Map(),
-    subagentEnvRestores: new Map(),
   };
 
+  // Eager child bootstrap. When pi-subagents spawns this process as a
+  // subagent child, run the bootstrap immediately at extension load so
+  // the child's assignment row exists before any tool call. This keeps
+  // audit chronology clean (`task.assigned` precedes any later
+  // `intent.opened`) and ensures zero-tool children still leave a row.
+  // Subsequent `tool_call` hooks see `state.bootstrapped === true` and
+  // skip re-bootstrapping. See `tasks/option-d-context.md` decision 2.
+  if (process.env.PI_SUBAGENT_CHILD === "1") {
+    void bootstrapSession(state, "pi", "worker").catch((err) => {
+      console.error(`agent-ledger eager child bootstrap failed: ${errorMessage(err)}`);
+    });
+  }
+
   // Bootstrap lazily on first tool call so we do not slow down sessions
-  // that never edit files.
+  // that never edit files. In subagent child mode the eager bootstrap
+  // above usually wins this race; the lazy call below then awaits the
+  // already in-flight bootstrap promise.
   pi.on("tool_call", async (event, ctx) => {
     const toolName = normalizeToolName(event.toolName);
 
@@ -382,57 +344,21 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    // Subagent dispatch: assign a child task and inject env so the
-    // child pi process picks up where the parent left off.
+    // Subagent dispatch: observation-only.
     //
-    // pi-subagents (verified against 0.24.0) has no per-task `env`
-    // field on its tool input schema and never reads `event.input.env`,
-    // so the only working channel for propagating ledger context to a
-    // spawned child is the parent's `process.env`, which the child
-    // inherits at spawn time. We therefore mutate `process.env` for
-    // the duration of this tool call and restore it in `tool_result`.
-    //
-    // Because `process.env` is a single mutable global, two overlapping
-    // subagent calls would race on it: sibling B could snapshot A's
-    // injected env (not the parent's), then A's restore could leave the
-    // parent stuck on B's task id. Until pi-subagents adds a per-call
-    // `env` channel we defend by serializing here. The cost is that
-    // the orchestrator cannot fan out two `subagent` tool calls in the
-    // same assistant turn; a single `subagent({ tasks: [...] })`
-    // parallel dispatch is unaffected.
+    // Children self-assign through their own bootstrap when
+    // `PI_SUBAGENT_CHILD=1`. The parent extension does not mint child
+    // task ids, does not call `agent-ledger assign`, and does not
+    // mutate `process.env` for any subagent dispatch. The hook stays
+    // here so future cross-cutting concerns (telemetry, correlation,
+    // audit hints) have a single attachment point. See
+    // `tasks/option-d-context.md` decision 4.
     if (SUBAGENT_TOOLS.has(toolName)) {
       if (!isExecutionSubagentCall(event.input)) return undefined;
-      if (state.subagentEnvRestores.size > 0) {
-        return { block: true, reason: "agent-ledger refused overlapping subagent env injection; wait for the active subagent call to finish" };
-      }
       const childAgent = (event.input?.agent as string) ?? "subagent";
-      const childTask = generateChildTaskId(state.resolvedTaskId ?? "", childAgent);
-      const childLedgerCwd = resolveSubagentLedgerCwd(event.input);
-      const policy = process.env.AGENT_LEDGER_AUTO_ASSIGN_POLICY ?? "warn";
-      const allowArgs = splitAllowGlobs(process.env.AGENT_LEDGER_AUTO_ASSIGN_ALLOW).flatMap((g) => ["--allow", g]);
-      const childEnv: Record<string, string> = {
-        AGENT_LEDGER_TASK_ID: childTask,
-        AGENT_LEDGER_PARENT_TASK_ID: state.resolvedTaskId ?? "",
-      };
-      if (process.env.AGENT_LEDGER_DIR) childEnv.AGENT_LEDGER_DIR = process.env.AGENT_LEDGER_DIR;
-
-      const restore = snapshotEnv(Object.keys(childEnv));
-      state.subagentEnvRestores.set(event.toolCallId, restore);
-      const assign = await runLedger([
-        "assign",
-        "--task", childTask,
-        "--orchestrator", state.resolvedAgentId ?? "pi-parent",
-        "--agent", childAgent,
-        "--policy", policy,
-        ...allowArgs,
-        "--reason", `${buildAssignmentMarker({ by: "pi-extension-subagent-hook", parent: state.resolvedTaskId, task: childTask, agent: childAgent })} subagent dispatch from ${state.resolvedAgentId ?? "pi"}`,
-      ], childLedgerCwd);
-      if (assign.code !== 0) {
-        state.subagentEnvRestores.delete(event.toolCallId);
-        return { block: true, reason: `agent-ledger refused subagent assignment: ${assign.stderr.trim() || `exit ${assign.code}`}` };
-      }
-
-      for (const [key, value] of Object.entries(childEnv)) process.env[key] = value;
+      console.error(
+        `agent-ledger: subagent dispatch parent_task=${state.resolvedTaskId ?? ""} child_agent=${childAgent} dispatched_at=${new Date().toISOString()}`,
+      );
       return undefined;
     }
 
@@ -466,17 +392,6 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_result", async (event, _ctx) => {
     if (!state.bootstrapped) return;
     const toolName = normalizeToolName(event.toolName);
-
-    // Subagent dispatch: restore the parent's ledger env after the
-    // subagent tool has spawned its child process(es).
-    if (SUBAGENT_TOOLS.has(toolName)) {
-      const restore = state.subagentEnvRestores.get(event.toolCallId);
-      if (restore) {
-        state.subagentEnvRestores.delete(event.toolCallId);
-        restoreEnv(restore);
-      }
-      return;
-    }
 
     // Edit tools: record against the intent claimed in tool_call.
     if (EDIT_TOOLS.has(toolName)) {
@@ -516,16 +431,11 @@ export {
   decodeShellSingleQuoted,
   diffPaths,
   extractEditPaths,
-  generateChildTaskId,
   normalizeToolName,
   parseBootstrapOutput,
-  collectSubagentCwds,
   errorMessage,
   isExecutionSubagentCall,
   parseTaskSource,
-  resolveSubagentLedgerCwd,
   shouldBlockBootstrapFailure,
-  restoreEnv,
-  snapshotEnv,
   splitAllowGlobs,
 };
