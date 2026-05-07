@@ -10,6 +10,8 @@ of the binary version.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-07
+
 ### Added
 
 - **pi adapter: subagent children now self-assign.** Each pi subagent
@@ -664,7 +666,9 @@ Code, and Babysitter adapters arrive in later phases.
   published `*_checksums.txt` file. A Homebrew tap with signed
   binaries is a Phase 5 deliverable.
 
-[Unreleased]: https://github.com/ruminaider/agent-clis/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ruminaider/agent-clis/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/ruminaider/agent-clis/releases/tag/v0.4.0
+[0.3.0]: https://github.com/ruminaider/agent-clis/releases/tag/v0.3.0
 [0.2.0]: https://github.com/ruminaider/agent-clis/releases/tag/v0.2.0
 [0.1.5]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.5
 [0.1.4]: https://github.com/ruminaider/agent-clis/releases/tag/v0.1.4
