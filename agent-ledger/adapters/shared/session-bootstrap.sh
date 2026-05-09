@@ -21,7 +21,9 @@
 #                              => `pr-<number>` from the current branch
 #   4. Git branch              => `<branch>` (any non-empty branch name)
 #   5. Detached HEAD           => `detached/<short-sha>`
-#   6. Auto fallback           => `auto/<agent>/<utc>` (last resort)
+#   6. Pointer file default    => `<default_task_id>` from the local
+#                                 .agent-ledger.toml when set
+#   7. Auto fallback           => `auto/<agent>/<utc>` (last resort)
 #
 # Sources 1 and 2 are explicit; the bootstrap skips assigning when an
 # active assignment already exists. If none exists, it fails early by
@@ -33,11 +35,18 @@
 # assignment on first encounter with a [harness-derived ...] marker so
 # reviewers can audit how the task id was sourced.
 #
-# Source 6 is the normal path for the legacy [auto-assigned ...]
+# Source 6 is operator-declared via the local pointer. It is the right
+# answer for non-git, ambient multi-agent projects where the harness has
+# no natural task signal. The bootstrap creates the same kind of
+# harness-derived assignment as sources 3-5.
+#
+# Source 7 is the normal path for the legacy [auto-assigned ...]
 # marker. Opt-in explicit repair assignments also use that marker, with
 # structured metadata distinguishing the repair case. The pi extension
 # reads AGENT_LEDGER_TASK_SOURCE and only surfaces a warning toast for
-# source=auto.
+# source=auto. When source=auto, the bootstrap also exports
+# AGENT_LEDGER_TASK_AUTO_REASON so the toast can name the cheapest fix
+# (one of: not_in_git_repo, git_no_head, pointer_lacks_default).
 
 set -euo pipefail
 
@@ -334,10 +343,100 @@ if [[ -z "$TASK_ID" ]]; then
   fi
 fi
 
+# Pointer-file default. The local .agent-ledger.toml may declare a
+# default_task_id for ambient multi-agent projects that have no natural
+# harness signal (e.g. non-git scratch directories where two pi sessions
+# need to share one task id). Adapter-level only: the kernel is the
+# authoritative parser and is queried via `agent-ledger pointer show`.
+POINTER_PRESENT=0
+POINTER_HAD_DEFAULT=0
+POINTER_UNREADABLE=0
+POINTER_PARSER_UNAVAILABLE=0
+if [[ -z "$TASK_ID" ]]; then
+  # Capture stdout, stderr, and exit code separately. The kernel's
+  # `pointer show --json` exits 0 when the pointer file is absent
+  # (printing present=false) and non-zero only when the file exists
+  # but cannot be parsed. Hiding that exit code with `|| true` would
+  # silently demote a malformed pointer to a misleading
+  # `not_in_git_repo` / `git_no_head` auto-fallback hint.
+  pointer_stderr_file="$(mktemp "${TMPDIR:-/tmp}/agent-ledger-pointer.XXXXXX")"
+  pointer_json=""
+  pointer_exit=0
+  if pointer_json="$( (cd "$DETECT_CWD" 2>/dev/null && agent-ledger pointer show --json) 2>"$pointer_stderr_file" )"; then
+    pointer_exit=0
+  else
+    pointer_exit=$?
+  fi
+  if (( pointer_exit != 0 )); then
+    POINTER_UNREADABLE=1
+    pointer_err_msg="$(tr -d '\r' < "$pointer_stderr_file" | tr '\n' ' ' | sed 's/  */ /g; s/^ //; s/ $//')"
+    if [[ -n "$pointer_err_msg" ]]; then
+      echo "session-bootstrap: agent-ledger pointer show failed (exit $pointer_exit): $pointer_err_msg" >&2
+    else
+      echo "session-bootstrap: agent-ledger pointer show failed (exit $pointer_exit) with no stderr; pointer state unknown" >&2
+    fi
+    pointer_json=""
+  fi
+  rm -f "$pointer_stderr_file"
+  if [[ -n "$pointer_json" ]]; then
+    pointer_present_value=""
+    pointer_default_value=""
+    if command -v python3 >/dev/null 2>&1; then
+      pointer_present_value="$(printf '%s\n' "$pointer_json" | python3 -c 'import json, sys; d=json.load(sys.stdin); print("1" if d.get("present") else "0")' 2>/dev/null)" || pointer_present_value=""
+      pointer_default_value="$(printf '%s\n' "$pointer_json" | python3 -c 'import json, sys; d=json.load(sys.stdin); print(d.get("default_task_id",""))' 2>/dev/null)" || pointer_default_value=""
+    elif command -v node >/dev/null 2>&1; then
+      pointer_present_value="$(printf '%s\n' "$pointer_json" | node -e 'let i=""; process.stdin.setEncoding("utf8"); process.stdin.on("data",c=>i+=c); process.stdin.on("end",()=>{const d=JSON.parse(i); console.log(d.present?"1":"0");});' 2>/dev/null)" || pointer_present_value=""
+      pointer_default_value="$(printf '%s\n' "$pointer_json" | node -e 'let i=""; process.stdin.setEncoding("utf8"); process.stdin.on("data",c=>i+=c); process.stdin.on("end",()=>{const d=JSON.parse(i); console.log(d.default_task_id||"");});' 2>/dev/null)" || pointer_default_value=""
+    else
+      # Neither python3 nor node is available. We have a non-empty
+      # pointer_json (so a pointer file was reachable) but no way to
+      # project its `default_task_id`. Without this branch, an operator
+      # who declared `default_task_id` would silently land in the
+      # auto-fallback path with a hint that blames git rather than the
+      # missing parser dependency.
+      POINTER_PARSER_UNAVAILABLE=1
+      echo "session-bootstrap: cannot parse pointer JSON; install python3 or node to honor default_task_id" >&2
+    fi
+    if [[ "$pointer_present_value" == "1" ]]; then
+      POINTER_PRESENT=1
+      if [[ -n "$pointer_default_value" ]]; then
+        POINTER_HAD_DEFAULT=1
+        TASK_ID="$(sanitize_task_token "$pointer_default_value")"
+        TASK_SOURCE="pointer"
+      fi
+    fi
+  fi
+fi
+
+AUTO_REASON=""
 if [[ -z "$TASK_ID" ]]; then
   if [[ "${AGENT_LEDGER_REQUIRE_TASK:-0}" == "1" ]]; then
     echo "session-bootstrap: no task id resolvable and AGENT_LEDGER_REQUIRE_TASK=1; refusing to fall back" >&2
     exit 2
+  fi
+  # Compute an actionable reason for the auto fallback. Priority,
+  # most specific to least specific:
+  #   1. pointer_unreadable: a pointer file exists but the kernel
+  #      could not parse it; the operator should fix the file.
+  #   2. pointer_parser_unavailable: a pointer file is reachable but
+  #      the bootstrap has neither python3 nor node to project its
+  #      default_task_id; the operator should install one.
+  #   3. pointer_lacks_default: the pointer parsed but has no
+  #      default_task_id field; the operator should add it.
+  #   4. not_in_git_repo / git_no_head: no pointer signal at all,
+  #      so surface the git state instead.
+  # Keep this chain in sync with AUTO_REASON_HINTS in
+  # adapters/shared/auto-fallback-toast.js.
+  if [[ "$POINTER_UNREADABLE" == "1" ]]; then
+    AUTO_REASON="pointer_unreadable"
+  elif [[ "$POINTER_PARSER_UNAVAILABLE" == "1" ]]; then
+    AUTO_REASON="pointer_parser_unavailable"
+  elif [[ "$POINTER_PRESENT" == "1" ]]; then
+    AUTO_REASON="pointer_lacks_default"
+  elif ! git_in rev-parse --git-dir >/dev/null 2>&1; then
+    AUTO_REASON="not_in_git_repo"
+  else
+    AUTO_REASON="git_no_head"
   fi
   agent_slug="$(printf '%s' "$AGENT_ID" | tr -c 'A-Za-z0-9._-' '-')"
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -349,11 +448,11 @@ case "$TASK_SOURCE" in
   flag|env)
     echo "session-bootstrap: task id from $TASK_SOURCE: $TASK_ID" >&2
     ;;
-  pr|branch|detached)
+  pr|branch|detached|pointer)
     echo "session-bootstrap: harness-derived task id from $TASK_SOURCE: $TASK_ID" >&2
     ;;
   auto)
-    echo "session-bootstrap: auto-fallback task id (no harness context): $TASK_ID" >&2
+    echo "session-bootstrap: auto-fallback task id (no harness context, reason=$AUTO_REASON): $TASK_ID" >&2
     ;;
 esac
 
@@ -487,6 +586,7 @@ if [[ "$EXPLICIT" == "0" ]]; then
     pr) write_bootstrap_assignment "$TASK_SOURCE" "$TASK_SOURCE" false "session bootstrap (task id derived from current PR)" ;;
     branch) write_bootstrap_assignment "$TASK_SOURCE" "$TASK_SOURCE" false "session bootstrap (task id derived from current branch)" ;;
     detached) write_bootstrap_assignment "$TASK_SOURCE" "$TASK_SOURCE" false "session bootstrap (task id derived from detached HEAD short sha)" ;;
+    pointer) write_bootstrap_assignment "$TASK_SOURCE" "$TASK_SOURCE" false "session bootstrap (task id from .agent-ledger.toml default_task_id)" ;;
     *) write_bootstrap_assignment "$TASK_SOURCE" auto true "session bootstrap" ;;
   esac
 elif active_assignment_exists_for_task; then
@@ -518,6 +618,9 @@ if [[ "$JSON_OUTPUT" == "1" ]]; then
     "$(json_escape "$TASK_ID")" \
     "$(json_escape "$TASK_SOURCE")" \
     "$([[ "$TASK_SOURCE" == "auto" ]] && printf '1' || printf '0')"
+  if [[ "$TASK_SOURCE" == "auto" ]] && [[ -n "$AUTO_REASON" ]]; then
+    printf ',"AGENT_LEDGER_TASK_AUTO_REASON":"%s"' "$(json_escape "$AUTO_REASON")"
+  fi
   parent_export="${PARENT_TASK_FLAG:-${AGENT_LEDGER_PARENT_TASK_ID:-}}"
   if [[ -n "$parent_export" ]]; then
     printf ',"AGENT_LEDGER_PARENT_TASK_ID":"%s"' "$(json_escape "$parent_export")"
@@ -529,6 +632,9 @@ else
   printf 'export AGENT_LEDGER_TASK_SOURCE=%q\n' "$TASK_SOURCE"
   if [[ "$TASK_SOURCE" == "auto" ]]; then
     printf 'export AGENT_LEDGER_AUTO_ASSIGNED=1\n'
+    if [[ -n "$AUTO_REASON" ]]; then
+      printf 'export AGENT_LEDGER_TASK_AUTO_REASON=%q\n' "$AUTO_REASON"
+    fi
   else
     printf 'export AGENT_LEDGER_AUTO_ASSIGNED=0\n'
   fi

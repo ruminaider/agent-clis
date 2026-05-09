@@ -35,11 +35,19 @@ const PolicyVersion = 1
 
 // Pointer is the parsed local pointer file. Fields not populated in the
 // file remain zero-valued.
+//
+// DefaultTaskID is consulted by adapters during session bootstrap when no
+// explicit task id is supplied and no harness-derived task id (PR,
+// branch, detached HEAD) can be discovered. It is the right answer for
+// non-git, ambient multi-agent projects where the harness has no
+// natural task signal of its own. Adapters mark the resulting task
+// source as "pointer".
 type Pointer struct {
-	Version    int    `toml:"version"`
-	ProjectID  string `toml:"project_id"`
-	LedgerDir  string `toml:"ledger_dir"`
-	PolicyFile string `toml:"policy_file"`
+	Version       int    `toml:"version"`
+	ProjectID     string `toml:"project_id"`
+	LedgerDir     string `toml:"ledger_dir"`
+	PolicyFile    string `toml:"policy_file"`
+	DefaultTaskID string `toml:"default_task_id"`
 }
 
 // Policy is the parsed committed policy file. The MVP only reads version

@@ -35,6 +35,7 @@ const KNOWN_TASK_SOURCES = new Set<TaskSource>([
   "pr",
   "branch",
   "detached",
+  "pointer",
   "auto",
   "subagent",
 ]);
@@ -43,12 +44,40 @@ function parseTaskSource(value: string | undefined): TaskSource | null {
   return KNOWN_TASK_SOURCES.has(value as TaskSource) ? (value as TaskSource) : null;
 }
 
+// AUTO_REASON_HINTS expands the bootstrap's machine-readable
+// AGENT_LEDGER_TASK_AUTO_REASON tokens into human guidance the toast can
+// render directly. Keep this map in sync with the AUTO_REASON tokens
+// emitted by adapters/shared/session-bootstrap.sh AND with the byte-
+// equivalent map in adapters/shared/auto-fallback-toast.js (whose tests
+// assert the user-visible toast text). adapters/tests/run.sh enforces
+// the parity statically.
+const AUTO_REASON_HINTS: Record<string, string> = {
+  not_in_git_repo:
+    "cwd is not inside a git checkout. Set AGENT_LEDGER_TASK_ID, declare default_task_id in .agent-ledger.toml, or launch from inside a git checkout.",
+  git_no_head:
+    "git repo has no branch and no resolvable HEAD. Set AGENT_LEDGER_TASK_ID or declare default_task_id in .agent-ledger.toml.",
+  pointer_lacks_default:
+    "local .agent-ledger.toml does not declare default_task_id. Add it, or set AGENT_LEDGER_TASK_ID.",
+  pointer_unreadable:
+    "local .agent-ledger.toml exists but cannot be parsed; agent-ledger pointer show failed. Fix the file (run `agent-ledger pointer show` to see the error), or set AGENT_LEDGER_TASK_ID.",
+  pointer_parser_unavailable:
+    "local .agent-ledger.toml is present but neither python3 nor node is on PATH to parse the kernel's JSON projection. Install python3 or node, or set AGENT_LEDGER_TASK_ID.",
+};
+
+export function buildAutoFallbackToast(taskId: string | null, reason: string | null): string {
+  const head = `agent-ledger: no task context found; auto task=${taskId ?? "<unknown>"}`;
+  const hint = reason ? AUTO_REASON_HINTS[reason] : undefined;
+  if (hint) return `${head} (${hint})`;
+  if (reason) return `${head} (reason=${reason})`;
+  return head;
+}
+
 interface IntentRef {
   intentId: string;
   paths: string[];
 }
 
-type TaskSource = "flag" | "env" | "pr" | "branch" | "detached" | "auto" | "subagent";
+type TaskSource = "flag" | "env" | "pr" | "branch" | "detached" | "pointer" | "auto" | "subagent";
 
 interface BootstrapState {
   bootstrapped: boolean;
@@ -56,6 +85,10 @@ interface BootstrapState {
   resolvedAgentId: string | null;
   resolvedTaskSource: TaskSource | null;
   autoAssigned: boolean;
+  // autoReason mirrors AGENT_LEDGER_TASK_AUTO_REASON from the bootstrap
+  // when resolvedTaskSource === "auto". Used to render an actionable
+  // toast hint. Always null for non-auto sources.
+  autoReason: string | null;
   bootstrapPromise: Promise<void> | null;
   // Persists a fatal error from the eager child bootstrap path so the
   // first `tool_call` hook can observe it and block. The lazy
@@ -163,6 +196,7 @@ async function bootstrapSession(state: BootstrapState, harness: string, agentKin
     state.resolvedTaskId = process.env.AGENT_LEDGER_TASK_ID ?? null;
     state.resolvedTaskSource = parseTaskSource(process.env.AGENT_LEDGER_TASK_SOURCE);
     state.autoAssigned = process.env.AGENT_LEDGER_AUTO_ASSIGNED === "1";
+    state.autoReason = process.env.AGENT_LEDGER_TASK_AUTO_REASON ?? null;
     state.bootstrapped = true;
   })();
 
@@ -310,6 +344,7 @@ export default function (pi: ExtensionAPI) {
     resolvedAgentId: null,
     resolvedTaskSource: null,
     autoAssigned: false,
+    autoReason: null,
     bootstrapPromise: null,
     eagerBootstrapError: null,
     liveClaims: new Map(),
@@ -364,7 +399,7 @@ export default function (pi: ExtensionAPI) {
         // do not need a UI toast; the source is logged to stderr by
         // the bootstrap script and exposed via AGENT_LEDGER_TASK_SOURCE.
         if (state.resolvedTaskSource === "auto" && ctx.hasUI) {
-          ctx.ui.notify(`agent-ledger: no task context found; auto task=${state.resolvedTaskId}`, "warning");
+          ctx.ui.notify(buildAutoFallbackToast(state.resolvedTaskId, state.autoReason), "warning");
         }
       } catch (err: any) {
         const message = errorMessage(err);

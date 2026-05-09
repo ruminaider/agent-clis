@@ -44,7 +44,7 @@
 //                                         finding for subagent
 //                                         children.
 
-const HARNESS_DERIVED_SOURCES = new Set(["branch", "pr", "detached", "subagent"]);
+const HARNESS_DERIVED_SOURCES = new Set(["branch", "pr", "detached", "subagent", "pointer"]);
 
 export function buildAssignmentMarker({ by, parent, task, agent, effect, source } = {}) {
   if (!by) throw new Error("buildAssignmentMarker: by is required");

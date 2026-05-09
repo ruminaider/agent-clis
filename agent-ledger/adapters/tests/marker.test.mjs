@@ -50,6 +50,14 @@ test("harness-derived marker for detached source", () => {
   assert.equal(js, "[harness-derived by pi-adapter source=detached task=detached/abc1234]");
 });
 
+test("harness-derived marker for pointer source has shell parity", () => {
+  const input = { by: "pi-adapter", source: "pointer", task: "ambient-2026-05" };
+  const js = buildAssignmentMarker(input);
+  assert.equal(js, "[harness-derived by pi-adapter source=pointer task=ambient-2026-05]");
+  const sh = execFileSync("bash", [markerSh, "--by", input.by, "--source", input.source, "--task", input.task], { encoding: "utf8" });
+  assert.equal(sh, js);
+});
+
 test("harness-derived marker for subagent source has shell parity", () => {
   const input = {
     by: "pi-adapter",

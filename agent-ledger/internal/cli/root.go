@@ -67,6 +67,11 @@ func NewRootCommand(streams IOStreams) *cobra.Command {
 		root.AddCommand(newStubCommand(name, flags))
 	}
 
+	// Commands outside the Phase 1 SPEC list. Adapters and operators use
+	// these to inspect kernel state without parsing on-disk files
+	// directly.
+	root.AddCommand(newPointerCommand(streams, flags))
+
 	return root
 }
 

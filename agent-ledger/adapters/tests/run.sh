@@ -14,7 +14,43 @@ export AGENT_LEDGER_BIN="$ROOT/bin/agent-ledger"
 node --test adapters/tests/*.test.mjs
 bash -n adapters/shared/session-bootstrap.sh adapters/shared/marker.sh adapters/pi/install.sh
 node --check adapters/shared/marker.js
+node --check adapters/shared/auto-fallback-toast.js
 node --check adapters/babysitter/define-ledger-task.js
+
+# Parity check: the inline AUTO_REASON_HINTS map in the TS extension and
+# the shared JS module must agree byte-for-byte on every reason key and
+# its hint text. The shared JS file is what the node-based test suite
+# exercises; the TS file is what pi loads at runtime. Drift between them
+# would mean the toast tests pass while the actual operator UI shows a
+# stale or missing hint. We diff a normalized projection of both files
+# rather than parse JS, so neither file needs a build step.
+python3 - <<'PYHINTS'
+import re, sys
+from pathlib import Path
+
+def extract(path):
+    text = Path(path).read_text()
+    m = re.search(r'AUTO_REASON_HINTS\b[^=]*=\s*(?:Object\.freeze\(\s*)?\{(.*?)\}\s*\)?\s*[;,]', text, re.S)
+    if not m:
+        sys.exit(f"AUTO_REASON_HINTS not found in {path}")
+    body = m.group(1)
+    # Split by `,` followed by newline at top level (no nested braces in this map).
+    entries = re.findall(r'(\w+)\s*:\s*"((?:[^"\\]|\\.)*)"', body)
+    if not entries:
+        sys.exit(f"AUTO_REASON_HINTS entries not found in {path}")
+    return dict(entries)
+
+ts = extract('adapters/pi/agent-ledger.ts')
+js = extract('adapters/shared/auto-fallback-toast.js')
+if ts != js:
+    only_ts = {k: ts[k] for k in ts if ts.get(k) != js.get(k)}
+    only_js = {k: js[k] for k in js if js.get(k) != ts.get(k)}
+    sys.exit(f"AUTO_REASON_HINTS drift between TS and JS:\n  TS-only/diff: {only_ts}\n  JS-only/diff: {only_js}")
+required = {'not_in_git_repo','git_no_head','pointer_lacks_default','pointer_unreadable','pointer_parser_unavailable'}
+missing = required - set(ts)
+if missing:
+    sys.exit(f"AUTO_REASON_HINTS missing required reasons: {sorted(missing)}")
+PYHINTS
 
 # Static smoke checks for the TypeScript pi extension. Node cannot parse
 # TypeScript without pi's loader, so keep these dependency-free.
@@ -210,6 +246,30 @@ case "$1" in
       printf 'reused=true\n' >> "$AGENT_LEDGER_STUB_LOG"
     fi
     exit 0 ;;
+  pointer)
+    # `pointer show` returns the JSON in AGENT_LEDGER_STUB_POINTER_JSON
+    # if set; otherwise an absent pointer. The bootstrap script invokes
+    # this for source=pointer detection, so this default lets every
+    # other test continue to fall through to auto.
+    #
+    # AGENT_LEDGER_STUB_POINTER_FAIL=1 simulates a malformed pointer
+    # file: stderr is written and the stub exits non-zero. The bootstrap
+    # must surface AUTO_REASON=pointer_unreadable rather than silently
+    # treating this as 'no pointer'.
+    case "${2:-}" in
+      show)
+        if [[ "${AGENT_LEDGER_STUB_POINTER_FAIL:-0}" == "1" ]]; then
+          printf 'pointer parse error: invalid TOML at line 1\n' >&2
+          exit 1
+        fi
+        if [[ -n "${AGENT_LEDGER_STUB_POINTER_JSON:-}" ]]; then
+          printf '%s\n' "$AGENT_LEDGER_STUB_POINTER_JSON"
+        else
+          printf '{"present":false,"path":"%s/.agent-ledger.toml"}\n' "$PWD"
+        fi
+        exit 0 ;;
+    esac
+    ;;
 esac
 STUB
 chmod +x "$tmp/bin/agent-ledger"
@@ -313,6 +373,68 @@ if (env.AGENT_LEDGER_TASK_ID !== `detached/${expectedShort}`) throw new Error(`t
 if (env.AGENT_LEDGER_TASK_SOURCE !== "detached") throw new Error(`source=${env.AGENT_LEDGER_TASK_SOURCE}`);
 ' "$detached_line" "$short_sha"
 grep -q -- "\[harness-derived by pi-adapter source=detached" "$AGENT_LEDGER_STUB_LOG"
+
+# Pointer-derived: outside any git repo, with a pointer file declaring
+# default_task_id, the bootstrap must use that task id, mark
+# TASK_SOURCE=pointer, and NOT set AUTO_ASSIGNED.
+: > "$AGENT_LEDGER_STUB_LOG"
+export AGENT_LEDGER_STUB_POINTER_JSON='{"present":true,"path":"/tmp/x/.agent-ledger.toml","version":1,"default_task_id":"ambient-2026-05"}'
+pointer_line="$(bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --orchestrator test --cwd "$nogit" --json)"
+unset AGENT_LEDGER_STUB_POINTER_JSON
+node -e '
+const env = JSON.parse(process.argv[1].slice("AGENT_LEDGER_BOOTSTRAP_JSON=".length));
+if (env.AGENT_LEDGER_TASK_ID !== "ambient-2026-05") throw new Error(`task=${env.AGENT_LEDGER_TASK_ID}`);
+if (env.AGENT_LEDGER_TASK_SOURCE !== "pointer") throw new Error(`source=${env.AGENT_LEDGER_TASK_SOURCE}`);
+if (env.AGENT_LEDGER_AUTO_ASSIGNED !== "0") throw new Error(`AUTO_ASSIGNED=${env.AGENT_LEDGER_AUTO_ASSIGNED}`);
+if ("AGENT_LEDGER_TASK_AUTO_REASON" in env) throw new Error("non-auto source must not set AUTO_REASON");
+' "$pointer_line"
+grep -q -- "\[harness-derived by pi-adapter source=pointer task=ambient-2026-05" "$AGENT_LEDGER_STUB_LOG"
+
+# Pointer file exists but the kernel could not parse it. The bootstrap
+# must surface AUTO_REASON=pointer_unreadable rather than silently
+# falling through to a misleading not_in_git_repo / git_no_head hint.
+# Regression guard for PR #23 finding F1 (the original `|| true`
+# silently swallowed the kernel exit code).
+: > "$AGENT_LEDGER_STUB_LOG"
+export AGENT_LEDGER_STUB_POINTER_FAIL=1
+ptr_unreadable_err="$tmp/ptr-unreadable.err"
+ptr_unreadable_line="$(bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --orchestrator test --cwd "$nogit" --json 2>"$ptr_unreadable_err")"
+unset AGENT_LEDGER_STUB_POINTER_FAIL
+node -e '
+const env = JSON.parse(process.argv[1].slice("AGENT_LEDGER_BOOTSTRAP_JSON=".length));
+if (env.AGENT_LEDGER_TASK_SOURCE !== "auto") throw new Error(`source=${env.AGENT_LEDGER_TASK_SOURCE}`);
+if (env.AGENT_LEDGER_TASK_AUTO_REASON !== "pointer_unreadable") throw new Error(`AUTO_REASON=${env.AGENT_LEDGER_TASK_AUTO_REASON}`);
+' "$ptr_unreadable_line"
+grep -q "agent-ledger pointer show failed" "$ptr_unreadable_err"
+grep -q "pointer parse error: invalid TOML" "$ptr_unreadable_err"
+
+# Pointer present but missing default_task_id: bootstrap must fall
+# through to auto and surface AUTO_REASON=pointer_lacks_default so the
+# UI toast can name the cheapest fix.
+: > "$AGENT_LEDGER_STUB_LOG"
+export AGENT_LEDGER_STUB_POINTER_JSON='{"present":true,"path":"/tmp/x/.agent-ledger.toml","version":1}'
+ptr_empty_line="$(bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --orchestrator test --cwd "$nogit" --json)"
+unset AGENT_LEDGER_STUB_POINTER_JSON
+node -e '
+const env = JSON.parse(process.argv[1].slice("AGENT_LEDGER_BOOTSTRAP_JSON=".length));
+if (!env.AGENT_LEDGER_TASK_ID?.startsWith("auto/")) throw new Error(`task=${env.AGENT_LEDGER_TASK_ID}`);
+if (env.AGENT_LEDGER_TASK_SOURCE !== "auto") throw new Error(`source=${env.AGENT_LEDGER_TASK_SOURCE}`);
+if (env.AGENT_LEDGER_AUTO_ASSIGNED !== "1") throw new Error("AUTO_ASSIGNED missing");
+if (env.AGENT_LEDGER_TASK_AUTO_REASON !== "pointer_lacks_default") throw new Error(`AUTO_REASON=${env.AGENT_LEDGER_TASK_AUTO_REASON}`);
+' "$ptr_empty_line"
+
+# Auto-fallback in a non-git directory must surface
+# AUTO_REASON=not_in_git_repo so the toast can suggest the cheapest
+# fix. This test is paired with the auto-fallback case earlier in the
+# file; that earlier case asserts behavior, this one asserts the new
+# AUTO_REASON contract.
+: > "$AGENT_LEDGER_STUB_LOG"
+auto_reason_line="$(bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --orchestrator test --cwd "$nogit" --json)"
+node -e '
+const env = JSON.parse(process.argv[1].slice("AGENT_LEDGER_BOOTSTRAP_JSON=".length));
+if (env.AGENT_LEDGER_TASK_SOURCE !== "auto") throw new Error(`source=${env.AGENT_LEDGER_TASK_SOURCE}`);
+if (env.AGENT_LEDGER_TASK_AUTO_REASON !== "not_in_git_repo") throw new Error(`AUTO_REASON=${env.AGENT_LEDGER_TASK_AUTO_REASON}`);
+' "$auto_reason_line"
 
 # Explicit env var beats branch detection. AGENT_LEDGER_TASK_ID set =>
 # bootstrap verifies the orchestrator already created an active

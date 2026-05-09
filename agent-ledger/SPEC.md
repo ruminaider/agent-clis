@@ -137,6 +137,12 @@ Create a gitignored project pointer file:
 version = 1
 project_id = "github.com/recora-health/shima-enaga"
 ledger_dir = "/Users/albert/.local/state/agent-ledger/repos/recora-health-shima-enaga-4bd6f86196d0f41a76aa1a88"
+# Optional. When set and no harness-derived task id is available
+# (no PR, branch, or detached HEAD), adapters use this value as
+# the session task id and mark TASK_SOURCE=pointer. Right answer
+# for non-git ambient projects where multiple concurrent sessions
+# should attribute to one task.
+default_task_id = "exploration-2026-05"
 ```
 
 The pointer makes the ledger discoverable from the working tree. It must not contain secrets.

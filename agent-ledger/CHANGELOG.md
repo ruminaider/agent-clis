@@ -10,6 +10,60 @@ of the binary version.
 
 ## [Unreleased]
 
+### Added
+
+- **Pointer file `default_task_id` and the `pointer` task source.**
+  The local `.agent-ledger.toml` now accepts an optional
+  `default_task_id` field. Adapters consult it during session
+  bootstrap when the harness produces no task signal (no PR, no
+  branch, no detached HEAD) and select `TASK_SOURCE=pointer` when the
+  field is set. This is the right answer for non-git, ambient
+  multi-agent projects where two or more concurrent sessions in the
+  same directory should attribute to one task without per-session env
+  wiring.
+
+  - `agent-ledger init --write-pointer --default-task-id <id>`
+    persists the value. Reruns of `init --write-pointer` carry an
+    existing value forward when `--default-task-id` is not supplied.
+  - New read-only `agent-ledger pointer show [--json]` command
+    projects the parsed pointer for adapters and humans. Adapters use
+    the JSON shape; the kernel remains the authoritative TOML parser.
+  - `agent-ledger doctor` surfaces `default_task_id` when present.
+  - The `[harness-derived ...]` audit marker now accepts
+    `source=pointer` alongside `branch`, `pr`, `detached`, and
+    `subagent`.
+
+- **Auto-fallback toast names the cheapest fix.** When the adapter
+  falls through to `TASK_SOURCE=auto`, the bootstrap now exports
+  `AGENT_LEDGER_TASK_AUTO_REASON` so the pi UI toast can point at the
+  cheapest fix. Current values: `not_in_git_repo`, `git_no_head`,
+  `pointer_lacks_default`, `pointer_unreadable`, and
+  `pointer_parser_unavailable`. The toast hint expands each token
+  into actionable guidance (set `AGENT_LEDGER_TASK_ID`, declare
+  `default_task_id`, fix a malformed `.agent-ledger.toml`, install
+  python3 or node, or launch from inside a checkout).
+
+### Fixed
+
+- **Pointer-detection in the adapter bootstrap no longer hides errors.**
+  Previously, `agent-ledger pointer show --json` was wrapped in
+  `2>/dev/null || true`, which discarded the kernel exit code. A
+  malformed `.agent-ledger.toml` silently fell through to a
+  misleading `not_in_git_repo` / `git_no_head` auto-fallback hint.
+  The bootstrap now captures the exit code and stderr separately and
+  emits `AGENT_LEDGER_TASK_AUTO_REASON=pointer_unreadable` (with the
+  kernel's stderr in the warning) when the file exists but cannot be
+  parsed.
+- **Pointer-detection now warns when no JSON parser is available.**
+  Hosts with neither `python3` nor `node` on `PATH` previously
+  ignored the declared `default_task_id` silently. The bootstrap now
+  emits `AGENT_LEDGER_TASK_AUTO_REASON=pointer_parser_unavailable`
+  with a stderr warning that names the missing dependency.
+- **`agent-ledger init --default-task-id` validates before disk side
+  effects.** The `--default-task-id requires --write-pointer` usage
+  check now runs before `storage.EnsureLayout`, so a misuse no
+  longer leaves a half-initialized ledger directory behind.
+
 ## [0.4.0] - 2026-05-07
 
 ### Added
