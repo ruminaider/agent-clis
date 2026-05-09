@@ -18,3 +18,7 @@ testdata/tmp/
 
 # Babysitter cycle run artifacts (local audit trail; not source)
 /.a5c/runs/
+
+# Local working notes (plans, findings, packets, lessons). Treat
+# anything under tasks/ as gitignored scratch.
+/tasks/

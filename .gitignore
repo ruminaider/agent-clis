@@ -1,5 +1,11 @@
 node_modules/
 package-lock.json
+
+# Local working notes and per-feature scratch artifacts. Plans,
+# findings, packet decompositions, review payloads, and lessons
+# files live under tasks/ in any subdirectory but should not be
+# tracked in the published repo.
+tasks/
 *.log
 .DS_Store
 docs/plans/
