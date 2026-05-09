@@ -10,6 +10,8 @@ of the binary version.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-05-09
+
 ### Added
 
 - **Pointer file `default_task_id` and the `pointer` task source.**
@@ -720,7 +722,8 @@ Code, and Babysitter adapters arrive in later phases.
   published `*_checksums.txt` file. A Homebrew tap with signed
   binaries is a Phase 5 deliverable.
 
-[Unreleased]: https://github.com/ruminaider/agent-clis/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/ruminaider/agent-clis/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/ruminaider/agent-clis/releases/tag/v0.4.1
 [0.4.0]: https://github.com/ruminaider/agent-clis/releases/tag/v0.4.0
 [0.3.0]: https://github.com/ruminaider/agent-clis/releases/tag/v0.3.0
 [0.2.0]: https://github.com/ruminaider/agent-clis/releases/tag/v0.2.0
