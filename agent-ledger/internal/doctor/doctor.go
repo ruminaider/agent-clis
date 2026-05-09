@@ -231,9 +231,11 @@ func checkPointer(rootArg string, res project.Resolution) Check {
 	c.Status = StatusOK
 	c.Message = "pointer file present and valid"
 	c.Details = map[string]any{
-		"has_ledger_dir":  p.LedgerDir != "",
-		"has_project_id":  p.ProjectID != "",
-		"has_policy_file": p.PolicyFile != "",
+		"has_ledger_dir":   p.LedgerDir != "",
+		"has_project_id":   p.ProjectID != "",
+		"has_policy_file":  p.PolicyFile != "",
+		"default_task_id":  p.DefaultTaskID,
+		"has_default_task": p.DefaultTaskID != "",
 	}
 	return c
 }

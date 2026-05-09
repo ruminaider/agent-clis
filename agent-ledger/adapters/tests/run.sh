@@ -210,6 +210,21 @@ case "$1" in
       printf 'reused=true\n' >> "$AGENT_LEDGER_STUB_LOG"
     fi
     exit 0 ;;
+  pointer)
+    # `pointer show` returns the JSON in AGENT_LEDGER_STUB_POINTER_JSON
+    # if set; otherwise an absent pointer. The bootstrap script invokes
+    # this for source=pointer detection, so this default lets every
+    # other test continue to fall through to auto.
+    case "${2:-}" in
+      show)
+        if [[ -n "${AGENT_LEDGER_STUB_POINTER_JSON:-}" ]]; then
+          printf '%s\n' "$AGENT_LEDGER_STUB_POINTER_JSON"
+        else
+          printf '{"present":false,"path":"%s/.agent-ledger.toml"}\n' "$PWD"
+        fi
+        exit 0 ;;
+    esac
+    ;;
 esac
 STUB
 chmod +x "$tmp/bin/agent-ledger"
@@ -313,6 +328,50 @@ if (env.AGENT_LEDGER_TASK_ID !== `detached/${expectedShort}`) throw new Error(`t
 if (env.AGENT_LEDGER_TASK_SOURCE !== "detached") throw new Error(`source=${env.AGENT_LEDGER_TASK_SOURCE}`);
 ' "$detached_line" "$short_sha"
 grep -q -- "\[harness-derived by pi-adapter source=detached" "$AGENT_LEDGER_STUB_LOG"
+
+# Pointer-derived: outside any git repo, with a pointer file declaring
+# default_task_id, the bootstrap must use that task id, mark
+# TASK_SOURCE=pointer, and NOT set AUTO_ASSIGNED.
+: > "$AGENT_LEDGER_STUB_LOG"
+export AGENT_LEDGER_STUB_POINTER_JSON='{"present":true,"path":"/tmp/x/.agent-ledger.toml","version":1,"default_task_id":"ambient-2026-05"}'
+pointer_line="$(bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --orchestrator test --cwd "$nogit" --json)"
+unset AGENT_LEDGER_STUB_POINTER_JSON
+node -e '
+const env = JSON.parse(process.argv[1].slice("AGENT_LEDGER_BOOTSTRAP_JSON=".length));
+if (env.AGENT_LEDGER_TASK_ID !== "ambient-2026-05") throw new Error(`task=${env.AGENT_LEDGER_TASK_ID}`);
+if (env.AGENT_LEDGER_TASK_SOURCE !== "pointer") throw new Error(`source=${env.AGENT_LEDGER_TASK_SOURCE}`);
+if (env.AGENT_LEDGER_AUTO_ASSIGNED !== "0") throw new Error(`AUTO_ASSIGNED=${env.AGENT_LEDGER_AUTO_ASSIGNED}`);
+if ("AGENT_LEDGER_TASK_AUTO_REASON" in env) throw new Error("non-auto source must not set AUTO_REASON");
+' "$pointer_line"
+grep -q -- "\[harness-derived by pi-adapter source=pointer task=ambient-2026-05" "$AGENT_LEDGER_STUB_LOG"
+
+# Pointer present but missing default_task_id: bootstrap must fall
+# through to auto and surface AUTO_REASON=pointer_lacks_default so the
+# UI toast can name the cheapest fix.
+: > "$AGENT_LEDGER_STUB_LOG"
+export AGENT_LEDGER_STUB_POINTER_JSON='{"present":true,"path":"/tmp/x/.agent-ledger.toml","version":1}'
+ptr_empty_line="$(bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --orchestrator test --cwd "$nogit" --json)"
+unset AGENT_LEDGER_STUB_POINTER_JSON
+node -e '
+const env = JSON.parse(process.argv[1].slice("AGENT_LEDGER_BOOTSTRAP_JSON=".length));
+if (!env.AGENT_LEDGER_TASK_ID?.startsWith("auto/")) throw new Error(`task=${env.AGENT_LEDGER_TASK_ID}`);
+if (env.AGENT_LEDGER_TASK_SOURCE !== "auto") throw new Error(`source=${env.AGENT_LEDGER_TASK_SOURCE}`);
+if (env.AGENT_LEDGER_AUTO_ASSIGNED !== "1") throw new Error("AUTO_ASSIGNED missing");
+if (env.AGENT_LEDGER_TASK_AUTO_REASON !== "pointer_lacks_default") throw new Error(`AUTO_REASON=${env.AGENT_LEDGER_TASK_AUTO_REASON}`);
+' "$ptr_empty_line"
+
+# Auto-fallback in a non-git directory must surface
+# AUTO_REASON=not_in_git_repo so the toast can suggest the cheapest
+# fix. This test is paired with the auto-fallback case earlier in the
+# file; that earlier case asserts behavior, this one asserts the new
+# AUTO_REASON contract.
+: > "$AGENT_LEDGER_STUB_LOG"
+auto_reason_line="$(bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --orchestrator test --cwd "$nogit" --json)"
+node -e '
+const env = JSON.parse(process.argv[1].slice("AGENT_LEDGER_BOOTSTRAP_JSON=".length));
+if (env.AGENT_LEDGER_TASK_SOURCE !== "auto") throw new Error(`source=${env.AGENT_LEDGER_TASK_SOURCE}`);
+if (env.AGENT_LEDGER_TASK_AUTO_REASON !== "not_in_git_repo") throw new Error(`AUTO_REASON=${env.AGENT_LEDGER_TASK_AUTO_REASON}`);
+' "$auto_reason_line"
 
 # Explicit env var beats branch detection. AGENT_LEDGER_TASK_ID set =>
 # bootstrap verifies the orchestrator already created an active

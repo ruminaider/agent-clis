@@ -100,6 +100,44 @@ func TestRun_PointerInvalid(t *testing.T) {
 	}
 }
 
+func TestRun_PointerDefaultTaskID(t *testing.T) {
+	root, ledger := newProject(t)
+	body := "version = 1\nledger_dir = \"" + ledger + "\"\ndefault_task_id = \"ambient-2026-05\"\n"
+	if err := os.WriteFile(filepath.Join(root, ".agent-ledger.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rep := runDoctor(t, root, ledger, nil)
+	ptr := findCheck(t, rep, "pointer")
+	if ptr.Status != doctor.StatusOK {
+		t.Fatalf("pointer status = %s, want ok: %+v", ptr.Status, ptr)
+	}
+	if got := ptr.Details["default_task_id"]; got != "ambient-2026-05" {
+		t.Errorf("default_task_id detail = %v, want %q", got, "ambient-2026-05")
+	}
+	if got := ptr.Details["has_default_task"]; got != true {
+		t.Errorf("has_default_task detail = %v, want true", got)
+	}
+}
+
+func TestRun_PointerWithoutDefaultTaskID(t *testing.T) {
+	root, ledger := newProject(t)
+	body := "version = 1\nledger_dir = \"" + ledger + "\"\n"
+	if err := os.WriteFile(filepath.Join(root, ".agent-ledger.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rep := runDoctor(t, root, ledger, nil)
+	ptr := findCheck(t, rep, "pointer")
+	if ptr.Status != doctor.StatusOK {
+		t.Fatalf("pointer status = %s, want ok: %+v", ptr.Status, ptr)
+	}
+	if got := ptr.Details["has_default_task"]; got != false {
+		t.Errorf("has_default_task detail = %v, want false", got)
+	}
+	if got := ptr.Details["default_task_id"]; got != "" {
+		t.Errorf("default_task_id detail = %v, want empty", got)
+	}
+}
+
 func TestRun_PolicyInvalidTOML(t *testing.T) {
 	root, ledger := newProject(t)
 	if err := os.WriteFile(filepath.Join(root, ".agent-ledger-policy.toml"),

@@ -50,10 +50,22 @@ resolves a task id through this chain (first match wins):
    one task id, which is the correct behavior for ongoing work.
 5. **Detached HEAD**. `detached/<short-sha>` from
    `git rev-parse --short HEAD`. Marked `TASK_SOURCE=detached`.
-6. **Auto fallback** (last resort, outside any git repo).
-   `auto/<agent-slug>/<utc-timestamp>`. Marked `TASK_SOURCE=auto`.
-   This is the only path that triggers the adapter's warning toast,
-   because true context-less sessions are rare and worth flagging.
+6. **Pointer file default**. The local `.agent-ledger.toml` may
+   declare an optional `default_task_id`. When set, and steps 1-5
+   produced no task id, the adapter uses it (sanitized) verbatim.
+   Marked `TASK_SOURCE=pointer`. This is the right answer for non-git,
+   ambient multi-agent projects where the harness has no natural task
+   signal: declare it once in the pointer and every concurrent session
+   in that directory shares the same task id without per-session env
+   wiring.
+7. **Auto fallback** (last resort, outside any git repo and with no
+   pointer-declared default). `auto/<agent-slug>/<utc-timestamp>`.
+   Marked `TASK_SOURCE=auto`. This is the only path that triggers the
+   adapter's warning toast, because true context-less sessions are
+   rare and worth flagging. The bootstrap also exports
+   `AGENT_LEDGER_TASK_AUTO_REASON` so the toast can name the cheapest
+   fix; current values are `not_in_git_repo`, `git_no_head`, and
+   `pointer_lacks_default`.
 
 Sources 1 and 2 are explicit. The bootstrap does not write an
 assignment when the orchestrator already created one. If an explicit
@@ -62,9 +74,10 @@ default and tells the operator to run `agent-ledger assign` first. If
 emergency repair is explicitly enabled, the bootstrap writes a repair
 assignment with `metadata.explicit_missing_assignment == true` and the
 operator-supplied `AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW` scope.
-Sources 3-6 are derived; the bootstrap writes an assignment with a
+Sources 3-7 are derived; the bootstrap writes an assignment with a
 marker in the reason text so reviewers can audit how the task id was
-sourced.
+sourced. The pointer source uses the same `[harness-derived ...]`
+marker as sources 3-5.
 
 ### Source: `subagent` (pi subagent children)
 
@@ -121,9 +134,47 @@ invariant.
 The pi extension passes `--cwd $(process.cwd())` and (when
 `AGENT_LEDGER_DETECT_PR=1`) `--detect-pr 1` to the bootstrap, then
 reads `AGENT_LEDGER_TASK_SOURCE` from the bootstrap output and only
-shows a UI warning when source=auto.
+shows a UI warning when source=auto. When source=auto, the bootstrap
+also exports `AGENT_LEDGER_TASK_AUTO_REASON` so the toast can name the
+cheapest fix. Current values: `not_in_git_repo` (cwd is not inside a
+git checkout), `git_no_head` (in a repo but no branch and no
+resolvable HEAD), `pointer_lacks_default` (a local pointer file exists
+but declares no `default_task_id`).
 
-Operators who want strict enforcement set `AGENT_LEDGER_REQUIRE_TASK=1`; the bootstrap then blocks only the auto fallback. PR, branch, and detached harness-derived sources still satisfy the requirement.
+Operators who want strict enforcement set `AGENT_LEDGER_REQUIRE_TASK=1`; the bootstrap then blocks only the auto fallback. PR, branch, detached, and pointer-derived sources still satisfy the requirement.
+
+### Source: `pointer` (non-git ambient projects)
+
+When the harness has no natural task signal (no PR, no branch, no
+detached HEAD), the adapter consults the local pointer file at the
+cwd. If `.agent-ledger.toml` exists and declares `default_task_id`,
+that value (sanitized) becomes the task id and `TASK_SOURCE=pointer`.
+The bootstrap calls `agent-ledger pointer show --json` for this query;
+adapters never parse the pointer TOML themselves.
+
+The canonical use case is a non-git scratch directory shared by two or
+three concurrent pi sessions that should all attribute to one task.
+Declare it once:
+
+```toml
+# .agent-ledger.toml at the project root
+version = 1
+project_id = "scratch/agent-coordination-experiment"
+ledger_dir = "/Users/you/.local/state/agent-ledger/repos/..."
+default_task_id = "exploration-2026-05"
+```
+
+`agent-ledger init --write-pointer --default-task-id exploration-2026-05`
+writes this file. Reruns of `init --write-pointer` carry forward an
+existing `default_task_id` when `--default-task-id` is not supplied,
+so operators can refresh the pointer without erasing the value.
+
+Pointer detection looks at the cwd only. It does not walk the
+directory tree upward today. If your project's pointer lives at the
+project root and pi is launched from a subdirectory, the pointer is
+not found. Workarounds: launch pi from the project root, or set
+`AGENT_LEDGER_TASK_ID` explicitly. Upward search is a candidate
+follow-up.
 
 ## Orchestrator ordering for long-lived workers
 
@@ -170,11 +221,15 @@ choose between:
 - **Derive from harness context (default)**: pull the task id from
   the current PR or branch. Almost always meaningful, since the
   branch name and PR number ARE the task in practice.
+- **Pointer file default**: for non-git projects, declare
+  `default_task_id` in `.agent-ledger.toml` once. Multiple sessions in
+  the same directory share the task id without per-session env
+  wiring. Marked `TASK_SOURCE=pointer`.
 - **Auto-fallback (last resort)**: synthetic
   `auto/<agent-slug>/<utc-timestamp>` only when no harness context is
-  available (outside any git repo). This is the only path that
-  surfaces a UI warning, since true context-less sessions are rare
-  and worth flagging.
+  available (no git repo and no pointer-declared default). This is
+  the only path that surfaces a UI warning, since true context-less
+  sessions are rare and worth flagging.
 
 The derive-from-harness path is the default because the harness
 almost always knows what the human is working on. Operators who want
@@ -199,10 +254,10 @@ Adapters write the audit signal in two complementary forms:
   [auto-assigned by <by> auto-derived task=<id> agent=<id>] <human reason>
   ```
 
-- **Harness-derived** (task id sourced from PR, branch, detached HEAD, or pi subagent child bootstrap):
+- **Harness-derived** (task id sourced from PR, branch, detached HEAD, pi subagent child bootstrap, or pointer-file default):
 
   ```
-  [harness-derived by <by> source=<branch|pr|detached|subagent> task=<id> agent=<id>] <human reason>
+  [harness-derived by <by> source=<branch|pr|detached|subagent|pointer> task=<id> agent=<id>] <human reason>
   ```
 
 Assignments without either marker prefix were supplied explicitly

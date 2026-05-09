@@ -14,9 +14,10 @@ import (
 )
 
 type initOpts struct {
-	projectID    string
-	ledgerDir    string
-	writePointer bool
+	projectID     string
+	ledgerDir     string
+	writePointer  bool
+	defaultTaskID string
 }
 
 func newInitCommand(streams IOStreams, _ *rootFlags) *cobra.Command {
@@ -34,6 +35,7 @@ func newInitCommand(streams IOStreams, _ *rootFlags) *cobra.Command {
 	f.StringVar(&o.projectID, "project-id", "", "Explicit project identifier; persisted in pointer when --write-pointer is set")
 	f.StringVar(&o.ledgerDir, "ledger-dir", "", "Override ledger directory (otherwise resolved per SPEC §8)")
 	f.BoolVar(&o.writePointer, "write-pointer", false, "Write the local .agent-ledger.toml pointer (and best-effort git common-dir pointer)")
+	f.StringVar(&o.defaultTaskID, "default-task-id", "", "Persist a default task id in the pointer for adapter session bootstrap (used when no harness-derived task id is available); requires --write-pointer")
 	return cmd
 }
 
@@ -56,8 +58,11 @@ func runInit(streams IOStreams, o initOpts) error {
 		return NewError(ExitStorageIO, "layout_create_failed", err.Error())
 	}
 
+	if o.defaultTaskID != "" && !o.writePointer {
+		return NewError(ExitUsage, "default_task_id_requires_write_pointer", "--default-task-id requires --write-pointer")
+	}
 	if o.writePointer {
-		if err := writePointer(res); err != nil {
+		if err := writePointer(res, o.defaultTaskID); err != nil {
 			return NewError(ExitStorageIO, "pointer_write_failed", err.Error())
 		}
 		if err := writeGitPointer(res); err != nil {
@@ -71,7 +76,7 @@ func runInit(streams IOStreams, o initOpts) error {
 	return nil
 }
 
-func writePointer(res project.Resolution) error {
+func writePointer(res project.Resolution, defaultTaskID string) error {
 	p := config.Pointer{
 		Version:   config.PointerVersion,
 		ProjectID: res.Identity.ProjectID,
@@ -79,6 +84,14 @@ func writePointer(res project.Resolution) error {
 	}
 	if res.Pointer != nil && res.Pointer.PolicyFile != "" {
 		p.PolicyFile = res.Pointer.PolicyFile
+	}
+	// Carry forward an existing default_task_id if --default-task-id was
+	// not supplied, so reruns of `init --write-pointer` do not silently
+	// erase a previously declared value.
+	if defaultTaskID != "" {
+		p.DefaultTaskID = defaultTaskID
+	} else if res.Pointer != nil {
+		p.DefaultTaskID = res.Pointer.DefaultTaskID
 	}
 	return config.WritePointer(res.Root, p)
 }
