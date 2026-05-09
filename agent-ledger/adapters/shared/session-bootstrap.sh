@@ -350,8 +350,34 @@ fi
 # authoritative parser and is queried via `agent-ledger pointer show`.
 POINTER_PRESENT=0
 POINTER_HAD_DEFAULT=0
+POINTER_UNREADABLE=0
+POINTER_PARSER_UNAVAILABLE=0
 if [[ -z "$TASK_ID" ]]; then
-  pointer_json="$( (cd "$DETECT_CWD" 2>/dev/null && agent-ledger pointer show --json 2>/dev/null) || true )"
+  # Capture stdout, stderr, and exit code separately. The kernel's
+  # `pointer show --json` exits 0 when the pointer file is absent
+  # (printing present=false) and non-zero only when the file exists
+  # but cannot be parsed. Hiding that exit code with `|| true` would
+  # silently demote a malformed pointer to a misleading
+  # `not_in_git_repo` / `git_no_head` auto-fallback hint.
+  pointer_stderr_file="$(mktemp "${TMPDIR:-/tmp}/agent-ledger-pointer.XXXXXX")"
+  pointer_json=""
+  pointer_exit=0
+  if pointer_json="$( (cd "$DETECT_CWD" 2>/dev/null && agent-ledger pointer show --json) 2>"$pointer_stderr_file" )"; then
+    pointer_exit=0
+  else
+    pointer_exit=$?
+  fi
+  if (( pointer_exit != 0 )); then
+    POINTER_UNREADABLE=1
+    pointer_err_msg="$(tr -d '\r' < "$pointer_stderr_file" | tr '\n' ' ' | sed 's/  */ /g; s/^ //; s/ $//')"
+    if [[ -n "$pointer_err_msg" ]]; then
+      echo "session-bootstrap: agent-ledger pointer show failed (exit $pointer_exit): $pointer_err_msg" >&2
+    else
+      echo "session-bootstrap: agent-ledger pointer show failed (exit $pointer_exit) with no stderr; pointer state unknown" >&2
+    fi
+    pointer_json=""
+  fi
+  rm -f "$pointer_stderr_file"
   if [[ -n "$pointer_json" ]]; then
     pointer_present_value=""
     pointer_default_value=""
@@ -361,6 +387,15 @@ if [[ -z "$TASK_ID" ]]; then
     elif command -v node >/dev/null 2>&1; then
       pointer_present_value="$(printf '%s\n' "$pointer_json" | node -e 'let i=""; process.stdin.setEncoding("utf8"); process.stdin.on("data",c=>i+=c); process.stdin.on("end",()=>{const d=JSON.parse(i); console.log(d.present?"1":"0");});' 2>/dev/null)" || pointer_present_value=""
       pointer_default_value="$(printf '%s\n' "$pointer_json" | node -e 'let i=""; process.stdin.setEncoding("utf8"); process.stdin.on("data",c=>i+=c); process.stdin.on("end",()=>{const d=JSON.parse(i); console.log(d.default_task_id||"");});' 2>/dev/null)" || pointer_default_value=""
+    else
+      # Neither python3 nor node is available. We have a non-empty
+      # pointer_json (so a pointer file was reachable) but no way to
+      # project its `default_task_id`. Without this branch, an operator
+      # who declared `default_task_id` would silently land in the
+      # auto-fallback path with a hint that blames git rather than the
+      # missing parser dependency.
+      POINTER_PARSER_UNAVAILABLE=1
+      echo "session-bootstrap: cannot parse pointer JSON; install python3 or node to honor default_task_id" >&2
     fi
     if [[ "$pointer_present_value" == "1" ]]; then
       POINTER_PRESENT=1
@@ -379,12 +414,24 @@ if [[ -z "$TASK_ID" ]]; then
     echo "session-bootstrap: no task id resolvable and AGENT_LEDGER_REQUIRE_TASK=1; refusing to fall back" >&2
     exit 2
   fi
-  # Compute an actionable reason for the auto fallback. Priority: a
-  # present-but-incomplete pointer is the cheapest fix. Otherwise we
-  # surface the git state so the toast can point at "set
-  # AGENT_LEDGER_TASK_ID, add default_task_id to the pointer, or run
-  # from inside a checkout".
-  if [[ "$POINTER_PRESENT" == "1" ]]; then
+  # Compute an actionable reason for the auto fallback. Priority,
+  # most specific to least specific:
+  #   1. pointer_unreadable: a pointer file exists but the kernel
+  #      could not parse it; the operator should fix the file.
+  #   2. pointer_parser_unavailable: a pointer file is reachable but
+  #      the bootstrap has neither python3 nor node to project its
+  #      default_task_id; the operator should install one.
+  #   3. pointer_lacks_default: the pointer parsed but has no
+  #      default_task_id field; the operator should add it.
+  #   4. not_in_git_repo / git_no_head: no pointer signal at all,
+  #      so surface the git state instead.
+  # Keep this chain in sync with AUTO_REASON_HINTS in
+  # adapters/shared/auto-fallback-toast.js.
+  if [[ "$POINTER_UNREADABLE" == "1" ]]; then
+    AUTO_REASON="pointer_unreadable"
+  elif [[ "$POINTER_PARSER_UNAVAILABLE" == "1" ]]; then
+    AUTO_REASON="pointer_parser_unavailable"
+  elif [[ "$POINTER_PRESENT" == "1" ]]; then
     AUTO_REASON="pointer_lacks_default"
   elif ! git_in rev-parse --git-dir >/dev/null 2>&1; then
     AUTO_REASON="not_in_git_repo"

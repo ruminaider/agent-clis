@@ -47,7 +47,10 @@ function parseTaskSource(value: string | undefined): TaskSource | null {
 // AUTO_REASON_HINTS expands the bootstrap's machine-readable
 // AGENT_LEDGER_TASK_AUTO_REASON tokens into human guidance the toast can
 // render directly. Keep this map in sync with the AUTO_REASON tokens
-// emitted by adapters/shared/session-bootstrap.sh.
+// emitted by adapters/shared/session-bootstrap.sh AND with the byte-
+// equivalent map in adapters/shared/auto-fallback-toast.js (whose tests
+// assert the user-visible toast text). adapters/tests/run.sh enforces
+// the parity statically.
 const AUTO_REASON_HINTS: Record<string, string> = {
   not_in_git_repo:
     "cwd is not inside a git checkout. Set AGENT_LEDGER_TASK_ID, declare default_task_id in .agent-ledger.toml, or launch from inside a git checkout.",
@@ -55,6 +58,10 @@ const AUTO_REASON_HINTS: Record<string, string> = {
     "git repo has no branch and no resolvable HEAD. Set AGENT_LEDGER_TASK_ID or declare default_task_id in .agent-ledger.toml.",
   pointer_lacks_default:
     "local .agent-ledger.toml does not declare default_task_id. Add it, or set AGENT_LEDGER_TASK_ID.",
+  pointer_unreadable:
+    "local .agent-ledger.toml exists but cannot be parsed; agent-ledger pointer show failed. Fix the file (run `agent-ledger pointer show` to see the error), or set AGENT_LEDGER_TASK_ID.",
+  pointer_parser_unavailable:
+    "local .agent-ledger.toml is present but neither python3 nor node is on PATH to parse the kernel's JSON projection. Install python3 or node, or set AGENT_LEDGER_TASK_ID.",
 };
 
 export function buildAutoFallbackToast(taskId: string | null, reason: string | null): string {

@@ -28,8 +28,11 @@ func newPointerCommand(streams IOStreams, root *rootFlags) *cobra.Command {
 }
 
 // pointerShowReport is the JSON shape printed by `pointer show --json`.
-// Fields are omitted when empty so callers can distinguish unset from
-// empty string. Present indicates whether the file existed at all.
+// Present is the authoritative signal for whether the pointer file
+// existed; downstream consumers must check it rather than infer
+// existence from whether other fields are populated. The optional
+// fields use `omitempty` purely to keep the JSON compact, since an
+// unset and an empty string both render as the field being absent.
 type pointerShowReport struct {
 	Present       bool   `json:"present"`
 	Path          string `json:"path"`

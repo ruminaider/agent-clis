@@ -53,14 +53,18 @@ func runInit(streams IOStreams, o initOpts) error {
 		return NewError(ExitUsage, "ledger_dir_unset", err.Error())
 	}
 
+	// Validate flag combinations before any filesystem side effects so a
+	// usage error does not leave a half-initialized ledger directory
+	// behind on the operator's disk.
+	if o.defaultTaskID != "" && !o.writePointer {
+		return NewError(ExitUsage, "default_task_id_requires_write_pointer", "--default-task-id requires --write-pointer")
+	}
+
 	layout, err := storage.EnsureLayout(res.LedgerDir)
 	if err != nil {
 		return NewError(ExitStorageIO, "layout_create_failed", err.Error())
 	}
 
-	if o.defaultTaskID != "" && !o.writePointer {
-		return NewError(ExitUsage, "default_task_id_requires_write_pointer", "--default-task-id requires --write-pointer")
-	}
 	if o.writePointer {
 		if err := writePointer(res, o.defaultTaskID); err != nil {
 			return NewError(ExitStorageIO, "pointer_write_failed", err.Error())
