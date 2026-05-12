@@ -88,6 +88,29 @@ var ErrSupersedeNotActive = errors.New("domain: supersede target not active")
 // be intentional about reassignment.
 var ErrAssignmentExists = errors.New("domain: active assignment already exists for this (task, agent) pair")
 
+// ErrNoActiveAssignment is returned by SupersedeAndInsertAssignment
+// when no active assignment exists for the requested (task, agent)
+// pair. Callers detect this sentinel with errors.Is and map it to
+// ExitConflict (4) with code "no_active_assignment".
+var ErrNoActiveAssignment = errors.New("domain: no active assignment exists for this (task, agent) pair")
+
+// ErrStaleUpdate is returned by SupersedeAndInsertAssignment when the
+// active assignment row read at the start of the immediate transaction
+// has been superseded by a concurrent writer before the UPDATE fires.
+// Under BEGIN IMMEDIATE the helper serializes writers, so this case is
+// only reachable if a non-CLI caller mutated the row directly. Callers
+// detect with errors.Is and map to ExitConflict (4) with code
+// "assignment_stale_update".
+var ErrStaleUpdate = errors.New("domain: active assignment was superseded by a concurrent writer")
+
+// ErrEmptyAddAllowedPaths is returned by SupersedeAndInsertAssignment
+// when the input's AddAllowedPaths slice is empty or contains only
+// blank or whitespace-only entries. Without this guard a direct domain
+// caller could pass nothing and receive a successful Reused=true no-op;
+// the CLI also validates this surface but the domain owns the
+// contract.
+var ErrEmptyAddAllowedPaths = errors.New("domain: at least one non-empty allow-list glob is required")
+
 // ValidPolicy reports whether p is one of the allowed conflict policies.
 func ValidPolicy(p string) bool {
 	switch p {
@@ -563,6 +586,355 @@ func (s *Store) InsertAssignment(ctx context.Context, a Assignment) (Assignment,
 		return a, fmt.Errorf("%w: %w", ErrAssignmentExists, err)
 	}
 	return a, err
+}
+
+// AssignmentUpdateInput describes an additive update to an existing
+// active assignment. Only AddAllowedPaths is honored in the MVP
+// (allow-list extension only); see SPEC §18.3 for the rationale.
+// Reason is required (privacy.AssertSafe) so the audit trail records
+// why the scope changed. ExtraMetadata is shallow-merged into the new
+// row's metadata_json on top of the prior row's metadata, with the
+// lineage keys (`superseded_assignment_id`, `updated_from`) owned and
+// overwritten by the helper.
+type AssignmentUpdateInput struct {
+	TaskID          string
+	AssignedAgentID string
+	OrchestratorID  string
+	AddAllowedPaths []string
+	Reason          string
+	ExtraMetadata   map[string]any
+}
+
+// AssignmentUpdateResult is returned by SupersedeAndInsertAssignment.
+// When Reused is true, the prior row is returned unchanged and no new
+// event was written; the merge produced no new globs. When Reused is
+// false, Assignment is the new active row and PriorAssignmentID names
+// the row that was superseded.
+type AssignmentUpdateResult struct {
+	Assignment        Assignment
+	PriorAssignmentID string
+	Reused            bool
+}
+
+// SupersedeAndInsertAssignment extends an active assignment's allow
+// list by superseding the existing row and inserting a fresh active
+// row that merges the prior paths with the new globs.
+// All work happens inside one BEGIN IMMEDIATE transaction so the
+// (task_id, assigned_agent_id) WHERE status='active' partial unique
+// index never sees two active rows and the lookup-merge-write cycle
+// is atomic.
+//
+// Returns ErrNoActiveAssignment when no active row exists for the
+// pair. Returns ErrUnsafeReason when in.Reason fails the privacy
+// safety check. Returns ErrEmptyAddAllowedPaths when in.AddAllowedPaths
+// is empty or contains only whitespace-only entries. Returns
+// AssignmentUpdateResult{Reused: true} when the request would not
+// change the active row: every supplied glob is already present, the
+// supplied OrchestratorID (if any) matches the prior row, and every
+// non-reserved ExtraMetadata key is already on the prior row with an
+// equal value. Returns ErrStaleUpdate if the active row vanished
+// between the SELECT and the UPDATE inside the transaction; under
+// BEGIN IMMEDIATE this is only reachable when a non-CLI caller mutated
+// the row directly.
+func (s *Store) SupersedeAndInsertAssignment(ctx context.Context, in AssignmentUpdateInput) (AssignmentUpdateResult, error) {
+	if err := privacy.AssertSafe("assignment.reason", in.Reason); err != nil {
+		return AssignmentUpdateResult{}, fmt.Errorf("%w: %w", ErrUnsafeReason, err)
+	}
+
+	var res AssignmentUpdateResult
+	if werr := s.S.WriteDomainEventImmediate(ctx, func(ctx context.Context, conn *sql.Conn) ([]storage.Event, error) {
+		// Generate ids and timestamp INSIDE the immediate transaction
+		// so a concurrent writer that captured `now` first cannot commit
+		// timestamps that pre-date a winner's commit (which would invert
+		// the audit chain). Under BEGIN IMMEDIATE the writer lock is
+		// already held when this callback runs.
+		newID, err := s.S.IDGen().New(id.PrefixAssignment)
+		if err != nil {
+			return nil, err
+		}
+		newEventID, err := s.S.IDGen().New(id.PrefixEvent)
+		if err != nil {
+			return nil, err
+		}
+		now := id.FormatTimestamp(s.S.Clock()())
+		prior, err := selectActiveAssignmentForUpdate(ctx, conn, in.TaskID, in.AssignedAgentID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, ErrNoActiveAssignment
+			}
+			return nil, err
+		}
+		// Domain-level guard: reject an empty effective addition set.
+		// The CLI trims and validates already, but direct domain callers
+		// can still pass nil or all-whitespace slices, which would let an
+		// idempotent no-op masquerade as a successful update.
+		hasNonEmpty := false
+		for _, g := range in.AddAllowedPaths {
+			if strings.TrimSpace(g) != "" {
+				hasNonEmpty = true
+				break
+			}
+		}
+		if !hasNonEmpty {
+			return nil, ErrEmptyAddAllowedPaths
+		}
+
+		mergedAllowed, allowChanged := mergeGlobs(prior.AllowedPaths, in.AddAllowedPaths)
+
+		// Detect orchestrator override and non-reserved extra metadata
+		// changes alongside the allow-list. Without this check, a caller
+		// who supplied --orchestrator or --metadata along with an
+		// already-present --add-allow would silently get reused=true and
+		// lose those inputs. Including them here makes change detection
+		// match the documented surface of the command.
+		orchestratorID := in.OrchestratorID
+		orchestratorChanged := false
+		if orchestratorID == "" {
+			orchestratorID = prior.OrchestratorID
+		} else if orchestratorID != prior.OrchestratorID {
+			orchestratorChanged = true
+		}
+		metadataChanged := false
+		for k, v := range in.ExtraMetadata {
+			if isReservedLineageKey(k) {
+				continue
+			}
+			if pv, ok := prior.Metadata[k]; !ok || !metadataValuesEqual(pv, v) {
+				metadataChanged = true
+				break
+			}
+		}
+		if !allowChanged && !orchestratorChanged && !metadataChanged {
+			res = AssignmentUpdateResult{Assignment: prior, PriorAssignmentID: prior.AssignmentID, Reused: true}
+			return nil, nil
+		}
+
+		// Reserved lineage keys are owned by this helper. Strip them
+		// from both the prior row's metadata (we set fresh values for
+		// the new row) and from caller-supplied metadata (otherwise a
+		// caller could mark the new active row as already-superseded,
+		// breaking the SPEC §11.3.1 chain convention).
+		meta := map[string]any{}
+		for k, v := range prior.Metadata {
+			if isReservedLineageKey(k) {
+				continue
+			}
+			meta[k] = v
+		}
+		for k, v := range in.ExtraMetadata {
+			if isReservedLineageKey(k) {
+				continue
+			}
+			meta[k] = v
+		}
+		meta["superseded_assignment_id"] = prior.AssignmentID
+
+		newRow := Assignment{
+			AssignmentID:    newID,
+			EventID:         newEventID,
+			TaskID:          prior.TaskID,
+			OrchestratorID:  orchestratorID,
+			AssignedAgentID: prior.AssignedAgentID,
+			AllowedPaths:    mergedAllowed,
+			ForbiddenPaths:  append([]string(nil), prior.ForbiddenPaths...),
+			ConflictPolicy:  prior.ConflictPolicy,
+			Reason:          in.Reason,
+			Status:          "active",
+			CreatedAt:       now,
+			Metadata:        meta,
+		}
+		allowedJSON, err := encodePaths(newRow.AllowedPaths)
+		if err != nil {
+			return nil, err
+		}
+		forbidJSON, err := encodePaths(newRow.ForbiddenPaths)
+		if err != nil {
+			return nil, err
+		}
+		metaJSON, err := encodeMeta(newRow.Metadata)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := supersedeAssignmentTx(ctx, conn, prior.AssignmentID, newRow.AssignmentID, now); err != nil {
+			return nil, err
+		}
+		if _, err := conn.ExecContext(ctx, `
+			INSERT INTO assignments(assignment_id, event_id, task_id, orchestrator_id, assigned_agent_id, allowed_paths_json, forbidden_paths_json, conflict_policy, reason, status, created_at, metadata_json)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, newRow.AssignmentID, newRow.EventID, newRow.TaskID, newRow.OrchestratorID, nullable(newRow.AssignedAgentID), allowedJSON, forbidJSON, newRow.ConflictPolicy, newRow.Reason, newRow.Status, newRow.CreatedAt, metaJSON); err != nil {
+			if isActiveAssignmentUniqueViolation(err) {
+				return nil, fmt.Errorf("%w: %w", ErrAssignmentExists, err)
+			}
+			return nil, err
+		}
+
+		supersededEvent, err := supersedeAssignmentEvent(prior.AssignmentID, newRow.AssignmentID, prior.TaskID, orchestratorID, now)
+		if err != nil {
+			return nil, err
+		}
+		assignedPayload, err := events.MarshalPayload(map[string]any{
+			"assignment_id":            newRow.AssignmentID,
+			"task_id":                  newRow.TaskID,
+			"orchestrator_id":          newRow.OrchestratorID,
+			"assigned_agent":           newRow.AssignedAgentID,
+			"allowed_paths":            newRow.AllowedPaths,
+			"forbidden_paths":          newRow.ForbiddenPaths,
+			"conflict_policy":          newRow.ConflictPolicy,
+			"reason_sha256":            sha256Hex(newRow.Reason),
+			"superseded_assignment_id": prior.AssignmentID,
+		})
+		if err != nil {
+			return nil, err
+		}
+		assignedEvent := storage.Event{
+			EventID:      newRow.EventID,
+			Type:         "task.assigned",
+			AgentID:      orchestratorID,
+			TaskID:       newRow.TaskID,
+			AssignmentID: newRow.AssignmentID,
+			OccurredAt:   now,
+			PayloadJSON:  assignedPayload,
+		}
+		res = AssignmentUpdateResult{Assignment: newRow, PriorAssignmentID: prior.AssignmentID, Reused: false}
+		return []storage.Event{supersededEvent, assignedEvent}, nil
+	}); werr != nil {
+		return AssignmentUpdateResult{}, werr
+	}
+	return res, nil
+}
+
+// isReservedLineageKey reports whether k is a metadata key that the
+// supersede helper owns. Callers cannot set or pass through these keys
+// via ExtraMetadata; the helper writes them with the correct values.
+func isReservedLineageKey(k string) bool {
+	switch k {
+	case "superseded_by", "superseded_assignment_id":
+		return true
+	}
+	return false
+}
+
+// metadataValuesEqual compares two metadata values for the purpose of
+// idempotent change detection. Metadata round-trips through JSON, so a
+// caller-supplied int and a prior-row float64 (the JSON decode default)
+// must compare equal; reflect.DeepEqual treats them as different.
+func metadataValuesEqual(a, b any) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	aj, err := json.Marshal(a)
+	if err != nil {
+		return false
+	}
+	bj, err := json.Marshal(b)
+	if err != nil {
+		return false
+	}
+	return string(aj) == string(bj)
+}
+
+func selectActiveAssignmentForUpdate(ctx context.Context, conn *sql.Conn, taskID, agentID string) (Assignment, error) {
+	row := conn.QueryRowContext(ctx, `
+		SELECT assignment_id, event_id, task_id, orchestrator_id, COALESCE(assigned_agent_id, ''),
+		       allowed_paths_json, forbidden_paths_json, conflict_policy, reason, status, created_at, metadata_json
+		FROM assignments
+		WHERE task_id = ? AND status = 'active' AND COALESCE(assigned_agent_id, '') = ?
+		ORDER BY created_at DESC, assignment_id DESC
+		LIMIT 1
+	`, taskID, agentID)
+	var a Assignment
+	var allowed, forbid, meta string
+	if err := row.Scan(&a.AssignmentID, &a.EventID, &a.TaskID, &a.OrchestratorID, &a.AssignedAgentID, &allowed, &forbid, &a.ConflictPolicy, &a.Reason, &a.Status, &a.CreatedAt, &meta); err != nil {
+		return Assignment{}, err
+	}
+	var err error
+	a.AllowedPaths, err = decodePaths(allowed, "assignments.allowed_paths_json", a.AssignmentID)
+	if err != nil {
+		return Assignment{}, err
+	}
+	a.ForbiddenPaths, err = decodePaths(forbid, "assignments.forbidden_paths_json", a.AssignmentID)
+	if err != nil {
+		return Assignment{}, err
+	}
+	decoded, err := decodeMeta(meta, "assignments.metadata_json", a.AssignmentID)
+	if err != nil {
+		return Assignment{}, err
+	}
+	a.Metadata = decoded
+	return a, nil
+}
+
+func supersedeAssignmentTx(ctx context.Context, exec sqlExecer, oldID, newID, occurredAt string) error {
+	res, err := exec.ExecContext(ctx, `
+		UPDATE assignments
+		SET status = 'superseded',
+		    closed_at = ?,
+		    metadata_json = json_set(COALESCE(metadata_json, '{}'), '$.superseded_by', ?)
+		WHERE assignment_id = ? AND status = 'active'
+	`, occurredAt, newID, oldID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrStaleUpdate
+	}
+	return nil
+}
+
+func supersedeAssignmentEvent(oldID, newID, taskID, agentID, occurredAt string) (storage.Event, error) {
+	payload, err := events.MarshalPayload(map[string]any{
+		"assignment_id": oldID,
+		"superseded_by": newID,
+	})
+	if err != nil {
+		return storage.Event{}, err
+	}
+	return storage.Event{
+		Type:         "assignment.superseded",
+		AgentID:      agentID,
+		TaskID:       taskID,
+		AssignmentID: oldID,
+		OccurredAt:   occurredAt,
+		PayloadJSON:  payload,
+	}, nil
+}
+
+// mergeGlobs returns a deduplicated union of base and adds, preserving
+// base's order and appending only the additions not already present.
+// The bool return reports whether the merge introduced any new globs.
+// Globs are compared as raw strings; near-equivalents like "src/*" vs
+// "src/**" are not collapsed.
+func mergeGlobs(base, adds []string) ([]string, bool) {
+	if len(adds) == 0 {
+		return append([]string(nil), base...), false
+	}
+	seen := make(map[string]struct{}, len(base))
+	out := make([]string, 0, len(base)+len(adds))
+	for _, g := range base {
+		if _, ok := seen[g]; ok {
+			continue
+		}
+		seen[g] = struct{}{}
+		out = append(out, g)
+	}
+	changed := false
+	for _, g := range adds {
+		if _, ok := seen[g]; ok {
+			continue
+		}
+		seen[g] = struct{}{}
+		out = append(out, g)
+		changed = true
+	}
+	return out, changed
 }
 
 func isActiveAssignmentUniqueViolation(err error) bool {

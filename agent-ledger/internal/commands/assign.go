@@ -58,6 +58,7 @@ func NewAssignCommand(streams Streams) *cobra.Command {
 	f.StringVar(&o.metadata, "metadata", "", "Optional structured metadata as a JSON object (merged into assignment metadata_json)")
 	f.BoolVar(&o.ifAbsent, "if-absent", false, "Reuse an identical active assignment if present")
 	f.BoolVar(&o.asJSON, "json", false, "Render output as JSON")
+	cmd.AddCommand(NewAssignUpdateCommand(streams))
 	return cmd
 }
 

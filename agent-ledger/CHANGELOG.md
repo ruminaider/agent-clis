@@ -10,6 +10,48 @@ of the binary version.
 
 ## [Unreleased]
 
+### Added
+
+- **`assign update` subcommand for additive scope extension.** Closes
+  the kernel gap where an active assignment's allow-list was fixed
+  for the lifetime of the task. Operators that wanted to extend an
+  in-flight assignment had to choose between living with `warn` policy
+  drift, editing SQLite by hand, or rotating to a new `task_id` and
+  breaking the worker's `AGENT_LEDGER_TASK_ID` env. The new command
+  supersedes the prior active row and inserts a fresh active row that
+  merges new globs into the existing path lists, all inside one
+  immediate transaction.
+
+  - `agent-ledger assign update --task <id> --agent <agent-id>
+    --add-allow <glob>... --reason "<why>"` is the surface.
+    `--add-allow` is required and may be repeated.
+  - Idempotent. Rerunning with the same flags returns
+    `changed=false reused=true`, no new row, no event.
+  - Lineage is recorded as `metadata.superseded_by` on the prior row
+    and `metadata.superseded_assignment_id` on the new row. The
+    `assignments --status all` query exposes both.
+  - New event type `assignment.superseded` joins the MVP set
+    (SPEC §12.1). It is a *replacement* event, not a *closure* event.
+    Standalone `assignment.closed` (terminal closure with no
+    replacement) remains post-MVP.
+  - SPEC §11.3.1 documents the assignment-identity rule: an
+    `assignment_id` identifies one immutable scope-contract instance,
+    and the human concept of "the assignment for this (task, agent)"
+    is a chain linked via the `superseded_by` and
+    `superseded_assignment_id` metadata keys.
+  - The MVP is allow-list extension only. Adding forbid globs,
+    removing globs, replacing the full path lists, and changing the
+    conflict policy are intentionally out of scope: any change that
+    narrows what an in-flight intent may write (including a new
+    forbid that overlaps an already-claimed path) can leave `record`
+    accepting writes that `verify` later rejects, because `record`
+    validates against intent path hashes, not current assignment
+    scope. Close and re-`assign` for those cases.
+  - Reserved metadata keys (`superseded_by`,
+    `superseded_assignment_id`, `updated_from`) supplied via
+    `--metadata` are stripped; the helper owns these and writes them
+    with the correct values.
+
 ## [0.4.1] - 2026-05-09
 
 ### Added
