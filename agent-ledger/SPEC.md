@@ -247,7 +247,18 @@ Allowed statuses:
 active, completed, abandoned, superseded
 ```
 
-In the Phase 1 kernel slice, only `active` is reachable through CLI commands. Assignment closure is post-MVP through `assignment.closed`.
+In the Phase 1 kernel slice, two transitions are reachable through CLI commands: `assign` writes a new row in `active`, and `assign update` (SPEC §18.3) supersedes the prior active row (sets `status = 'superseded'` and `closed_at`) while inserting a fresh `active` row that merges the additive scope. Standalone closure to `completed` or `abandoned` without a replacement is post-MVP through `assignment.closed`.
+
+#### 11.3.1 Assignment identity rule
+
+An `assignment_id` identifies one immutable scope-contract instance. The human concept of "the assignment for this `(task_id, assigned_agent_id)` pair" is a chain of one-or-more rows in the `assignments` table linked via:
+
+- `metadata_json.superseded_by = <new-assignment-id>` on the older row.
+- `metadata_json.superseded_assignment_id = <old-assignment-id>` on the newer row.
+- `status = 'superseded'` and `closed_at = <timestamp>` on the older row.
+- `status = 'active'` on the newer row.
+
+Each row's allow and forbid lists govern the intents and changes recorded under that `assignment_id`. Consumers that need lifetime-of-task scope facts walk the chain via `ListAssignments(Status: "all")`. Consumers that need current-policy facts read `LatestActiveAssignmentForTask` or `LatestActiveAssignmentForTaskAndAgent`.
 
 ### 11.4 `intents`
 
@@ -486,7 +497,10 @@ intent.orphaned
 change.adopted
 validation.recorded
 intent.superseded
+assignment.superseded
 ```
+
+`assignment.superseded` is a *replacement* event (a new active row exists for the same `(task_id, assigned_agent_id)` pair), not a *closure* event. The terminal closure event without replacement is `assignment.closed`, which remains post-MVP. Consumers distinguish a fresh assignment from a replacement by checking whether the new row's `metadata.superseded_assignment_id` is non-empty.
 
 ### 12.2 Post-MVP event types
 
@@ -662,6 +676,36 @@ agent-ledger assign \
 Writes `task.assigned`. This command is for orchestrators and adapters.
 
 When a pi subagent child writes its own assignment from its session bootstrap, the child uses `--agent <child-agent-id>` for its own identity and `--orchestrator <parent-agent-id>` for the inherited parent identity, and supplies the structured metadata schema described in section 21.1. The child uses only its own `<child-agent-id>` for subsequent `claim`, `record`, `heartbeat`, and `close` events.
+
+#### 18.3.1 `assign update`
+
+```bash
+agent-ledger assign update \
+  --task W2-A \
+  --agent pi.worker.7f3a \
+  --add-allow 'tests/credentials/**' \
+  [--orchestrator pi.main.8c91] \
+  [--metadata '{"continuation":true}'] \
+  --reason 'Extend scope for continuation packet'
+```
+
+Extends the active assignment for the supplied `(task_id, assigned_agent_id)` pair. Supersedes the prior active row (sets `status = 'superseded'`, sets `closed_at`, sets `metadata_json.superseded_by` to the new id) and inserts a fresh active row with the merged `allowed_paths`. The new row carries the prior row's `forbidden_paths` and `conflict_policy` unchanged. The new row's `metadata_json.superseded_assignment_id` points back at the prior row. All writes and both events happen inside one `BEGIN IMMEDIATE` transaction (lookup, merge, supersede, insert). Two events are emitted: `assignment.superseded` (against the prior id) and `task.assigned` (against the new id).
+
+The MVP is allow-list extension only:
+
+- `--add-allow <glob>` (repeatable) extends the allowed-path list. At least one is required.
+- Adding forbid globs, removing globs, replacing the full path lists, and changing the conflict policy are intentionally out of scope. Any change that narrows what an in-flight intent may write (including a new forbid that overlaps an already-claimed path) can leave `record` accepting writes that `verify` later rejects, because `record` validates against intent path hashes (SPEC §18.6), not current assignment scope. Close and re-`assign` for those cases.
+- Reserved metadata keys (`superseded_by`, `superseded_assignment_id`, `updated_from`) supplied via `--metadata` are stripped; the helper owns these and writes them with the correct values.
+
+Idempotent: rerunning the same `--add-allow` values after a successful update succeeds with `changed=false reused=true`, no new row, and no event. Globs are merged as raw strings; near-equivalents like `src/*` and `src/**` are treated as distinct.
+
+Exit codes:
+
+- `0`: success, with `changed=true reused=false` on a real update or `changed=false reused=true` on an idempotent no-op.
+- `2` (`missing_flag`): no `--add-allow` supplied, or `--task` or `--reason` missing.
+- `2` (`reason_unsafe`): the reason contains a known secret pattern (SPEC §17).
+- `4` (`no_active_assignment`): no active assignment exists for the requested `(task, agent)` pair; run `assign` first.
+- `4` (`assignment_stale_update`): a concurrent writer superseded the active row between the immediate-transaction lookup and the update; rerun to merge against the new row.
 
 ### 18.4 `claim`
 

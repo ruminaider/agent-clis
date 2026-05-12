@@ -100,6 +100,23 @@ orchestrator preflight:
 agent-ledger assign   --task T1   --orchestrator op.main   --agent worker.alice   --allow 'src/**'   --policy warn   --reason "implement feature X"   --if-absent   --ledger-dir "$LEDGER"
 ```
 
+### 5.1 Extend an assignment's allow-list
+
+When a worker continuation expands scope to additional files, extend the active assignment in place rather than closing and re-creating it:
+
+```bash
+agent-ledger assign update \
+  --task T1 \
+  --agent worker.alice \
+  --add-allow 'tests/**' \
+  --reason "continuation packet adds test coverage" \
+  --ledger-dir "$LEDGER"
+```
+
+The command supersedes the prior active row (it now shows `status=superseded` in `agent-ledger assignments --status all`) and writes a new active row with the merged allowed-paths list. The old and new rows are linked via `metadata.superseded_by` and `metadata.superseded_assignment_id`.
+
+The MVP is allow-list extension only. Use `--add-allow` (repeatable) to extend the allowed-path list. Adding forbid globs, removing globs, replacing the full path lists, and changing the conflict policy are out of scope; close and re-`assign` for those cases. The command is idempotent: rerunning the same `--add-allow` values returns `changed=false reused=true` and writes no new row.
+
 ## 6. Claim files before editing
 
 ```bash
