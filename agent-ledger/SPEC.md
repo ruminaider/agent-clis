@@ -695,14 +695,16 @@ The MVP is allow-list extension only:
 
 - `--add-allow <glob>` (repeatable) extends the allowed-path list. At least one is required.
 - Adding forbid globs, removing globs, replacing the full path lists, and changing the conflict policy are intentionally out of scope. Any change that narrows what an in-flight intent may write (including a new forbid that overlaps an already-claimed path) can leave `record` accepting writes that `verify` later rejects, because `record` validates against intent path hashes (SPEC §18.6), not current assignment scope. Close and re-`assign` for those cases.
-- Reserved metadata keys (`superseded_by`, `superseded_assignment_id`, `updated_from`) supplied via `--metadata` are stripped; the helper owns these and writes them with the correct values.
+- Reserved metadata keys (`superseded_by`, `superseded_assignment_id`) supplied via `--metadata` are stripped; the helper owns these and writes them with the correct values.
 
-Idempotent: rerunning the same `--add-allow` values after a successful update succeeds with `changed=false reused=true`, no new row, and no event. Globs are merged as raw strings; near-equivalents like `src/*` and `src/**` are treated as distinct.
+Idempotent: rerunning the same `--add-allow` values after a successful update succeeds with `changed=false reused=true`, no new row, and no event. Idempotency considers the full documented surface: a request that only repeats existing `--add-allow` globs but supplies a different `--orchestrator` or a non-reserved `--metadata` key whose value differs from the prior row counts as a real update and produces a new active row plus both events. Globs are merged as raw strings; near-equivalents like `src/*` and `src/**` are treated as distinct.
 
 Exit codes:
 
 - `0`: success, with `changed=true reused=false` on a real update or `changed=false reused=true` on an idempotent no-op.
 - `2` (`missing_flag`): no `--add-allow` supplied, or `--task` or `--reason` missing.
+- `2` (`invalid_flag`): an `--add-allow` value was blank or whitespace-only.
+- `2` (`invalid_metadata`): `--metadata` was not a single well-formed JSON object.
 - `2` (`reason_unsafe`): the reason contains a known secret pattern (SPEC §17).
 - `4` (`no_active_assignment`): no active assignment exists for the requested `(task, agent)` pair; run `assign` first.
 - `4` (`assignment_stale_update`): a concurrent writer superseded the active row between the immediate-transaction lookup and the update; rerun to merge against the new row.

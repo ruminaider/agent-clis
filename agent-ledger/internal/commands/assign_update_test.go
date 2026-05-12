@@ -125,10 +125,31 @@ func TestAssignUpdate_Idempotent(t *testing.T) {
 		t.Fatalf("assignments list: %d %s %s", code, out, e)
 	}
 	var listResp map[string]any
-	_ = json.Unmarshal([]byte(out), &listResp)
+	if err := json.Unmarshal([]byte(out), &listResp); err != nil {
+		t.Fatalf("decode list json: %v %s", err, out)
+	}
 	rows, _ := listResp["assignments"].([]any)
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 row (no supersede on no-op), got %d: %s", len(rows), out)
+	}
+}
+
+// TestAssignUpdate_WhitespaceOnlyAddAllow_UsageError verifies that
+// `--add-allow "   "` is rejected at the CLI boundary with
+// ExitUsage/invalid_flag instead of producing a misleading
+// changed=true row whose globs trim to nothing.
+func TestAssignUpdate_WhitespaceOnlyAddAllow_UsageError(t *testing.T) {
+	_, ledger := tempLedger(t)
+	code, _, e := runCmd(t, ledger, nil,
+		"assign", "update", "--task", "T", "--agent", "w",
+		"--add-allow", "   ",
+		"--reason", "whitespace path",
+	)
+	if code != 2 {
+		t.Fatalf("expected ExitUsage(2), got %d (stderr=%s)", code, e)
+	}
+	if !strings.Contains(e, "invalid_flag") {
+		t.Errorf("expected invalid_flag in stderr, got %s", e)
 	}
 }
 

@@ -103,6 +103,14 @@ var ErrNoActiveAssignment = errors.New("domain: no active assignment exists for 
 // "assignment_stale_update".
 var ErrStaleUpdate = errors.New("domain: active assignment was superseded by a concurrent writer")
 
+// ErrEmptyAddAllowedPaths is returned by SupersedeAndInsertAssignment
+// when the input's AddAllowedPaths slice is empty or contains only
+// blank or whitespace-only entries. Without this guard a direct domain
+// caller could pass nothing and receive a successful Reused=true no-op;
+// the CLI also validates this surface but the domain owns the
+// contract.
+var ErrEmptyAddAllowedPaths = errors.New("domain: at least one non-empty allow-list glob is required")
+
 // ValidPolicy reports whether p is one of the allowed conflict policies.
 func ValidPolicy(p string) bool {
 	switch p {
@@ -618,11 +626,16 @@ type AssignmentUpdateResult struct {
 //
 // Returns ErrNoActiveAssignment when no active row exists for the
 // pair. Returns ErrUnsafeReason when in.Reason fails the privacy
-// safety check. Returns AssignmentUpdateResult{Reused: true} when the
-// merge produces zero new globs (idempotent ensure-shape calls).
-// Returns ErrStaleUpdate if the active row vanished between the SELECT
-// and the UPDATE inside the transaction; under BEGIN IMMEDIATE this is
-// only reachable when a non-CLI caller mutated the row directly.
+// safety check. Returns ErrEmptyAddAllowedPaths when in.AddAllowedPaths
+// is empty or contains only whitespace-only entries. Returns
+// AssignmentUpdateResult{Reused: true} when the request would not
+// change the active row: every supplied glob is already present, the
+// supplied OrchestratorID (if any) matches the prior row, and every
+// non-reserved ExtraMetadata key is already on the prior row with an
+// equal value. Returns ErrStaleUpdate if the active row vanished
+// between the SELECT and the UPDATE inside the transaction; under
+// BEGIN IMMEDIATE this is only reachable when a non-CLI caller mutated
+// the row directly.
 func (s *Store) SupersedeAndInsertAssignment(ctx context.Context, in AssignmentUpdateInput) (AssignmentUpdateResult, error) {
 	if err := privacy.AssertSafe("assignment.reason", in.Reason); err != nil {
 		return AssignmentUpdateResult{}, fmt.Errorf("%w: %w", ErrUnsafeReason, err)
@@ -651,8 +664,47 @@ func (s *Store) SupersedeAndInsertAssignment(ctx context.Context, in AssignmentU
 			}
 			return nil, err
 		}
+		// Domain-level guard: reject an empty effective addition set.
+		// The CLI trims and validates already, but direct domain callers
+		// can still pass nil or all-whitespace slices, which would let an
+		// idempotent no-op masquerade as a successful update.
+		hasNonEmpty := false
+		for _, g := range in.AddAllowedPaths {
+			if strings.TrimSpace(g) != "" {
+				hasNonEmpty = true
+				break
+			}
+		}
+		if !hasNonEmpty {
+			return nil, ErrEmptyAddAllowedPaths
+		}
+
 		mergedAllowed, allowChanged := mergeGlobs(prior.AllowedPaths, in.AddAllowedPaths)
-		if !allowChanged {
+
+		// Detect orchestrator override and non-reserved extra metadata
+		// changes alongside the allow-list. Without this check, a caller
+		// who supplied --orchestrator or --metadata along with an
+		// already-present --add-allow would silently get reused=true and
+		// lose those inputs. Including them here makes change detection
+		// match the documented surface of the command.
+		orchestratorID := in.OrchestratorID
+		orchestratorChanged := false
+		if orchestratorID == "" {
+			orchestratorID = prior.OrchestratorID
+		} else if orchestratorID != prior.OrchestratorID {
+			orchestratorChanged = true
+		}
+		metadataChanged := false
+		for k, v := range in.ExtraMetadata {
+			if isReservedLineageKey(k) {
+				continue
+			}
+			if pv, ok := prior.Metadata[k]; !ok || !metadataValuesEqual(pv, v) {
+				metadataChanged = true
+				break
+			}
+		}
+		if !allowChanged && !orchestratorChanged && !metadataChanged {
 			res = AssignmentUpdateResult{Assignment: prior, PriorAssignmentID: prior.AssignmentID, Reused: true}
 			return nil, nil
 		}
@@ -676,12 +728,6 @@ func (s *Store) SupersedeAndInsertAssignment(ctx context.Context, in AssignmentU
 			meta[k] = v
 		}
 		meta["superseded_assignment_id"] = prior.AssignmentID
-		meta["updated_from"] = prior.AssignmentID
-
-		orchestratorID := in.OrchestratorID
-		if orchestratorID == "" {
-			orchestratorID = prior.OrchestratorID
-		}
 
 		newRow := Assignment{
 			AssignmentID:    newID,
@@ -763,10 +809,32 @@ func (s *Store) SupersedeAndInsertAssignment(ctx context.Context, in AssignmentU
 // via ExtraMetadata; the helper writes them with the correct values.
 func isReservedLineageKey(k string) bool {
 	switch k {
-	case "superseded_by", "superseded_assignment_id", "updated_from":
+	case "superseded_by", "superseded_assignment_id":
 		return true
 	}
 	return false
+}
+
+// metadataValuesEqual compares two metadata values for the purpose of
+// idempotent change detection. Metadata round-trips through JSON, so a
+// caller-supplied int and a prior-row float64 (the JSON decode default)
+// must compare equal; reflect.DeepEqual treats them as different.
+func metadataValuesEqual(a, b any) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	aj, err := json.Marshal(a)
+	if err != nil {
+		return false
+	}
+	bj, err := json.Marshal(b)
+	if err != nil {
+		return false
+	}
+	return string(aj) == string(bj)
 }
 
 func selectActiveAssignmentForUpdate(ctx context.Context, conn *sql.Conn, taskID, agentID string) (Assignment, error) {

@@ -73,7 +73,7 @@ as distinct.`,
 	addStoreFlags(cmd, &o.env)
 	f := cmd.Flags()
 	f.StringVar(&o.task, "task", "", "Task ID (required)")
-	f.StringVar(&o.agent, "agent", "", "Assigned worker agent ID (required, may be empty string for unassigned)")
+	f.StringVar(&o.agent, "agent", "", "Assigned worker agent ID; omit or pass an empty string to target the unassigned assignment chain")
 	f.StringVar(&o.orchestrator, "orchestrator", "", "Override orchestrator agent ID for the new assignment row (defaults to the prior row's orchestrator)")
 	f.StringArrayVar(&o.addAllow, "add-allow", nil, "Glob to append to allowed_paths; repeatable; at least one is required")
 	f.StringVar(&o.reason, "reason", "", "Reason for extending the assignment (required)")
@@ -92,6 +92,21 @@ func runAssignUpdate(streams Streams, o *assignUpdateOpts) error {
 	if len(o.addAllow) == 0 {
 		return cli.NewError(cli.ExitUsage, "missing_flag", "--add-allow is required (at least one glob)")
 	}
+	// Trim each supplied glob and reject blank or whitespace-only
+	// values. Without this, a `--add-allow " "` flows into mergeGlobs
+	// as a raw string, can produce changed=true while the scope
+	// matcher later trims it to nothing, and no path actually becomes
+	// writable. Reject at the boundary instead of writing a row whose
+	// behavior diverges from what the operator typed.
+	trimmedAddAllow := make([]string, 0, len(o.addAllow))
+	for _, g := range o.addAllow {
+		t := strings.TrimSpace(g)
+		if t == "" {
+			return cli.NewError(cli.ExitUsage, "invalid_flag", "--add-allow values must be non-empty after trimming whitespace")
+		}
+		trimmedAddAllow = append(trimmedAddAllow, t)
+	}
+	o.addAllow = trimmedAddAllow
 	if err := privacy.AssertSafe("--reason", o.reason); err != nil {
 		return cli.NewError(cli.ExitConfigError, "reason_unsafe", err.Error())
 	}
@@ -120,6 +135,8 @@ func runAssignUpdate(streams Streams, o *assignUpdateOpts) error {
 		switch {
 		case errors.Is(err, domain.ErrUnsafeReason):
 			return cli.NewError(cli.ExitConfigError, "reason_unsafe", err.Error())
+		case errors.Is(err, domain.ErrEmptyAddAllowedPaths):
+			return cli.NewError(cli.ExitUsage, "missing_flag", err.Error())
 		case errors.Is(err, domain.ErrNoActiveAssignment):
 			return cli.NewError(cli.ExitConflict, "no_active_assignment",
 				fmt.Sprintf("no active assignment for task %q and agent %q; run `agent-ledger assign` first", o.task, o.agent))

@@ -469,8 +469,12 @@ func TestSupersedeAndInsertAssignment_Idempotent(t *testing.T) {
 	}
 
 	var supBefore, assignedBefore int
-	_ = s.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE event_type='assignment.superseded'`).Scan(&supBefore)
-	_ = s.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE event_type='task.assigned'`).Scan(&assignedBefore)
+	if err := s.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE event_type='assignment.superseded'`).Scan(&supBefore); err != nil {
+		t.Fatalf("count assignment.superseded (before): %v", err)
+	}
+	if err := s.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE event_type='task.assigned'`).Scan(&assignedBefore); err != nil {
+		t.Fatalf("count task.assigned (before): %v", err)
+	}
 
 	res, err := d.SupersedeAndInsertAssignment(ctx, domain.AssignmentUpdateInput{
 		TaskID:          "task-noop",
@@ -492,8 +496,12 @@ func TestSupersedeAndInsertAssignment_Idempotent(t *testing.T) {
 	}
 
 	var supAfter, assignedAfter int
-	_ = s.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE event_type='assignment.superseded'`).Scan(&supAfter)
-	_ = s.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE event_type='task.assigned'`).Scan(&assignedAfter)
+	if err := s.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE event_type='assignment.superseded'`).Scan(&supAfter); err != nil {
+		t.Fatalf("count assignment.superseded (after): %v", err)
+	}
+	if err := s.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE event_type='task.assigned'`).Scan(&assignedAfter); err != nil {
+		t.Fatalf("count task.assigned (after): %v", err)
+	}
 	if supAfter != supBefore {
 		t.Fatalf("assignment.superseded events changed on no-op: before=%d after=%d", supBefore, supAfter)
 	}
@@ -616,13 +624,17 @@ func stringSliceEqual(a, b []string) bool {
 	return true
 }
 
-// TestSupersedeAndInsertAssignment_StaleUpdate forces the post-lookup
-// race that ErrStaleUpdate guards against. Under BEGIN IMMEDIATE the
-// CLI path serializes writers, so this case is only reachable when a
-// non-CLI caller mutates the active row directly. We simulate that
-// here by superseding the row out-of-band before the helper runs;
-// its UPDATE then affects zero rows and returns ErrStaleUpdate.
-func TestSupersedeAndInsertAssignment_StaleUpdate(t *testing.T) {
+// TestSupersedeAndInsertAssignment_RotatesAfterOutOfBandSupersede
+// covers the case where the active row pointer rotates between
+// successful calls: an out-of-band writer marks the prior active row
+// superseded and inserts a replacement, and the helper then correctly
+// operates on the replacement (not the original) row.
+//
+// The post-lookup race that ErrStaleUpdate guards against requires an
+// in-callback interleaving that this external test cannot inject;
+// supersedeAssignmentTx's zero-row branch is covered directly in the
+// internal test (TestSupersedeAssignmentTxZeroRowsReturnsErrStaleUpdate).
+func TestSupersedeAndInsertAssignment_RotatesAfterOutOfBandSupersede(t *testing.T) {
 	s := openStore(t)
 	d := domain.New(s)
 	ctx := context.Background()
@@ -638,27 +650,12 @@ func TestSupersedeAndInsertAssignment_StaleUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	// Out-of-band: mark the active row superseded so the helper's
-	// SELECT sees nothing once it acquires the writer lock. The
-	// helper's lookup runs against status='active', so the SELECT
-	// will return sql.ErrNoRows and the helper will return
-	// ErrNoActiveAssignment, NOT ErrStaleUpdate. To exercise the
-	// stale-update path specifically we need the SELECT to succeed
-	// (a row was active when the lookup ran) but the UPDATE to find
-	// no active row. That's only reachable by interleaving inside the
-	// callback; we approximate it by patching the row to a non-active
-	// status between the lookup and the UPDATE via a hook.
-	//
-	// Since we cannot inject a hook without changing production code,
-	// the next-best test demotes the stale-update case to an
-	// equivalent observable: when the active row has been moved to
-	// 'superseded' before the helper's lookup, ErrNoActiveAssignment
-	// fires (covered by TestSupersedeAndInsertAssignment_NoActiveAssignment).
-	// We additionally cover the unique-index race here by superseding
-	// the active row out-of-band, inserting a NEW active row by hand
-	// (so the SELECT sees row B), then running the helper. The UPDATE
-	// fires against row B and succeeds; this proves the helper does
-	// not regress when the active row pointer rotates between calls.
+	// Out-of-band: mark the original active row superseded and insert
+	// a fresh active replacement (row B). The helper's lookup then
+	// sees row B, its UPDATE fires against row B, and it produces the
+	// new active row with PriorAssignmentID = replacement.AssignmentID.
+	// This proves the helper operates on the current active row and
+	// does not regress when the pointer rotates between calls.
 	if _, err := s.DB().ExecContext(ctx, `
 		UPDATE assignments SET status = 'superseded', closed_at = ?
 		WHERE assignment_id = ?
@@ -737,5 +734,129 @@ func TestSupersedeAndInsertAssignment_RejectsReservedMetadataKeys(t *testing.T) 
 	}
 	if got := res.Assignment.Metadata["continuation"]; got != true {
 		t.Errorf("benign caller metadata dropped: continuation=%v want true", got)
+	}
+}
+
+// TestSupersedeAndInsertAssignment_OrchestratorChangeTriggersNewRow
+// verifies that supplying a different --orchestrator alongside an
+// already-present --add-allow value still produces a real update (a
+// new active row, both events, changed=true). Without this guarantee
+// the documented --orchestrator flag would silently drop on the
+// idempotent path.
+func TestSupersedeAndInsertAssignment_OrchestratorChangeTriggersNewRow(t *testing.T) {
+	s := openStore(t)
+	d := domain.New(s)
+	ctx := context.Background()
+
+	base, err := d.InsertAssignment(ctx, domain.Assignment{
+		TaskID:          "task-orch",
+		OrchestratorID:  "orch-a",
+		AssignedAgentID: "agent",
+		AllowedPaths:    []string{"src/foo.py"},
+		ConflictPolicy:  domain.PolicyWarn,
+		Reason:          "initial",
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	res, err := d.SupersedeAndInsertAssignment(ctx, domain.AssignmentUpdateInput{
+		TaskID:          "task-orch",
+		AssignedAgentID: "agent",
+		OrchestratorID:  "orch-b",
+		AddAllowedPaths: []string{"src/foo.py"}, // already present
+		Reason:          "change orchestrator only",
+	})
+	if err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+	if res.Reused {
+		t.Fatal("expected Reused=false when --orchestrator changes; got Reused=true")
+	}
+	if res.Assignment.AssignmentID == base.AssignmentID {
+		t.Fatalf("expected new assignment id, got prior %s", base.AssignmentID)
+	}
+	if res.Assignment.OrchestratorID != "orch-b" {
+		t.Fatalf("new row orchestrator=%s want orch-b", res.Assignment.OrchestratorID)
+	}
+}
+
+// TestSupersedeAndInsertAssignment_NonReservedMetadataChangeTriggersNewRow
+// verifies that supplying a non-reserved metadata key whose value
+// differs from the prior row produces a real update even when every
+// --add-allow value is already present.
+func TestSupersedeAndInsertAssignment_NonReservedMetadataChangeTriggersNewRow(t *testing.T) {
+	s := openStore(t)
+	d := domain.New(s)
+	ctx := context.Background()
+
+	if _, err := d.InsertAssignment(ctx, domain.Assignment{
+		TaskID:          "task-meta-change",
+		OrchestratorID:  "orch",
+		AssignedAgentID: "agent",
+		AllowedPaths:    []string{"src/foo.py"},
+		ConflictPolicy:  domain.PolicyWarn,
+		Reason:          "initial",
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	res, err := d.SupersedeAndInsertAssignment(ctx, domain.AssignmentUpdateInput{
+		TaskID:          "task-meta-change",
+		AssignedAgentID: "agent",
+		AddAllowedPaths: []string{"src/foo.py"}, // already present
+		Reason:          "annotate continuation",
+		ExtraMetadata:   map[string]any{"continuation": true},
+	})
+	if err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+	if res.Reused {
+		t.Fatal("expected Reused=false when non-reserved metadata changes")
+	}
+	if got := res.Assignment.Metadata["continuation"]; got != true {
+		t.Errorf("new row metadata.continuation=%v want true", got)
+	}
+}
+
+// TestSupersedeAndInsertAssignment_EmptyAddAllowRejected verifies the
+// domain-level guard against an empty effective addition set. A direct
+// domain caller that passes nil or all-whitespace AddAllowedPaths
+// must get ErrEmptyAddAllowedPaths, not a Reused=true no-op.
+func TestSupersedeAndInsertAssignment_EmptyAddAllowRejected(t *testing.T) {
+	s := openStore(t)
+	d := domain.New(s)
+	ctx := context.Background()
+
+	if _, err := d.InsertAssignment(ctx, domain.Assignment{
+		TaskID:          "task-empty",
+		OrchestratorID:  "orch",
+		AssignedAgentID: "agent",
+		AllowedPaths:    []string{"src/foo.py"},
+		ConflictPolicy:  domain.PolicyWarn,
+		Reason:          "initial",
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	for name, in := range map[string]domain.AssignmentUpdateInput{
+		"nil_slice": {
+			TaskID:          "task-empty",
+			AssignedAgentID: "agent",
+			Reason:          "no paths",
+		},
+		"whitespace_only": {
+			TaskID:          "task-empty",
+			AssignedAgentID: "agent",
+			AddAllowedPaths: []string{"   ", "\t"},
+			Reason:          "whitespace paths",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := d.SupersedeAndInsertAssignment(ctx, in)
+			if !errors.Is(err, domain.ErrEmptyAddAllowedPaths) {
+				t.Fatalf("expected ErrEmptyAddAllowedPaths, got %v", err)
+			}
+		})
 	}
 }
