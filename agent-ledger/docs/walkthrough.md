@@ -117,6 +117,22 @@ The command supersedes the prior active row (it now shows `status=superseded` in
 
 The MVP is allow-list extension only. Use `--add-allow` (repeatable) to extend the allowed-path list. Adding forbid globs, removing globs, replacing the full path lists, and changing the conflict policy are out of scope; close and re-`assign` for those cases. The command is idempotent: rerunning the same `--add-allow` values returns `changed=false reused=true` and writes no new row.
 
+### 5.2 Choosing a conflict policy: `none`, `warn`, `exclusive`
+
+`--policy` controls what happens when two active intents overlap on the same path.
+
+| Policy | Overlap detection | Overlap outcome | Lock sentinel | When to use |
+|---|---|---|---|---|
+| `none` | skipped | claim opens unconditionally | none | Single-agent project, or coordination is handled entirely outside agent-ledger. |
+| `warn` (default) | yes | claim opens, conflict row recorded, `verify` reports it | none | Concurrent edits are tolerable: review-and-edit, or operator wants visibility without blocking. |
+| `exclusive` | yes | second claim is blocked unless caller supplies `--override-conflict <id>` against an acknowledged conflict | best-effort flock under `<ledger-dir>/locks/<path-hash>.lock` | Concurrent edits on the same file would corrupt state, and you want the kernel to refuse rather than warn. |
+
+All three policies are race-safe under concurrent writers. As of v0.1.2 the claim path runs overlap detection, conflict resolution, and intent insert inside one SQLite `BEGIN IMMEDIATE` transaction (see `internal/domain/domain.go` `ResolveAndInsertIntent`), so two simultaneous `claim` calls under `exclusive` can never both win. The `tests/integration/concurrent_test.go` suite runs under `-race` to keep this guarantee honest.
+
+Operator-side guidance to avoid `exclusive` is stale if it predates v0.1.2 (released 2026-04-28). The historical concern was that two simultaneous claims could both pass overlap detection before either committed, producing two winners. That window no longer exists. If your downstream `AGENTS.md` or similar tells workers to use `warn` because `exclusive` is unsafe, verify your installed `agent-ledger --version` is at least v0.1.2 and update the guidance.
+
+The lock sentinel under `<ledger-dir>/locks/<path-hash>.lock` is advisory: the DB row is authoritative (SPEC §28). The sentinel exists so `verify` can report `EXCLUSIVE_LOCK_HELD` when an external process is holding the file, and so close paths can clean it up. Do not script around the sentinel; it is housekeeping for the verifier, not a public API.
+
 ## 6. Claim files before editing
 
 ```bash
