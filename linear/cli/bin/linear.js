@@ -597,7 +597,12 @@ Update:
 
 Fields:
   --description <text>
-  --target-date <iso>   or --clear-target-date  (null-to-remove)`,
+  --target-date <iso>   or --clear-target-date  (null-to-remove)
+
+Note: milestone status (done, next, overdue, unstarted) is read-only.
+Linear derives it from the target date and the completion state of the
+milestone's issues. To change status, complete the issues or adjust
+--target-date.`,
   },
   team: {
     _overview: `Usage: ${CLI_NAME} team <list|get>`,

@@ -70,3 +70,4 @@ The script requires a usable auth credential (OAuth or `LINEAR_API_KEY`) and wri
 - Output is JSON-first. Tool-level errors returned by the server (for example, "Entity not found") surface under `result` with `ok: true`; always inspect the body.
 - The current Linear MCP session negotiates protocol `2024-11-05`.
 - Null-to-remove semantics on `save_issue` and `save_project` are not reachable through the CLI. Use the Linear UI for explicit clears.
+- Milestone status (`done`, `next`, `overdue`, `unstarted`) is read-only in Linear's API. `save_milestone` accepts only `name`, `description`, and `targetDate`; the platform derives status from the milestone's target date and the completion state of its issues. To mark a milestone done, complete its issues; to clear an overdue status, adjust `--target-date` or finish the work.

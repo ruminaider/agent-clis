@@ -31,7 +31,7 @@ Use `linear-cli` when you want terminal-based access to Linear through the repo'
 6. **Comments.** `comment list --issue-id`, `comment save` (create with `--issue-id --body`, update with `--id --body`, reply with `--issue-id --parent-id --body`), `comment delete --id`.
 7. **Attachments.** `attachment get --id`, `attachment create --issue <id> --file <path>` (the CLI base64-encodes the file and infers filename and MIME type), `attachment delete --id`.
 8. **Cycles.** `cycle list --team-id <team-uuid> [--type current|previous|next]`. `--team-id` must be a UUID, not a team name or key.
-9. **Milestones.** `milestone list --project`, `milestone get --project --query`, `milestone save --project [--id | --name] [--description] [--target-date | --clear-target-date]`.
+9. **Milestones.** `milestone list --project`, `milestone get --project --query`, `milestone save --project [--id | --name] [--description] [--target-date | --clear-target-date]`. Milestone *status* (`done`, `next`, `overdue`, `unstarted`) is read-only: Linear derives it from the milestone's target date and the completion state of its issues, and `ProjectMilestoneUpdateInput` exposes no status field. To move a milestone to `done`, complete every issue assigned to it (e.g. `issue save --id <key> --state Done`). To shift it out of `overdue`, change `--target-date` or finish the work.
 10. **Documents.** `document list`, `document get --id <id-or-slug>`, `document create --title [--content] [--project | --issue]`, `document update --id [fields]`. Documents attach to a project or an issue, never both.
 11. **Teams and users.** `team list`, `team get --query`, `user list`, `user get --query` (accepts UUID, name, email, or `me`).
 12. **Utilities.** `image extract --markdown <content>` or `--from-file <path>` to resolve embedded images. `docs search --query <text>` to search Linear's help docs.
@@ -86,3 +86,4 @@ Team default precedence for project and issue listing:
 - Writing to an entity before reading it first.
 - Trusting `ok: true` alone. Inspect `result` for server-side error messages.
 - Attempting to hard-delete an issue. Linear's MCP surface has no `delete_issue` tool; cancel the issue by setting `--state Canceled` instead.
+- Trying to set milestone status directly. Linear's API does not accept a status field on milestone update; status is derived from target date and issue completion. Drive the underlying issues or `--target-date` instead.
