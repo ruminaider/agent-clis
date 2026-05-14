@@ -1,11 +1,15 @@
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
+const require = createRequire(import.meta.url);
+const { version: PACKAGE_JSON_VERSION } = require("../package.json");
+
 export const TOOL_NAME = "linear";
 export const PACKAGE_NAME = "@ruminaider/linear-cli";
 export const CLI_NAME = "linear-cli";
-export const PACKAGE_VERSION = "0.2.1";
+export const PACKAGE_VERSION = PACKAGE_JSON_VERSION;
 
 export const DEFAULT_AUTH_PORT = 9886;
 export const CONFIG_DIR = join(homedir(), ".config", CLI_NAME);
