@@ -1,6 +1,6 @@
 {
   "name": "@ruminaider/linear-cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "JSON-first CLI for Linear. Wraps every authenticated Linear MCP tool: projects, issues, comments, attachments, cycles, documents, milestones, teams, users, labels, statuses, images, and docs search.",
   "homepage": "https://github.com/ruminaider/agent-clis/tree/main/linear",
   "bugs": {
