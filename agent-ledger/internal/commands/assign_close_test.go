@@ -10,10 +10,7 @@ import (
 	"github.com/ruminaider/agent-clis/agent-ledger/internal/cli"
 )
 
-// seedAssignForClose writes a single active assignment row and returns
-// its assignment_id. Centralizing the seed keeps the close-specific
-// tests focused on the close transition rather than re-asserting the
-// assign surface.
+// seedAssignForClose writes an active assignment row and returns its id.
 func seedAssignForClose(t *testing.T, ledger, root, task, allow string) string {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(root, allow), []byte("x"), 0o644); err != nil {
@@ -39,10 +36,6 @@ func seedAssignForClose(t *testing.T, ledger, root, task, allow string) string {
 	return id
 }
 
-// TestAssignClose_Completed verifies the happy path: an active
-// assignment transitions to status=completed with closed_at set, an
-// assignment.closed event is emitted, and the (task, agent) slot is
-// freed for a fresh assign without an intervening update.
 func TestAssignClose_Completed(t *testing.T) {
 	root, ledger := tempLedger(t)
 	asg := seedAssignForClose(t, ledger, root, "T-close", "foo.py")
@@ -90,9 +83,7 @@ func TestAssignClose_Completed(t *testing.T) {
 		}
 	}
 
-	// The slot in the active-row unique index is free; a fresh assign
-	// for the same (task, agent) pair succeeds without --if-absent
-	// and without `assign update`.
+	// Slot is free: a fresh assign for the same (task, agent) pair succeeds.
 	if code, _, e := runCmd(t, ledger, nil,
 		"assign", "--task", "T-close",
 		"--orchestrator", "pi.main", "--agent", "pi.worker",
@@ -102,9 +93,6 @@ func TestAssignClose_Completed(t *testing.T) {
 	}
 }
 
-// TestAssignClose_Abandoned verifies the abandoned outcome path. The
-// distinction matters for downstream gc and summary consumers, which
-// key on metadata.close_outcome rather than on status alone.
 func TestAssignClose_Abandoned(t *testing.T) {
 	root, ledger := tempLedger(t)
 	asg := seedAssignForClose(t, ledger, root, "T-aband", "bar.py")
@@ -123,11 +111,6 @@ func TestAssignClose_Abandoned(t *testing.T) {
 	}
 }
 
-// TestAssignClose_Replay_NotActive verifies the second close returns
-// ExitConflict (4) with code assignment_not_active rather than silently
-// no-ooping. Replay-as-conflict is the contract that protects an
-// orchestrator from believing a stale close completed work that a
-// concurrent supersede had already redirected.
 func TestAssignClose_Replay_NotActive(t *testing.T) {
 	root, ledger := tempLedger(t)
 	asg := seedAssignForClose(t, ledger, root, "T-replay", "baz.py")
@@ -150,9 +133,6 @@ func TestAssignClose_Replay_NotActive(t *testing.T) {
 	}
 }
 
-// TestAssignClose_NotFound verifies the missing-id path returns
-// ExitNotFound (8) so a typo or a stale id surfaces distinctly from
-// the replay-after-close case.
 func TestAssignClose_NotFound(t *testing.T) {
 	_, ledger := tempLedger(t)
 	code, _, e := runCmd(t, ledger, nil,
@@ -169,12 +149,6 @@ func TestAssignClose_NotFound(t *testing.T) {
 	}
 }
 
-// TestAssignClose_RejectsSupersededOutcome verifies the CLI guard
-// against outcome=superseded. SPEC §11.3.1 reserves supersede
-// transitions for `assign update`, which inserts the replacement row
-// in the same transaction so consumers can walk the chain via
-// metadata.superseded_by. Allowing assign close to emit
-// outcome=superseded without that replacement would strand the task.
 func TestAssignClose_RejectsSupersededOutcome(t *testing.T) {
 	root, ledger := tempLedger(t)
 	asg := seedAssignForClose(t, ledger, root, "T-sup", "qux.py")
@@ -189,11 +163,6 @@ func TestAssignClose_RejectsSupersededOutcome(t *testing.T) {
 	}
 }
 
-// TestAssignClose_LeavesActiveIntentsAlone verifies the lifecycle
-// boundary: closing an assignment does not auto-close its outstanding
-// intents. Worker-side intent lifecycle is independent of
-// orchestrator-side assignment lifecycle; the worker still owns the
-// terminal `agent-ledger close --intent` call.
 func TestAssignClose_LeavesActiveIntentsAlone(t *testing.T) {
 	root, ledger := tempLedger(t)
 	asg := seedAssignForClose(t, ledger, root, "T-int", "live.py")
@@ -211,9 +180,7 @@ func TestAssignClose_LeavesActiveIntentsAlone(t *testing.T) {
 		t.Fatalf("assign close: %d %s", code, e)
 	}
 
-	// The intent must still be active. agent-ledger gc and aging are
-	// the documented sweep paths for intents stranded under a closed
-	// assignment; this command does not pre-empt them.
+	// Intent must still be active; gc and aging are the sweep paths.
 	code, out, _ = runCmd(t, ledger, nil, "status", "--json", "--task", "T-int")
 	if code != 0 {
 		t.Fatalf("status: %d", code)

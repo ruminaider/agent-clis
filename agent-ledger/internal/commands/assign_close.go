@@ -21,29 +21,7 @@ type assignCloseOpts struct {
 	asJSON     bool
 }
 
-// NewAssignCloseCommand implements `agent-ledger assign close`.
-//
-// Terminal closure of an assignment without inserting a replacement
-// row. SPEC §11.3 reserves this transition for the case where the
-// orchestrator wants to record scope-contract closure (completed or
-// abandoned) directly, rather than relying on natural pruning by
-// agent-ledger gc once the underlying intents have completed.
-//
-// The command emits `assignment.closed` and transitions the row's
-// status to the supplied outcome. Active intents that reference the
-// closed assignment are left untouched: worker-side intent lifecycle
-// is independent of orchestrator-side assignment lifecycle. Closing
-// an assignment frees its slot in the partial unique index on
-// (task_id, assigned_agent_id) WHERE status='active', so the next
-// `assign` for the same pair succeeds without an intervening
-// `assign update`.
-//
-// The outcome `superseded` is intentionally rejected here. Supersede
-// transitions are owned by `assign update`, which inserts the
-// replacement row in the same transaction; emitting `assignment.closed`
-// with outcome=superseded would break the SPEC §11.3.1 chain walk
-// (consumers locate the replacement via metadata.superseded_by) and
-// would let an orchestrator strand a task without a forwarding pointer.
+// NewAssignCloseCommand implements `agent-ledger assign close`. See SPEC §18.3.2.
 func NewAssignCloseCommand(streams Streams) *cobra.Command {
 	o := &assignCloseOpts{env: envOpener{streams: streams}, outcome: domain.OutcomeCompleted}
 	cmd := &cobra.Command{
@@ -86,9 +64,6 @@ func runAssignClose(streams Streams, o *assignCloseOpts) error {
 	if !domain.ValidAssignmentCloseOutcome(o.outcome) {
 		return errf(cli.ExitUsage, "invalid_outcome", "--outcome must be completed|abandoned (superseded is reserved for `assign update`)")
 	}
-	// Pre-validate at the CLI boundary so an unsafe reason returns
-	// ExitConfigError with a clear code rather than reaching the
-	// domain layer and being wrapped under ErrUnsafeReason.
 	if strings.TrimSpace(o.reason) != "" {
 		if err := privacy.AssertSafe("--reason", o.reason); err != nil {
 			return cli.NewError(cli.ExitConfigError, "reason_unsafe", err.Error())
