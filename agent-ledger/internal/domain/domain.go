@@ -111,6 +111,15 @@ var ErrStaleUpdate = errors.New("domain: active assignment was superseded by a c
 // contract.
 var ErrEmptyAddAllowedPaths = errors.New("domain: at least one non-empty allow-list glob is required")
 
+// ErrAssignmentNotFound is returned by CloseAssignment when assignmentID does not exist.
+var ErrAssignmentNotFound = errors.New("domain: assignment not found")
+
+// ErrAssignmentNotActive is returned by CloseAssignment when the row is not status='active'.
+var ErrAssignmentNotActive = errors.New("domain: assignment is not active")
+
+// ErrInvalidAssignmentCloseOutcome is returned by CloseAssignment for outcomes other than completed|abandoned.
+var ErrInvalidAssignmentCloseOutcome = errors.New("domain: assignment close outcome must be completed|abandoned")
+
 // ValidPolicy reports whether p is one of the allowed conflict policies.
 func ValidPolicy(p string) bool {
 	switch p {
@@ -133,6 +142,15 @@ func ValidAccessMode(m string) bool {
 func ValidOutcome(o string) bool {
 	switch o {
 	case OutcomeCompleted, OutcomeAbandoned, OutcomeSuperseded:
+		return true
+	}
+	return false
+}
+
+// ValidAssignmentCloseOutcome reports whether o is accepted by CloseAssignment.
+func ValidAssignmentCloseOutcome(o string) bool {
+	switch o {
+	case OutcomeCompleted, OutcomeAbandoned:
 		return true
 	}
 	return false
@@ -1510,6 +1528,74 @@ func (s *Store) Close(ctx context.Context, intentID, agentID, outcome, summary s
 			return fmt.Errorf("intent %s not active or already closed", intentID)
 		}
 		return nil
+	})
+}
+
+// CloseAssignment transitions an active assignment to completed or
+// abandoned and emits assignment.closed. See SPEC §18.3.2.
+func (s *Store) CloseAssignment(ctx context.Context, assignmentID, agentID, outcome, reason string, now time.Time) error {
+	if outcome == "" {
+		outcome = OutcomeCompleted
+	}
+	if !ValidAssignmentCloseOutcome(outcome) {
+		return ErrInvalidAssignmentCloseOutcome
+	}
+	if err := privacy.AssertSafe("assignment.close_reason", reason); err != nil {
+		return fmt.Errorf("%w: %w", ErrUnsafeReason, err)
+	}
+	occurred := id.FormatTimestamp(now)
+	return s.S.WriteDomainEventImmediate(ctx, func(ctx context.Context, conn *sql.Conn) ([]storage.Event, error) {
+		var taskID, status string
+		if err := conn.QueryRowContext(ctx, `
+			SELECT task_id, status
+			FROM assignments
+			WHERE assignment_id = ?
+		`, assignmentID).Scan(&taskID, &status); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, ErrAssignmentNotFound
+			}
+			return nil, err
+		}
+		if status != "active" {
+			return nil, ErrAssignmentNotActive
+		}
+		res, err := conn.ExecContext(ctx, `
+			UPDATE assignments
+			SET status = ?,
+			    closed_at = ?,
+			    metadata_json = json_set(
+			        COALESCE(metadata_json, '{}'),
+			        '$.close_outcome', ?,
+			        '$.close_reason_sha256', ?
+			    )
+			WHERE assignment_id = ? AND status = 'active'
+		`, outcome, occurred, outcome, sha256Hex(reason), assignmentID)
+		if err != nil {
+			return nil, err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if n == 0 {
+			return nil, ErrAssignmentNotActive
+		}
+		payload, err := events.MarshalPayload(map[string]any{
+			"assignment_id":       assignmentID,
+			"close_outcome":       outcome,
+			"close_reason_sha256": sha256Hex(reason),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return []storage.Event{{
+			Type:         "assignment.closed",
+			AgentID:      agentID,
+			TaskID:       taskID,
+			AssignmentID: assignmentID,
+			OccurredAt:   occurred,
+			PayloadJSON:  payload,
+		}}, nil
 	})
 }
 

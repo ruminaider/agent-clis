@@ -12,6 +12,38 @@ of the binary version.
 
 ### Added
 
+- **`assign close` subcommand for terminal assignment closure.** Closes
+  the kernel gap where an orchestrator could create or supersede an
+  assignment but could not directly mark it `completed` or `abandoned`.
+  Before this command, an assignment that had served its purpose stayed
+  in `active` until `agent-ledger gc` aged it out, which left no
+  durable signal of *why* the row left the active set and forced
+  orchestrators to reuse `assign update` as a closure proxy.
+
+  - `agent-ledger assign close --assignment <id> [--outcome
+    completed|abandoned] [--reason "<why>"]` is the surface.
+    `--outcome` defaults to `completed`; `superseded` is rejected
+    because supersede transitions are owned by `assign update`.
+  - Transitions `status` directly to the supplied outcome, sets
+    `closed_at`, writes `metadata.close_outcome` and
+    `metadata.close_reason_sha256`, and emits one `assignment.closed`
+    event inside a single `BEGIN IMMEDIATE` transaction.
+  - Active intents under the closed assignment are left untouched.
+    Worker-side intent lifecycle stays independent of
+    orchestrator-side assignment lifecycle; intents stranded under a
+    closed assignment are swept by `gc` and intent aging.
+  - A successful close frees the `(task_id, assigned_agent_id)` slot
+    in the partial unique index on `status='active'`, so a fresh
+    `assign` for the same pair succeeds without `--if-absent` and
+    without an intervening `assign update`.
+  - Replay is a conflict, not a no-op: a second close returns
+    `4` `assignment_not_active` so a stale close cannot mimic fresh
+    terminal acknowledgement after a concurrent supersede.
+  - New event type `assignment.closed` joins the MVP set (SPEC §12.1),
+    moving out of §12.2's post-MVP placeholder list.
+  - SPEC §11.3 and §18.3.2 document the new transition and its exit
+    codes.
+
 - **`assign update` subcommand for additive scope extension.** Closes
   the kernel gap where an active assignment's allow-list was fixed
   for the lifetime of the task. Operators that wanted to extend an
