@@ -1628,9 +1628,9 @@ func (s *Store) CloseAssignment(ctx context.Context, assignmentID, agentID, outc
 			return nil, ErrAssignmentNotActive
 		}
 		payload, err := events.MarshalPayload(map[string]any{
-			"assignment_id":        assignmentID,
-			"close_outcome":        outcome,
-			"close_reason_sha256":  sha256Hex(reason),
+			"assignment_id":       assignmentID,
+			"close_outcome":       outcome,
+			"close_reason_sha256": sha256Hex(reason),
 		})
 		if err != nil {
 			return nil, err
