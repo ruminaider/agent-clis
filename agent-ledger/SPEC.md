@@ -247,7 +247,7 @@ Allowed statuses:
 active, completed, abandoned, superseded
 ```
 
-In the Phase 1 kernel slice, two transitions are reachable through CLI commands: `assign` writes a new row in `active`, and `assign update` (SPEC §18.3) supersedes the prior active row (sets `status = 'superseded'` and `closed_at`) while inserting a fresh `active` row that merges the additive scope. Standalone closure to `completed` or `abandoned` without a replacement is post-MVP through `assignment.closed`.
+In the Phase 1 kernel slice, three transitions are reachable through CLI commands. `assign` writes a new row in `active`. `assign update` (SPEC §18.3.1) supersedes the prior active row (sets `status = 'superseded'` and `closed_at`) while inserting a fresh `active` row that merges the additive scope. `assign close` (SPEC §18.3.2) transitions the active row directly to `completed` or `abandoned` without inserting a replacement, emits `assignment.closed`, and frees the `(task_id, assigned_agent_id)` slot in the active-row unique index.
 
 #### 11.3.1 Assignment identity rule
 
@@ -498,16 +498,16 @@ change.adopted
 validation.recorded
 intent.superseded
 assignment.superseded
+assignment.closed
 ```
 
-`assignment.superseded` is a *replacement* event (a new active row exists for the same `(task_id, assigned_agent_id)` pair), not a *closure* event. The terminal closure event without replacement is `assignment.closed`, which remains post-MVP. Consumers distinguish a fresh assignment from a replacement by checking whether the new row's `metadata.superseded_assignment_id` is non-empty.
+`assignment.superseded` is a *replacement* event (a new active row exists for the same `(task_id, assigned_agent_id)` pair), not a *closure* event. The terminal closure event without replacement is `assignment.closed`, emitted by `assign close` (SPEC §18.3.2). Consumers distinguish a fresh assignment from a replacement by checking whether the new row's `metadata.superseded_assignment_id` is non-empty.
 
 ### 12.2 Post-MVP event types
 
 ```text
 conflict.escalated
 conflict.resolved
-assignment.closed
 human.change.detected
 unknown.change.detected
 commit.created
@@ -708,6 +708,36 @@ Exit codes:
 - `2` (`reason_unsafe`): the reason contains a known secret pattern (SPEC §17).
 - `4` (`no_active_assignment`): no active assignment exists for the requested `(task, agent)` pair; run `assign` first.
 - `4` (`assignment_stale_update`): a concurrent writer superseded the active row between the immediate-transaction lookup and the update; rerun to merge against the new row.
+
+#### 18.3.2 `assign close`
+
+```bash
+agent-ledger assign close \
+  --assignment asg_01HY... \
+  [--outcome completed|abandoned] \
+  [--reason 'scope satisfied'] \
+  [--agent <agent-id>] \
+  [--json]
+```
+
+Closes an active assignment without inserting a replacement row. Transitions the row's `status` to the supplied outcome (default `completed`), sets `closed_at`, writes `metadata_json.close_outcome` and `metadata_json.close_reason_sha256`, and emits one `assignment.closed` event. The transition runs inside a single `BEGIN IMMEDIATE` transaction; the row read and the status update share the same writer lock.
+
+The command is reserved for terminal closure without replacement. The `superseded` outcome is rejected: supersede transitions are owned by `assign update`, which inserts the replacement row in the same transaction so consumers can walk the chain via `metadata.superseded_by`. Emitting `assignment.closed` with `outcome=superseded` would strand the task without a forwarding pointer and break the SPEC §11.3.1 chain convention.
+
+Active intents that reference the closed assignment are left untouched. Worker-side intent lifecycle is independent of orchestrator-side assignment lifecycle. The documented sweep paths for intents stranded under a closed assignment are `agent-ledger gc` and intent aging; `assign close` does not pre-empt them. A successful close frees the `(task_id, assigned_agent_id)` slot in the partial unique index on `status='active'`, so a fresh `assign` for the same pair succeeds without an intervening `assign update`.
+
+Reason text is hashed: only `sha256(reason)` is persisted (in `metadata.close_reason_sha256` and in the event payload). The same privacy guard that protects `assignment.reason` (SPEC §17) applies; a reason that matches a known secret pattern is rejected at the CLI boundary.
+
+Replay is a conflict, not a no-op. A second close on the same assignment returns `4` (`assignment_not_active`) so an orchestrator cannot mistake a stale close for fresh terminal acknowledgement of work a concurrent supersede had already redirected.
+
+Exit codes:
+
+- `0`: success.
+- `2` (`missing_flag`): `--assignment` missing.
+- `2` (`invalid_outcome`): `--outcome` was not `completed` or `abandoned`.
+- `2` (`reason_unsafe`): the reason contains a known secret pattern (SPEC §17).
+- `4` (`assignment_not_active`): the row exists but is no longer active (already closed, abandoned, or superseded).
+- `8` (`assignment_not_found`): no row exists with the supplied id.
 
 ### 18.4 `claim`
 

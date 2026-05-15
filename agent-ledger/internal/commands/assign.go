@@ -59,6 +59,7 @@ func NewAssignCommand(streams Streams) *cobra.Command {
 	f.BoolVar(&o.ifAbsent, "if-absent", false, "Reuse an identical active assignment if present")
 	f.BoolVar(&o.asJSON, "json", false, "Render output as JSON")
 	cmd.AddCommand(NewAssignUpdateCommand(streams))
+	cmd.AddCommand(NewAssignCloseCommand(streams))
 	return cmd
 }
 

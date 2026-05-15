@@ -111,6 +111,26 @@ var ErrStaleUpdate = errors.New("domain: active assignment was superseded by a c
 // contract.
 var ErrEmptyAddAllowedPaths = errors.New("domain: at least one non-empty allow-list glob is required")
 
+// ErrAssignmentNotFound is returned by CloseAssignment when the
+// supplied assignment_id does not exist. Callers detect this sentinel
+// with errors.Is and map it to ExitNotFound (5) with code
+// "assignment_not_found".
+var ErrAssignmentNotFound = errors.New("domain: assignment not found")
+
+// ErrAssignmentNotActive is returned by CloseAssignment when the
+// requested assignment exists but its status is no longer 'active'
+// (already closed, abandoned, or superseded). Callers detect this
+// sentinel with errors.Is and map it to ExitConflict (4) with code
+// "assignment_not_active".
+var ErrAssignmentNotActive = errors.New("domain: assignment is not active")
+
+// ErrInvalidAssignmentCloseOutcome is returned by CloseAssignment when
+// the supplied outcome is not one of completed|abandoned. The
+// assignment.closed event is the terminal closure event *without*
+// replacement (SPEC §22); the superseded outcome is reserved for
+// `assign update` and is rejected here.
+var ErrInvalidAssignmentCloseOutcome = errors.New("domain: assignment close outcome must be completed|abandoned")
+
 // ValidPolicy reports whether p is one of the allowed conflict policies.
 func ValidPolicy(p string) bool {
 	switch p {
@@ -133,6 +153,18 @@ func ValidAccessMode(m string) bool {
 func ValidOutcome(o string) bool {
 	switch o {
 	case OutcomeCompleted, OutcomeAbandoned, OutcomeSuperseded:
+		return true
+	}
+	return false
+}
+
+// ValidAssignmentCloseOutcome reports whether o is one of the
+// outcomes accepted by CloseAssignment. assignment.closed is the
+// terminal closure without replacement; superseded transitions are
+// owned by SupersedeAndInsertAssignment and are rejected here.
+func ValidAssignmentCloseOutcome(o string) bool {
+	switch o {
+	case OutcomeCompleted, OutcomeAbandoned:
 		return true
 	}
 	return false
@@ -1510,6 +1542,107 @@ func (s *Store) Close(ctx context.Context, intentID, agentID, outcome, summary s
 			return fmt.Errorf("intent %s not active or already closed", intentID)
 		}
 		return nil
+	})
+}
+
+// CloseAssignment transitions an active assignment row to a terminal
+// non-replacement state (completed or abandoned) and emits an
+// assignment.closed event. SPEC §11.3 reserves this transition for
+// the case where the orchestrator wants to mark scope-contract closure
+// without inserting a replacement row; supersede transitions are
+// covered by SupersedeAndInsertAssignment.
+//
+// Errors:
+//   - ErrAssignmentNotFound when assignmentID does not exist.
+//   - ErrAssignmentNotActive when the row exists but is no longer
+//     active (already closed/abandoned/superseded). This is the
+//     authoritative replay guard: a concurrent supersede or close that
+//     wins the race leaves the row in a non-active state, and the
+//     second close turns into an explicit conflict instead of a silent
+//     no-op.
+//   - ErrInvalidAssignmentCloseOutcome when outcome is not
+//     completed|abandoned.
+//   - ErrUnsafeReason when reason fails the privacy safety check.
+//
+// The status transition flows into the same partial unique index that
+// gates active assignments per (task_id, assigned_agent_id), so a
+// successful close frees that slot for a fresh `assign` without an
+// intervening `assign update`.
+func (s *Store) CloseAssignment(ctx context.Context, assignmentID, agentID, outcome, reason string, now time.Time) error {
+	if outcome == "" {
+		outcome = OutcomeCompleted
+	}
+	if !ValidAssignmentCloseOutcome(outcome) {
+		return ErrInvalidAssignmentCloseOutcome
+	}
+	if err := privacy.AssertSafe("assignment.close_reason", reason); err != nil {
+		return fmt.Errorf("%w: %w", ErrUnsafeReason, err)
+	}
+	occurred := id.FormatTimestamp(now)
+	return s.S.WriteDomainEventImmediate(ctx, func(ctx context.Context, conn *sql.Conn) ([]storage.Event, error) {
+		// Read the current row first so we can distinguish "not found"
+		// from "not active" and so the event payload can carry stable
+		// task and orchestrator identity even when the caller knows
+		// only the assignment id.
+		var (
+			taskID, orchestratorID, status string
+			assignedAgent                  sql.NullString
+		)
+		if err := conn.QueryRowContext(ctx, `
+			SELECT task_id, orchestrator_id, assigned_agent_id, status
+			FROM assignments
+			WHERE assignment_id = ?
+		`, assignmentID).Scan(&taskID, &orchestratorID, &assignedAgent, &status); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, ErrAssignmentNotFound
+			}
+			return nil, err
+		}
+		if status != "active" {
+			return nil, ErrAssignmentNotActive
+		}
+		res, err := conn.ExecContext(ctx, `
+			UPDATE assignments
+			SET status = ?,
+			    closed_at = ?,
+			    metadata_json = json_set(
+			        COALESCE(metadata_json, '{}'),
+			        '$.close_outcome', ?,
+			        '$.close_reason_sha256', ?
+			    )
+			WHERE assignment_id = ? AND status = 'active'
+		`, outcome, occurred, outcome, sha256Hex(reason), assignmentID)
+		if err != nil {
+			return nil, err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if n == 0 {
+			// A concurrent writer rotated the row out of active
+			// between the SELECT and the UPDATE. BEGIN IMMEDIATE
+			// serializes writers, so this is only reachable when a
+			// non-CLI caller mutates the row directly; surface it as
+			// the same conflict the SELECT path raises.
+			return nil, ErrAssignmentNotActive
+		}
+		payload, err := events.MarshalPayload(map[string]any{
+			"assignment_id":        assignmentID,
+			"close_outcome":        outcome,
+			"close_reason_sha256":  sha256Hex(reason),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return []storage.Event{{
+			Type:         "assignment.closed",
+			AgentID:      agentID,
+			TaskID:       taskID,
+			AssignmentID: assignmentID,
+			OccurredAt:   occurred,
+			PayloadJSON:  payload,
+		}}, nil
 	})
 }
 
