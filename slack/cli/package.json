@@ -1,0 +1,29 @@
+{
+  "name": "@ruminaider/slack-cli",
+  "version": "0.1.0",
+  "description": "Slack CLI that authenticates as you using your existing Slack desktop session. Read channels, send messages, search, and manage reactions, files, pins, and canvases from the terminal. No app, no OAuth, no admin approval.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ruminaider/agent-clis.git",
+    "directory": "slack/cli"
+  },
+  "keywords": [
+    "slack",
+    "cli",
+    "mcp",
+    "agent",
+    "pi-package"
+  ],
+  "bin": {
+    "slack-cli": "bin/slack.js"
+  },
+  "files": [
+    "bin/",
+    "lib/"
+  ],
+  "engines": {
+    "node": ">=22"
+  }
+}

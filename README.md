@@ -13,7 +13,7 @@ MCP servers bloat your agent's context with dozens of tool descriptions and prev
 | [notion](./notion/) | Notion MCP Server | Ready |
 | [linear](./linear/) | Linear MCP Server | MCP-synced read/write surface |
 | [circleci-cli](./circleci-cli/) | CircleCI MCP Server | Ready |
-| [slack](./slack/) | Slack MCP Server | Planned |
+| [slack](./slack/) | Slack MCP Server | Ready |
 | [metabase](./metabase/) | Metabase MCP Server | Planned |
 | [newrelic](./newrelic/) | NewRelic MCP Server | Planned |
 
@@ -44,6 +44,7 @@ bash agent-clis/install.sh
 # Or clone and install one tool
 bash agent-clis/notion/install.sh
 bash agent-clis/linear/install.sh
+bash agent-clis/slack/install.sh
 bash agent-clis/circleci-cli/install.sh
 ```
 
@@ -78,11 +79,11 @@ Each tool handles its own authentication. Most use OAuth with a browser flow, an
 
 ```bash
 notion-cli auth          # Refreshes token first, then opens browser if needed
-slack-cli auth login     # Same pattern
 linear-cli auth status   # Also supports --api-key and persisted credentials
+slack-cli auth login     # Reuses your Slack desktop session: no app, no consent screen
 ```
 
-You create no custom integrations, and most flows should not require admin permissions.
+Most tools create no custom integrations, and most flows should not require admin permissions. `slack-cli` is the exception in approach: rather than an OAuth app, it authenticates as the Slack web client does, using the `xoxc` token and `xoxd` cookie your signed-in desktop app already holds (see [`slack/README.md`](./slack/README.md)).
 
 `agent-ledger` needs no auth: it is a local-only tool that writes to `$XDG_STATE_HOME/agent-ledger/` (overridable via `AGENT_LEDGER_DIR`).
 
