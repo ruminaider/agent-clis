@@ -77,12 +77,12 @@ function hostFromUrl(url) {
 // Turn raw xoxc tokens into verified workspace records by calling auth.test for
 // each with the shared cookie. Invalid or stale tokens are dropped; duplicates
 // for the same workspace collapse to one.
-async function enrichTokens(tokens, cookie) {
+async function enrichTokens(tokens, cookie, cookieDs) {
   const byTeam = new Map();
   const errors = [];
   for (const token of tokens) {
     try {
-      const who = await webApiCall("auth.test", {}, { token, cookie, host: null });
+      const who = await webApiCall("auth.test", {}, { token, cookie, cookieDs, host: null });
       const url = who.url ? who.url.replace(/\/+$/, "") : null;
       byTeam.set(who.team_id || url || token, {
         id: who.team_id || null,
@@ -107,12 +107,13 @@ async function enrichTokens(tokens, cookie) {
   return workspaces;
 }
 
-// Resolve { token, cookie, host, team } for an API call.
+// Resolve { token, cookie, cookieDs, host, team } for an API call.
 export async function getCredentials(options = {}) {
   if (options.token && options.cookie) {
     return {
       token: options.token,
       cookie: options.cookie,
+      cookieDs: options.cookieDs || null,
       host: options.host || null,
       team: null,
     };
@@ -121,7 +122,13 @@ export async function getCredentials(options = {}) {
   const envToken = process.env[CONFIG_ENV_KEYS.token];
   const envCookie = process.env[CONFIG_ENV_KEYS.cookie];
   if (envToken && envCookie) {
-    return { token: envToken, cookie: envCookie, host: options.host || null, team: null };
+    return {
+      token: envToken,
+      cookie: envCookie,
+      cookieDs: process.env[CONFIG_ENV_KEYS.cookieDs] || null,
+      host: options.host || null,
+      team: null,
+    };
   }
 
   const store = await readStore();
@@ -136,6 +143,7 @@ export async function getCredentials(options = {}) {
   return {
     token: workspace.token,
     cookie: store.cookie,
+    cookieDs: store.cookie_ds || null,
     host: hostFrom(workspace),
     team: workspace,
   };
@@ -167,11 +175,12 @@ export async function getAuthStatus() {
 
 // Extract from the desktop app, verify each token, and persist.
 export async function login(options = {}) {
-  const { tokens, cookie } = extractCredentials();
-  const workspaces = await enrichTokens(tokens, cookie);
+  const { tokens, cookie, cookieDs } = extractCredentials();
+  const workspaces = await enrichTokens(tokens, cookie, cookieDs);
   const store = {
     auth_type: "session",
     cookie,
+    cookie_ds: cookieDs || null,
     workspaces,
     default_team: matchWorkspace(workspaces, options.team)?.id || workspaces[0]?.id || null,
     stored_at: nowIso(),
@@ -188,7 +197,7 @@ export async function login(options = {}) {
 }
 
 // Persist credentials supplied by hand (token + cookie), bypassing extraction.
-export async function importCredentials({ token, cookie, host, team } = {}) {
+export async function importCredentials({ token, cookie, cookieDs, host, team } = {}) {
   if (!token || !token.startsWith("xoxc-")) {
     throw new Error("`--token` must be an xoxc- web token.");
   }
@@ -196,8 +205,9 @@ export async function importCredentials({ token, cookie, host, team } = {}) {
     throw new Error("`--cookie` is required (the xoxd- `d` cookie value).");
   }
   const cookieValue = cookie.startsWith("xoxd-") ? cookie : `xoxd-${cookie}`;
+  const cookieDsValue = cookieDs || null;
   const resolvedHost = host || null;
-  const verify = await webApiCall("auth.test", {}, { token, cookie: cookieValue, host: resolvedHost });
+  const verify = await webApiCall("auth.test", {}, { token, cookie: cookieValue, cookieDs: cookieDsValue, host: resolvedHost });
 
   const workspace = {
     id: verify.team_id || null,
@@ -210,6 +220,7 @@ export async function importCredentials({ token, cookie, host, team } = {}) {
   await writeStore({
     auth_type: "session",
     cookie: cookieValue,
+    cookie_ds: cookieDsValue,
     workspaces: [workspace],
     default_team: workspace.id,
     stored_at: nowIso(),
@@ -224,14 +235,16 @@ export function parseCurl(curl) {
   }
   const tokenMatch = curl.match(/xoxc-[A-Za-z0-9-]+/);
   const cookieMatch = curl.match(/xoxd-[A-Za-z0-9%._-]+/);
+  const dsMatch = curl.match(/d-s=([^;'"\s]+)/);
   const hostMatch = curl.match(/https?:\/\/([a-z0-9-]+\.slack\.com)/i);
   if (!tokenMatch) throw new Error("No xoxc- token found in the cURL command.");
   if (!cookieMatch) throw new Error("No xoxd- cookie found in the cURL command.");
-  // Keep the cookie value verbatim (percent-encoded as it travels on the wire);
-  // decoding it would corrupt the trailing `%3D` and Slack would reject it.
+  // Keep cookie values verbatim (percent-encoded as they travel on the wire);
+  // decoding would corrupt the trailing `%3D` and Slack would reject it.
   return {
     token: tokenMatch[0],
     cookie: cookieMatch[0],
+    cookieDs: dsMatch ? dsMatch[1] : null,
     host: hostMatch ? hostMatch[1] : null,
   };
 }

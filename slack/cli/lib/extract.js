@@ -90,24 +90,29 @@ function loadSqlite() {
   }
 }
 
-function readEncryptedCookie() {
+// Read the encrypted `d` cookie (required) and its `d-s` companion (optional,
+// present on Enterprise Grid and some SSO setups) from the cookie store.
+function readEncryptedCookies() {
   const { DatabaseSync } = loadSqlite();
   const dbPath = resolveCookieDb();
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
-    const row = db
-      .prepare(
-        "SELECT encrypted_value, host_key FROM cookies WHERE name = 'd' ORDER BY length(encrypted_value) DESC LIMIT 1",
-      )
-      .get();
-    if (!row?.encrypted_value) {
+    const pick = (name) =>
+      db
+        .prepare(
+          "SELECT encrypted_value, host_key FROM cookies WHERE name = ? ORDER BY length(encrypted_value) DESC LIMIT 1",
+        )
+        .get(name);
+    const dRow = pick("d");
+    if (!dRow?.encrypted_value) {
       throw new Error("No `d` cookie present in the Slack cookie store.");
     }
     // node:sqlite returns BLOBs as Uint8Array.
-    return {
-      encrypted: Buffer.from(row.encrypted_value),
-      hostKey: row.host_key || ".slack.com",
-    };
+    const toEntry = (row) =>
+      row?.encrypted_value
+        ? { encrypted: Buffer.from(row.encrypted_value), hostKey: row.host_key || ".slack.com" }
+        : null;
+    return { d: toEntry(dRow), ds: toEntry(pick("d-s")) };
   } finally {
     db.close();
   }
@@ -152,12 +157,14 @@ function linuxDecryptionKey() {
   return pbkdf2Sync("peanuts", "saltysalt", 1, 16, "sha1");
 }
 
-function decryptCookieValue(encrypted, hostKey) {
+// requireXoxd validates the decrypted value looks like a `d` cookie (`xoxd-`).
+// The `d-s` companion is an opaque session value, so it passes requireXoxd:false.
+function decryptCookieValue(encrypted, hostKey, requireXoxd = true) {
   const prefix = encrypted.subarray(0, 3).toString("utf8");
   if (prefix !== "v10" && prefix !== "v11") {
     // Some stores keep the value in plaintext (older Slack builds).
     const asText = encrypted.toString("utf8");
-    if (asText.startsWith("xoxd-")) return asText;
+    if (!requireXoxd || asText.startsWith("xoxd-")) return asText;
     throw new Error(`Unsupported cookie encryption version: ${JSON.stringify(prefix)}.`);
   }
 
@@ -178,22 +185,27 @@ function decryptCookieValue(encrypted, hostKey) {
     throw new Error(`Cookie decryption failed: ${err.message}. Try \`slack-cli auth import\`.`);
   }
   const value = stripHostPrefix(plaintext, hostKey).toString("utf8").replace(/\u0000+$/, "");
-  if (!value.startsWith("xoxd-")) {
+  if (requireXoxd && !value.startsWith("xoxd-")) {
     throw new Error("Decrypted cookie does not look like a Slack `d` cookie.");
   }
   return value;
 }
 
-export function extractCookie() {
-  const { encrypted, hostKey } = readEncryptedCookie();
-  return decryptCookieValue(encrypted, hostKey);
+// Returns { d, ds } where ds is null when the workspace has no d-s cookie.
+export function extractCookies() {
+  const { d, ds } = readEncryptedCookies();
+  return {
+    d: decryptCookieValue(d.encrypted, d.hostKey, true),
+    ds: ds ? decryptCookieValue(ds.encrypted, ds.hostKey, false) : null,
+  };
 }
 
 // ─── combined ────────────────────────────────────────────────
 
-// Extract every workspace token plus the shared d cookie. The cookie is the
-// same across all workspaces, so it is read once. Tokens are enriched into
-// full workspace records by the caller via auth.test.
+// Extract every workspace token plus the shared d cookie (and its optional d-s
+// companion). The cookies are the same across all workspaces, so they are read
+// once. Tokens are enriched into full workspace records by the caller via
+// auth.test.
 export function extractCredentials() {
   if (!SLACK_LEVELDB_DIR) {
     throw new Error(
@@ -201,6 +213,6 @@ export function extractCredentials() {
     );
   }
   const tokens = extractTokens();
-  const cookie = extractCookie();
-  return { tokens, cookie };
+  const { d, ds } = extractCookies();
+  return { tokens, cookie: d, cookieDs: ds };
 }

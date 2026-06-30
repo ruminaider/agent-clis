@@ -17,6 +17,7 @@ export const CREDENTIALS_FILE = join(CONFIG_DIR, "credentials.json");
 export const CONFIG_ENV_KEYS = Object.freeze({
   token: "SLACK_TOKEN", // xoxc- web token
   cookie: "SLACK_COOKIE", // xoxd- d cookie value
+  cookieDs: "SLACK_COOKIE_DS", // optional d-s companion cookie (Enterprise Grid / SSO)
   team: "SLACK_TEAM", // default team name, id, or host
 });
 
