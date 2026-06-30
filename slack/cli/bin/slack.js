@@ -19,6 +19,7 @@ const BOOLEAN_FLAGS = new Set([
 const VALUE_FLAGS = new Set([
   "--token",
   "--cookie",
+  "--cookie-ds",
   "--curl",
   "--host",
   "--team",
@@ -144,6 +145,7 @@ async function creds(values) {
   return getCredentials({
     token: values.get("--token"),
     cookie: values.get("--cookie"),
+    cookieDs: values.get("--cookie-ds"),
     host: values.get("--host"),
     team: values.get("--team"),
   });
@@ -161,11 +163,16 @@ async function runAuth(sub, positionals, values) {
     case "import": {
       if (values.get("--curl")) {
         const parsed = parseCurl(values.get("--curl"));
-        return out(await importCredentials({ ...parsed, host: values.get("--host") || parsed.host }));
+        return out(await importCredentials({
+          ...parsed,
+          cookieDs: values.get("--cookie-ds") || parsed.cookieDs,
+          host: values.get("--host") || parsed.host,
+        }));
       }
       return out(await importCredentials({
         token: values.get("--token"),
         cookie: values.get("--cookie"),
+        cookieDs: values.get("--cookie-ds"),
         host: values.get("--host"),
         team: values.get("--team"),
       }));

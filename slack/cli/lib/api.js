@@ -39,14 +39,16 @@ export async function webApiCall(method, params, creds) {
   const url = `https://${apiHost(creds)}/api/${method}`;
   // The xoxd `d` cookie value is stored and transmitted percent-encoded; send
   // it verbatim. Re-encoding it (e.g. encodeURIComponent) corrupts the trailing
-  // `%3D` and Slack rejects the request with invalid_auth.
+  // `%3D` and Slack rejects the request with invalid_auth. The `d-s` companion
+  // (Enterprise Grid / SSO) is appended when present.
   const cookieValue = creds.cookie.startsWith("xoxd-") ? creds.cookie : `xoxd-${creds.cookie}`;
+  const cookieHeader = creds.cookieDs ? `d=${cookieValue}; d-s=${creds.cookieDs}` : `d=${cookieValue}`;
 
   const res = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
-      Cookie: `d=${cookieValue}`,
+      Cookie: cookieHeader,
       Accept: "application/json",
     },
     body: buildBody(creds.token, params),

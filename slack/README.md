@@ -35,11 +35,14 @@ Alternatives to automatic extraction:
 # Headless / CI: provide the pair via environment
 export SLACK_TOKEN=xoxc-...
 export SLACK_COOKIE=xoxd-...
+export SLACK_COOKIE_DS=...        # optional: d-s companion, Enterprise Grid / SSO
 
 # Manual import from a copied devtools cURL, or directly
 slack-cli auth import --curl '<curl from browser devtools>'
-slack-cli auth import --token xoxc-... --cookie xoxd-...
+slack-cli auth import --token xoxc-... --cookie xoxd-... [--cookie-ds ...]
 ```
+
+On Enterprise Grid (and some SSO setups) Slack also sets a `d-s` session cookie. Automatic extraction and the cURL import capture it when present; supply it explicitly with `--cookie-ds` or `SLACK_COOKIE_DS` when importing by hand.
 
 ## Usage
 
