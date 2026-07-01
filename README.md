@@ -115,6 +115,16 @@ agent-clis/
 └── install.sh            # Install all tools
 ```
 
+### Adding a new tool
+
+A new tool is not done when its `cli/` and `skill/` are written. A skill loads on-demand, so it cannot shape tool choice before an agent acts. Finish all three legs:
+
+1. **`cli/`** — the CLI, installable via the tool's `install.sh` and on `PATH`.
+2. **`skill/SKILL.md`** — a triggering description ([Agent Skills standard](https://agentskills.io)) so an agent that decides to use the tool knows its commands.
+3. **Register the CLI in the harness's always-loaded tool-selection roster** — the short guidance in the agent's context every turn (for example a `RULES.md` or `AGENTS.md` "prefer these native tools over the browser" list). Name the CLI for its service, and when the service has a web UI, say to prefer the CLI over driving that UI in the browser.
+
+Skip step 3 and agents default to the browser for that service even though the CLI is installed and authenticated. The roster is what primes the choice before any skill loads. (This is not hypothetical: `metabase-cli` shipped with steps 1 and 2 done but not 3, and agents kept driving the Metabase web SQL editor through the browser until it was added to the roster.)
+
 ## License
 
 MIT
