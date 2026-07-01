@@ -1,0 +1,29 @@
+{
+  "name": "@ruminaider/metabase-cli",
+  "version": "0.1.0",
+  "description": "Metabase CLI with full read/write access: cards, dashboards, databases, tables, queries, collections, search, and revisions from the terminal. Token-efficient JSON output.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ruminaider/agent-clis.git",
+    "directory": "metabase/cli"
+  },
+  "keywords": [
+    "metabase",
+    "cli",
+    "mcp",
+    "agent",
+    "pi-package"
+  ],
+  "bin": {
+    "metabase-cli": "bin/metabase.js"
+  },
+  "files": [
+    "bin/",
+    "lib/"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

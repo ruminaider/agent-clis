@@ -14,7 +14,7 @@ MCP servers bloat your agent's context with dozens of tool descriptions and prev
 | [linear](./linear/) | Linear MCP Server | MCP-synced read/write surface |
 | [circleci-cli](./circleci-cli/) | CircleCI MCP Server | Ready |
 | [slack](./slack/) | Slack MCP Server | Ready |
-| [metabase](./metabase/) | Metabase MCP Server | Planned |
+| [metabase](./metabase/) | Metabase MCP Server | Ready |
 | [newrelic](./newrelic/) | NewRelic MCP Server | Planned |
 
 ### Coordination kernel
@@ -45,6 +45,7 @@ bash agent-clis/install.sh
 bash agent-clis/notion/install.sh
 bash agent-clis/linear/install.sh
 bash agent-clis/slack/install.sh
+bash agent-clis/metabase/install.sh
 bash agent-clis/circleci-cli/install.sh
 ```
 
