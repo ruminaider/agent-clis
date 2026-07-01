@@ -38,7 +38,6 @@ const VALUE_FLAGS = new Set([
   "--text",
   "--blocks",
   "--name",
-  "--at",
   "--file",
 ]);
 
@@ -120,7 +119,6 @@ Messages:
   ${CLI_NAME} message reply <channel> <thread-ts> <text>
   ${CLI_NAME} message update <channel> <ts> <text>
   ${CLI_NAME} message delete <channel> <ts>
-  ${CLI_NAME} message schedule <channel> <text> --at <unix-ts>
   ${CLI_NAME} thread read <channel> <thread-ts>
 
 Search:
@@ -226,10 +224,6 @@ async function runMessage(sub, p, values) {
       }));
     case "delete":
       return out(await api.messageDelete(c, channel(), need(p[1] || values.get("--ts"), "ts")));
-    case "schedule":
-      return out(await api.messageSchedule(c, channel(), need(p[1] ?? values.get("--text"), "text"), need(values.get("--at"), "--at"), {
-        threadTs: values.get("--thread-ts"),
-      }));
     default: throw new Error(`Unknown message subcommand: ${sub}`);
   }
 }
