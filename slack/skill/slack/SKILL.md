@@ -7,16 +7,16 @@ compatibility: Requires the Slack desktop app signed in (macOS or Linux). Auto-e
 # Slack CLI
 
 ## Overview
-`slack-cli` gives terminal access to Slack as the signed-in user. It reuses the credentials the Slack desktop app already holds (the `xoxc` web token and the `xoxd` `d` cookie), so there is no Slack app, no OAuth consent screen, and no admin approval. Output is JSON on stdout, so commands pipe into `jq` and into other tools.
+`slack-cli` drives Slack from the terminal as the signed-in user, reusing the `xoxc` token and `xoxd` cookie the Slack desktop app already holds. There is no Slack app, no OAuth consent, and no admin approval. Output is JSON on stdout, so commands pipe into `jq` and other tools.
 
 ## Core Philosophy
-**Authenticate from the desktop session, not from an app.** `slack-cli auth login` extracts and verifies credentials from the local Slack app. The session is the user's own, so the CLI acts with exactly the user's permissions.
+**Authenticate from the desktop session.** `slack-cli auth login` extracts and verifies credentials from the local Slack app, so the CLI acts with exactly the user's permissions.
 
-**Resolve identifiers before acting.** Slack APIs take IDs, not names. List channels or users first, then use the returned `id` (channels look like `C…`, DMs `D…`, users `U…`, message timestamps are the `ts` string).
+**Resolve identifiers before acting.** Slack APIs take IDs, not names. List channels or users first, then use the returned `id` (channels `C…`, DMs `D…`, users `U…`, message timestamps the `ts` string).
 
 **Read before write.** Fetch the message or channel first, then send, edit, react, or delete against the exact `channel` + `ts`.
 
-**Never print tokens.** Treat the credentials file at `~/.config/slack-cli/credentials.json` as secret. Do not echo token or cookie values into logs or chat.
+**Never print tokens.** Treat `~/.config/slack-cli/credentials.json` as secret; never echo token or cookie values into logs or chat.
 
 ## Domain Mechanics
 1. **Auth.** `slack-cli auth login` extracts from the Slack desktop app (first run triggers a one-time macOS Keychain prompt; click Allow). `auth status` lists authenticated workspaces. For headless use, set `SLACK_TOKEN` (xoxc) and `SLACK_COOKIE` (xoxd), plus optional `SLACK_COOKIE_DS` on Enterprise Grid. Manual import: `auth import --curl '<curl copied from devtools>'` or `auth import --token xoxc-... --cookie xoxd-... [--cookie-ds ...]`. `auth logout` clears stored credentials. On Enterprise Grid / SSO, Slack also sets a `d-s` cookie that extraction and cURL import capture automatically.
@@ -31,11 +31,11 @@ compatibility: Requires the Slack desktop app signed in (macOS or Linux). Auto-e
 *Judgment:* When the target is named but not identified, list first to resolve the ID rather than guessing. For writes, confirm the channel and `ts` from a prior read. Use `slack-cli help` for the full command reference.
 
 ## Common Mistakes
-- Passing a channel name where a channel ID (`C…`) is required. List channels first and use `id`.
-- Re-encoding the `xoxd` cookie. The CLI handles this; when importing, paste the cookie value verbatim (it is already percent-encoded).
-- Posting to a busy shared channel during testing. Use your own DM (`message send <your-user-id> ...`) and delete afterward.
-- Expecting credentials to last forever. Slack session tokens rotate when the desktop session is invalidated; re-run `auth login` if calls start returning `invalid_auth`.
-- Treating this as Slack's app-development CLI. Building, running, or deploying Slack apps is a different tool (`slack` from slackapi); `slack-cli` only reads and writes workspace data.
-- Sending message text that starts with a dash without an escape. Put such text after `--`: `slack-cli message send C0123 -- "-1 vs baseline"`.
-- On Linux with a keyring-backed (`v11`) cookie store, auto-extraction cannot decrypt; use `slack-cli auth import` instead.
-- Do not expect message scheduling. Slack gates `chat.scheduleMessage` to OAuth tokens, so it is unavailable under native-session auth.
+- Passing a channel name where a channel ID (`C…`) is required. List first, then use `id`.
+- Re-encoding the `xoxd` cookie. Paste it verbatim on import; it is already percent-encoded.
+- Testing in a busy shared channel. Use your own DM (`message send <your-user-id> ...`) and delete afterward.
+- Expecting credentials to last forever. Session tokens rotate; re-run `auth login` on `invalid_auth`.
+- Treating this as Slack's app-development CLI. Building or deploying apps is a different tool (`slack` from slackapi); this one only reads and writes workspace data.
+- Sending message text that starts with a dash without `--`: `slack-cli message send C0123 -- "-1 vs baseline"`.
+- On Linux with a keyring-backed (`v11`) cookie store, auto-extraction cannot decrypt; use `auth import`.
+- Expecting message scheduling. Slack gates `chat.scheduleMessage` to OAuth tokens, so it is unavailable under session auth.
