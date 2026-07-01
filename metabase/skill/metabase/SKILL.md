@@ -7,16 +7,16 @@ compatibility: Requires Node.js 18+ and a Metabase instance URL plus an API key 
 # Metabase CLI
 
 ## Overview
-`metabase-cli` gives terminal access to a Metabase instance with full read/write across cards (saved questions), dashboards, databases, tables, fields, queries, collections, search, and revision history. It mirrors the `metabase-mcp-server` surface (46 operations) and shares its environment variables, so it is a drop-in swap for that MCP. Output is response-optimized JSON that strips metadata bloat and flattens query results, keeping it cheap for agents to consume.
+`metabase-cli` drives a Metabase instance from the terminal: cards (saved questions), dashboards, databases, tables, fields, queries, collections, search, and revision history. It mirrors the `metabase-mcp-server` (46 operations) and shares its environment variables, so it is a drop-in swap. Output is optimized JSON that strips metadata and flattens query results, staying cheap for agents to consume.
 
 ## Core Philosophy
-**Explore before querying.** Resolve database, table, and field IDs with `database list`, `database metadata`, `table list`, and `search` before writing SQL or building cards. Metabase APIs take numeric IDs.
+**Explore before querying.** Metabase APIs take numeric IDs. Resolve them with `database list`, `database metadata`, `table list`, or `search` before writing SQL or building cards.
 
-**Read before write.** Fetch a card, dashboard, or collection first, then update only the fields you intend to change. Update commands accept specific flags plus a generic `--set '<json>'` escape hatch for any field.
+**Read before write.** Fetch a card, dashboard, or collection first, then change only the fields you intend. Update commands take specific flags plus a generic `--set '<json>'` for any other field.
 
-**Prefer read-only when browsing.** Pass `--read-only` (or set `METABASE_READ_ONLY=true`) to block every create/update/archive/copy/revert/bookmark/cache operation. Use it whenever writes are not intended.
+**Prefer read-only when browsing.** Pass `--read-only` (or `METABASE_READ_ONLY=true`) to block every write when you do not intend one.
 
-**Use execute for small results, export for large.** `card execute` and `query run` cap at ~2000 rows; `card export` and `query export` stream CSV/JSON/XLSX up to 1M rows to a file.
+**Execute for small results, export for large.** `card execute` and `query run` cap at ~2000 rows; `card export` and `query export` stream CSV/JSON/XLSX up to 1M rows to a file.
 
 ## Domain Mechanics
 1. **Auth.** `metabase-cli auth login --url <url> --api-key <key>` verifies against `/api/user/current` and persists to `~/.config/metabase-cli/credentials.json`. `auth status` checks it; `auth logout` clears it. Env vars override persisted config: `METABASE_URL`, `METABASE_API_KEY`, `METABASE_SESSION_TOKEN`, `METABASE_USER_EMAIL` + `METABASE_PASSWORD`. API key is recommended (create one in Admin > Settings > Authentication > API Keys).
@@ -34,6 +34,6 @@ compatibility: Requires Node.js 18+ and a Metabase instance URL plus an API key 
 - Passing a name where a numeric ID is required. Resolve it with `search` or a `list` first.
 - Expecting `query run` to return every row. It caps at ~2000; use `query export --output file` for full extracts.
 - Trying to write `xlsx` to stdout. Binary exports require `--output <path.xlsx>`.
-- Forgetting `--read-only` when only browsing, then making an accidental write.
-- Treating the in-memory cache as present. Unlike the MCP, the CLI is one short-lived process per command, so `METABASE_CACHE_TTL_MS` is a no-op.
-- Passing raw MBQL to `query run` (it takes native SQL); use `query to-native` to convert MBQL first.
+- Browsing without `--read-only`, then writing by accident.
+- Expecting an in-memory cache. The CLI is one process per command, so `METABASE_CACHE_TTL_MS` is a no-op.
+- Passing MBQL to `query run`; it takes native SQL. Convert with `query to-native` first.
