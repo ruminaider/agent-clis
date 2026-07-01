@@ -144,16 +144,6 @@ export function messageDelete(creds, channel, ts) {
   return webApiCall("chat.delete", { channel, ts }, creds);
 }
 
-export function messageSchedule(creds, channel, text, postAt, options = {}) {
-  return webApiCall("chat.scheduleMessage", {
-    channel,
-    text,
-    post_at: num(postAt),
-    thread_ts: options.threadTs,
-    blocks: options.blocks,
-  }, creds);
-}
-
 // ─── search ──────────────────────────────────────────────────
 export function searchMessages(creds, query, options = {}) {
   return webApiCall("search.messages", {
