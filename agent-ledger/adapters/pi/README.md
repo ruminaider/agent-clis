@@ -59,7 +59,7 @@ set explicitly:
 | Pi tool | What the extension does |
 | ------- | ----------------------- |
 | `write` / `edit` / `multi_edit` | Pre: `agent-ledger claim` for the path(s). Post: `agent-ledger record` with summary derived from input. Block on claim failure. |
-| `bash` | Default: warn and let it run, snapshotting `git status --porcelain` before the call and claim/recording paths that become newly dirty after it returns. `AGENT_LEDGER_BASH_MODE=block` blocks all bash tool calls because shell mutation detection is not complete. |
+| `bash` | Default: warn and let it run. Inside a Git repository, the extension snapshots `git status --porcelain` before the call and claim/records paths that become newly dirty after it returns. Outside Git, Bash continues without change attribution and the extension reports one session-level notice. `AGENT_LEDGER_BASH_MODE=block` blocks all bash tool calls because shell mutation detection is not complete. |
 | `subagent` execution | Pre (observation-only): record that a dispatch was initiated (parent task id, child agent name, dispatch timestamp) for correlation. The parent extension does not mutate `process.env` and does not call `agent-ledger assign`. Each spawned child detects `PI_SUBAGENT_CHILD=1` at extension load, derives a deterministic child task id (`<parent>/<agent>/<run_id>-<index>`) and a fresh child `AGENT_ID` (`agent:pi:subagent:<run_id>:<index>`), and self-assigns via `agent-ledger assign --if-absent`. Parallel fan-outs, async dispatch, and multiple `subagent()` calls in one turn all work correctly because every child is independent. |
 | Read-only tools and `subagent` management | Nothing: no bootstrap, no claim, no record. These calls never create or require task context. |
 
@@ -123,12 +123,7 @@ still reports `MISSING_ASSIGNMENT`.
 
 ## Caveats
 
-- **Bash is fuzzy.** The extension cannot statically know which paths
-  a `bash` invocation will mutate. The default warn-then-scan mode
-  catches most cases but misses files written outside the project
-  root or via `chmod`. SPEC §33 open decision #2 covers the design
-  trade-off. For high-trust workflows, use `AGENT_LEDGER_BASH_MODE=block`
-  to block bash entirely.
+- **Bash is fuzzy.** The extension cannot statically know which paths a `bash` invocation will mutate. The default warn-then-scan mode attributes changes only inside a Git repository. Outside Git, Bash continues but change attribution is unavailable. The scan also misses files written outside the project root or via `chmod`. SPEC §33 open decision #2 covers the design trade-off. For high-trust workflows, use `AGENT_LEDGER_BASH_MODE=block` to block bash entirely.
 - **Parallel subagent dispatch is supported.** Each spawned child
   self-assigns from its own bootstrap, so two `subagent()` calls in
   the same assistant turn each land in their own assignment row with

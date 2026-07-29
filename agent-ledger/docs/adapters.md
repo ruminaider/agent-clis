@@ -407,11 +407,7 @@ the babysitter wrapper.
 - Hooks `tool_result` for the same call id. Calls
   `agent-ledger record` with the captured intent id and a summary
   derived from the tool input.
-- Hooks `tool_call` for `bash`. Default mode is `warn`: snapshot
-  `git status --porcelain`, let the command run, then record paths
-  that became newly dirty against an "auto-bash" intent.
-  `AGENT_LEDGER_BASH_MODE=block` blocks all bash tool calls because
-  shell mutation detection is not complete.
+- Hooks `tool_call` for `bash`. Default mode is `warn`: inside a Git repository, snapshot `git status --porcelain`, let the command run, then record paths that became newly dirty against an "auto-bash" intent. Outside Git, Bash continues without change attribution and the extension reports one session-level notice. `AGENT_LEDGER_BASH_MODE=block` blocks all bash tool calls because shell mutation detection is not complete.
 - Hooks `tool_call` for `subagent`. The hook is observation-only: it
   records that a dispatch was initiated (parent task id, child agent
   name, dispatch timestamp) for correlation and telemetry. It does not

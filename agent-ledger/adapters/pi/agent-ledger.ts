@@ -97,7 +97,12 @@ interface BootstrapState {
   // `tasks/option-d-context.md` decision 3.
   eagerBootstrapError: Error | null;
   liveClaims: Map<string, IntentRef>;
-  bashSnapshots: Map<string, Set<string>>;
+  // A null snapshot means this Bash call ran outside a Git repository,
+  // so its result hook must not repeat the status scan.
+  bashSnapshots: Map<string, Set<string> | null>;
+  // Tracks whether the session-level unavailable-attribution notice has
+  // already been reported. Every Bash call still attempts its own pre-scan.
+  bashAttributionUnavailable: boolean;
 }
 
 // --- Helpers -------------------------------------------------------------
@@ -306,7 +311,17 @@ async function recordPaths(paths: string[], intentId: string, summary: string): 
   }
 }
 
-async function gitStatusPaths(): Promise<Set<string>> {
+interface GitStatusScan {
+  paths: Set<string>;
+  unavailable: boolean;
+}
+
+function isNotGitRepositoryError(err: any): boolean {
+  return err?.code === 128
+    && /fatal: not a git repository(?: \(or any of the parent directories\): \.git)?/.test(err?.stderr?.toString() ?? "");
+}
+
+async function gitStatusPaths(): Promise<GitStatusScan> {
   try {
     const r = await exec("git", ["status", "--porcelain=v1"], {
       env: process.env,
@@ -320,11 +335,20 @@ async function gitStatusPaths(): Promise<Set<string>> {
     if (paths.length > GIT_STATUS_PATH_LIMIT) {
       console.error(`agent-ledger: git status returned ${paths.length} paths; recording first ${GIT_STATUS_PATH_LIMIT}`);
     }
-    return new Set(paths.slice(0, GIT_STATUS_PATH_LIMIT));
+    return { paths: new Set(paths.slice(0, GIT_STATUS_PATH_LIMIT)), unavailable: false };
   } catch (err: any) {
+    if (isNotGitRepositoryError(err)) {
+      return { paths: new Set(), unavailable: true };
+    }
     console.error(`agent-ledger: git status scan failed: ${err.message ?? err}`);
-    return new Set();
+    return { paths: new Set(), unavailable: false };
   }
+}
+
+function reportBashAttributionUnavailable(state: BootstrapState): void {
+  if (state.bashAttributionUnavailable) return;
+  state.bashAttributionUnavailable = true;
+  console.error("agent-ledger: Bash change attribution is unavailable because this session is outside a Git repository.");
 }
 
 function diffPaths(after: Set<string>, before: Set<string>): string[] {
@@ -355,6 +379,7 @@ export default function (pi: ExtensionAPI) {
     eagerBootstrapError: null,
     liveClaims: new Map(),
     bashSnapshots: new Map(),
+    bashAttributionUnavailable: false,
   };
 
   // Eager child bootstrap. When pi-subagents spawns this process as a
@@ -456,7 +481,13 @@ export default function (pi: ExtensionAPI) {
       if (mode === "block") {
         return { block: true, reason: "agent-ledger blocks bash in block mode because shell mutation detection is not complete (set AGENT_LEDGER_BASH_MODE=warn to allow post-scan attribution)" };
       }
-      state.bashSnapshots.set(event.toolCallId, await gitStatusPaths());
+      const scan = await gitStatusPaths();
+      if (scan.unavailable) {
+        reportBashAttributionUnavailable(state);
+        state.bashSnapshots.set(event.toolCallId, null);
+        return undefined;
+      }
+      state.bashSnapshots.set(event.toolCallId, scan.paths);
       return undefined;
     }
 
@@ -481,10 +512,15 @@ export default function (pi: ExtensionAPI) {
     // Bash: post-scan working tree and attribute only paths that became
     // dirty during this bash call, not the entire pre-existing dirty tree.
     if (BASH_TOOLS.has(toolName)) {
-      const before = state.bashSnapshots.get(event.toolCallId) ?? new Set<string>();
+      const before = state.bashSnapshots.get(event.toolCallId);
       state.bashSnapshots.delete(event.toolCallId);
-      if (event.isError) return;
-      const dirty = diffPaths(await gitStatusPaths(), before);
+      if (before === undefined || before === null || event.isError) return;
+      const scan = await gitStatusPaths();
+      if (scan.unavailable) {
+        reportBashAttributionUnavailable(state);
+        return;
+      }
+      const dirty = diffPaths(scan.paths, before);
       if (dirty.length === 0) return;
       const claim = await claimPaths(state, dirty, `pi bash: ${String(event.input?.command ?? "").slice(0, 80)}`);
       if (claim.ok && claim.intentId) {
