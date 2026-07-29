@@ -1,0 +1,38 @@
+name: CLIs
+
+# The CLIs ship straight from this repo, so a file that does not parse reaches
+# users as a CLI that fails on every invocation. Parsing each source file and
+# running each CLI's help output catches that before merge.
+
+on:
+  pull_request:
+    paths:
+      - "linear/**"
+      - "metabase/**"
+      - "notion/**"
+      - "slack/**"
+      - ".github/workflows/clis-ci.yml"
+  push:
+    branches: [main]
+
+jobs:
+  smoke:
+    name: Parse and run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Every CLI source file parses
+        run: |
+          for file in $(git ls-files '*/cli/bin/*.js' '*/cli/lib/*.js'); do
+            node --check "$file"
+          done
+
+      - name: Every CLI prints its help
+        run: |
+          for bin in $(git ls-files '*/cli/bin/*.js'); do
+            node "$bin" help > /dev/null
+          done
