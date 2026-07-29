@@ -44,9 +44,27 @@ slack-cli auth import --token xoxc-... --cookie xoxd-... [--cookie-ds ...]
 
 On Enterprise Grid (and some SSO setups) Slack also sets a `d-s` session cookie. Automatic extraction and the cURL import capture it when present; supply it explicitly with `--cookie-ds` or `SLACK_COOKIE_DS` when importing by hand.
 
+## Enterprise Grid
+
+Grid works the same as a regular workspace: run `auth login` and every command behaves as you would expect. Getting there takes an extra step behind the scenes, because Slack splits a Grid session into an org-level identity and one identity per workspace, and refuses whole categories of calls on the org-level one.
+
+`auth login` therefore stores a token for every workspace in your org, minting the ones the desktop app did not cache by loading each workspace's web app with your existing cookie. Commands then route themselves: search and the user directory run at the org level, where they see everything, while channel and DM listings sweep each workspace and merge the results, deduplicating channels shared across workspaces.
+
+```bash
+slack-cli auth status                       # shows each workspace and which entry is org-level
+slack-cli channel list                      # every channel across the org
+slack-cli channel list --types im           # every open DM
+slack-cli channel list --team recorahealth  # one workspace only
+slack-cli channel list --all-teams          # sweep every signed-in workspace, org or not
+```
+
+A sweep reports what it covered under `teams`, and sets `partial: true` when any workspace failed, hit a cap, or went unread, so an incomplete list never passes for the whole org. Across workspaces `--limit` caps the merged result rather than sizing a page, and each cut-short workspace carries the cursor to resume from. Paging with `--cursor` belongs to a single workspace: pass `--team` alongside it.
+
+Workspace-scoped writes stay explicit. `channel create` names its target instead of addressing an id, so on an org-level default it asks for `--team` rather than creating the channel in whichever workspace answered first.
+
 ## Usage
 
-Every command prints JSON to stdout. Target a specific workspace with `--team <name|id|host>` (or `SLACK_TEAM`); the default is the first signed-in workspace.
+Every command prints JSON to stdout. Target a specific workspace with `--team <name|id|host>` (or `SLACK_TEAM`); the default is the Enterprise Grid org when you have one, otherwise the first signed-in workspace.
 
 ```bash
 # Channels
@@ -79,7 +97,8 @@ Run `slack-cli help` for the complete command list.
 - `cli/bin/slack.js` parses arguments and dispatches commands; all output is JSON.
 - `cli/lib/extract.js` reads the `xoxc` tokens from the Slack app's LevelDB (the JSON is Snappy-compressed, so tokens are regexed out as verbatim literals and verified over the network) and decrypts the `xoxd` cookie from the Chromium SQLite store using the platform key (macOS Keychain `Slack Safe Storage`, PBKDF2-HMAC-SHA1 + AES-128-CBC).
 - `cli/lib/auth.js` resolves credentials (explicit → env → persisted), enriches tokens via `auth.test`, and stores the result.
-- `cli/lib/api.js` calls the Slack web API, sending the token in the form body and the `d` cookie in the `Cookie` header against the workspace host.
+- `cli/lib/grid.js` completes an Enterprise Grid login: it asks the org token which workspaces you belong to and mints the missing per-workspace tokens from each workspace's web boot page.
+- `cli/lib/api.js` calls the Slack web API, sending the token in the form body and the `d` cookie in the `Cookie` header against the workspace host. Calls Slack refuses on an org-level token retry against the workspace tokens, and channel listings sweep the org.
 
 Zero runtime dependencies: everything uses Node built-ins (`node:sqlite`, `node:crypto`, `node:child_process`, `node:fs`).
 

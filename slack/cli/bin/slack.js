@@ -6,6 +6,7 @@ import { CLI_NAME, PACKAGE_VERSION } from "../lib/config.js";
 
 const BOOLEAN_FLAGS = new Set([
   "--private",
+  "--all-teams",
   "--include-archived",
   "--inclusive",
   "--broadcast",
@@ -107,7 +108,7 @@ Auth (no app, no OAuth; uses your Slack desktop session):
   ${CLI_NAME} auth logout
 
 Channels:
-  ${CLI_NAME} channel list [--types ...] [--limit N] [--include-archived]
+  ${CLI_NAME} channel list [--types ...] [--limit N] [--include-archived] [--all-teams]
   ${CLI_NAME} channel info <channel>
   ${CLI_NAME} channel history <channel> [--limit N] [--oldest ts] [--latest ts]
   ${CLI_NAME} channel members <channel>
@@ -137,6 +138,10 @@ Files, pins, canvases:
   ${CLI_NAME} canvas list [--channel C] | canvas get <canvas-id>
 
 Global: --team <name|id|host> to target a workspace. Output is JSON.
+Enterprise Grid: channel listings sweep every workspace in your org by default,
+where --limit caps the merged result and `partial` marks an incomplete one.
+Narrow to one workspace with --team, or add --all-teams to sweep every
+signed-in workspace. --cursor and `channel create` need an explicit --team.
 Text starting with a dash: put it after a bare '--', e.g. message send C0123 -- "-1 vs baseline".`;
 
 async function creds(values) {
@@ -191,6 +196,7 @@ async function runChannel(sub, p, values) {
     inclusive: values.get("--inclusive"),
     includeArchived: values.get("--include-archived"),
     private: values.get("--private"),
+    allTeams: values.get("--all-teams"),
   };
   switch (sub) {
     case "list": return out(await api.channelList(c, opts));

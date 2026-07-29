@@ -20,13 +20,14 @@ compatibility: Requires the Slack desktop app signed in (macOS or Linux). Auto-e
 
 ## Domain Mechanics
 1. **Auth.** `slack-cli auth login` extracts from the Slack desktop app (first run triggers a one-time macOS Keychain prompt; click Allow). `auth status` lists authenticated workspaces. For headless use, set `SLACK_TOKEN` (xoxc) and `SLACK_COOKIE` (xoxd), plus optional `SLACK_COOKIE_DS` on Enterprise Grid. Manual import: `auth import --curl '<curl copied from devtools>'` or `auth import --token xoxc-... --cookie xoxd-... [--cookie-ds ...]`. `auth logout` clears stored credentials. On Enterprise Grid / SSO, Slack also sets a `d-s` cookie that extraction and cURL import capture automatically.
-2. **Workspaces.** Extraction captures every signed-in workspace. Target one with `--team <name|id|host>` on any command, or set `SLACK_TEAM`. The default is the first workspace.
-3. **Channels.** `channel list [--types public_channel,private_channel,mpim,im] [--limit N]`, `channel info <C…>`, `channel history <C…> [--limit N] [--oldest ts] [--latest ts]`, `channel members <C…>`, `channel join <C…>`, `channel create <name> [--private]`.
-4. **Messages.** `message send <channel> <text> [--thread-ts ts] [--broadcast]`, `message reply <channel> <thread-ts> <text>`, `message update <channel> <ts> <text>`, `message delete <channel> <ts>`. `<channel>` accepts a channel ID, a DM ID, or a user ID (opens the DM).
-5. **Threads.** `thread read <channel> <thread-ts>` returns the parent plus replies.
-6. **Search.** `search messages <query> [--sort score|timestamp] [--limit N]`, `search files <query>`, `search all <query>`. Query supports Slack search operators (`in:#channel`, `from:@user`, `after:YYYY-MM-DD`).
-7. **People & reactions.** `user list`, `user info <U…>`, `user me`. `reaction add <channel> <ts> <emoji>` and `reaction remove <channel> <ts> <emoji>` (emoji name without colons, e.g. `white_check_mark`).
-8. **Files, pins, canvases.** `file list [--channel C…]`, `file info <F…>`. `pin list <channel>`, `pin add <channel> <ts>`, `pin remove <channel> <ts>`. `canvas list [--channel C…]`, `canvas get <canvas-id>`.
+2. **Workspaces.** Extraction captures every signed-in workspace. Target one with `--team <name|id|host>` on any command, or set `SLACK_TEAM`. The default is the Enterprise Grid org when there is one, otherwise the first workspace.
+3. **Enterprise Grid.** `auth login` stores a token for the org and for each workspace in it, so no command needs special handling. Search and `user list` answer org-wide; `channel list` sweeps every workspace and merges the results, reporting coverage under `teams` and setting `partial: true` when the list is incomplete. In a sweep `--limit` caps the merged result. Narrow a sweep with `--team`, widen it past the org with `--all-teams`, and pass `--team` whenever paging with `--cursor` or running `channel create`. A call that fails with `enterprise_is_restricted` means the store holds only the org-level token: re-run `auth login`.
+4. **Channels.** `channel list [--types public_channel,private_channel,mpim,im] [--limit N]`, `channel info <C…>`, `channel history <C…> [--limit N] [--oldest ts] [--latest ts]`, `channel members <C…>`, `channel join <C…>`, `channel create <name> [--private]`.
+5. **Messages.** `message send <channel> <text> [--thread-ts ts] [--broadcast]`, `message reply <channel> <thread-ts> <text>`, `message update <channel> <ts> <text>`, `message delete <channel> <ts>`. `<channel>` accepts a channel ID, a DM ID, or a user ID (opens the DM).
+6. **Threads.** `thread read <channel> <thread-ts>` returns the parent plus replies.
+7. **Search.** `search messages <query> [--sort score|timestamp] [--limit N]`, `search files <query>`, `search all <query>`. Query supports Slack search operators (`in:#channel`, `from:@user`, `after:YYYY-MM-DD`).
+8. **People & reactions.** `user list`, `user info <U…>`, `user me`. `reaction add <channel> <ts> <emoji>` and `reaction remove <channel> <ts> <emoji>` (emoji name without colons, e.g. `white_check_mark`).
+9. **Files, pins, canvases.** `file list [--channel C…]`, `file info <F…>`. `pin list <channel>`, `pin add <channel> <ts>`, `pin remove <channel> <ts>`. `canvas list [--channel C…]`, `canvas get <canvas-id>`.
 
 *Judgment:* When the target is named but not identified, list first to resolve the ID rather than guessing. For writes, confirm the channel and `ts` from a prior read. Use `slack-cli help` for the full command reference.
 
@@ -39,3 +40,5 @@ compatibility: Requires the Slack desktop app signed in (macOS or Linux). Auto-e
 - Sending message text that starts with a dash without `--`: `slack-cli message send C0123 -- "-1 vs baseline"`.
 - On Linux with a keyring-backed (`v11`) cookie store, auto-extraction cannot decrypt; use `auth import`.
 - Expecting message scheduling. Slack gates `chat.scheduleMessage` to OAuth tokens, so it is unavailable under session auth.
+- Treating an Enterprise Grid sweep as one paged list. `channel list` returns the merged result with a `teams` summary and no cursor; page a single workspace instead (`--team <name> --cursor <cursor>`).
+- Reading `channels` without checking `partial` on a Grid sweep. A `partial: true` list is missing workspaces, so "not found" there does not mean the channel does not exist.
