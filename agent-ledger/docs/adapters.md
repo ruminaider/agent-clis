@@ -349,7 +349,7 @@ knobs.
 
 ## Session bootstrap
 
-Every adapter runs the same bootstrap once per session, idempotent:
+Every adapter runs the same bootstrap once per session, idempotent. Adapters choose when to run it: the pi extension waits for the first tool call that can change the project, and pi subagent children run it eagerly at extension load (see "Per-adapter behaviour" below). The steps are:
 
 1. Resolve `AGENT_ID`. If unset, derive a non-PII opaque value,
    sanitize it, export it, then run `agent-ledger identify --agent-kind <kind>
@@ -400,6 +400,7 @@ the babysitter wrapper.
 
 ### pi extension (`adapters/pi/agent-ledger.ts`)
 
+- Defers session bootstrap until a `write`, `edit`, `multi_edit`, `bash`, or executing `subagent` call. Read-only tools and subagent management calls return without creating or requiring task context, so browsing a project never opens a task. A pi subagent child still bootstraps eagerly at extension load so its assignment exists even when it invokes no tools.
 - Hooks `tool_call` for `write`, `edit`, `multi_edit`. Calls
   `agent-ledger claim` for the target path. On non-zero exit, returns
   `{ block: true, reason }` to stop the edit.

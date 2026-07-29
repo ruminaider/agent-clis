@@ -335,6 +335,12 @@ function isExecutionSubagentCall(input: any): boolean {
   return !input?.action;
 }
 
+function requiresBootstrapForTool(toolName: string, input: any): boolean {
+  return EDIT_TOOLS.has(toolName)
+    || BASH_TOOLS.has(toolName)
+    || (SUBAGENT_TOOLS.has(toolName) && isExecutionSubagentCall(input));
+}
+
 // --- Extension entry -----------------------------------------------------
 
 export default function (pi: ExtensionAPI) {
@@ -372,12 +378,13 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  // Bootstrap lazily on first tool call so we do not slow down sessions
-  // that never edit files. In subagent child mode the eager bootstrap
-  // above usually wins this race; the lazy call below then awaits the
-  // already in-flight bootstrap promise.
+  // Bootstrap lazily before an enforcement-bound tool call so users can
+  // read project files and manage subagents without creating task context.
+  // In subagent child mode the eager bootstrap above usually wins this race;
+  // the lazy call below then awaits the already in-flight bootstrap promise.
   pi.on("tool_call", async (event, ctx) => {
     const toolName = normalizeToolName(event.toolName);
+    if (!requiresBootstrapForTool(toolName, event.input)) return undefined;
 
     // Eager child bootstrap already failed fatally. Surface the
     // failure on the first tool call rather than silently retrying
@@ -422,7 +429,6 @@ export default function (pi: ExtensionAPI) {
     // audit hints) have a single attachment point. See
     // `tasks/option-d-context.md` decision 4.
     if (SUBAGENT_TOOLS.has(toolName)) {
-      if (!isExecutionSubagentCall(event.input)) return undefined;
       const childAgent = (event.input?.agent as string) ?? "subagent";
       console.error(
         `agent-ledger: subagent dispatch parent_task=${state.resolvedTaskId ?? ""} child_agent=${childAgent} dispatched_at=${new Date().toISOString()}`,
@@ -503,6 +509,7 @@ export {
   parseBootstrapOutput,
   errorMessage,
   isExecutionSubagentCall,
+  requiresBootstrapForTool,
   parseTaskSource,
   shouldBlockBootstrapFailure,
   splitAllowGlobs,

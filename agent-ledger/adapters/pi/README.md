@@ -42,9 +42,12 @@ set explicitly:
 
 - `AGENT_LEDGER_TASK_ID`: the task you are working on. When
   unset, the extension derives a task from the PR, branch, detached
-  HEAD, or, as a last resort, `auto/<agent>/<utc-timestamp>`. When
-  set, the extension verifies an active assignment exists and fails
-  early if the orchestrator forgot one. Emergency repair requires
+  HEAD, or, as a last resort, `auto/<agent>/<utc-timestamp>`. That
+  derivation runs on the first tool call that can change the project,
+  so read-only tools and subagent management calls never create task
+  context. When set, the extension verifies an active assignment
+  exists and fails early if the orchestrator forgot one. Emergency
+  repair requires
   `AGENT_LEDGER_REPAIR_EXPLICIT_ASSIGNMENT=1` and
   `AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW`.
 - `AGENT_LEDGER_REQUIRE_TASK=1`: opt into fail-closed mode. With
@@ -57,7 +60,8 @@ set explicitly:
 | ------- | ----------------------- |
 | `write` / `edit` / `multi_edit` | Pre: `agent-ledger claim` for the path(s). Post: `agent-ledger record` with summary derived from input. Block on claim failure. |
 | `bash` | Default: warn and let it run, snapshotting `git status --porcelain` before the call and claim/recording paths that become newly dirty after it returns. `AGENT_LEDGER_BASH_MODE=block` blocks all bash tool calls because shell mutation detection is not complete. |
-| `subagent` | Pre (observation-only): record that a dispatch was initiated (parent task id, child agent name, dispatch timestamp) for correlation. The parent extension does not mutate `process.env` and does not call `agent-ledger assign`. Each spawned child detects `PI_SUBAGENT_CHILD=1` at extension load, derives a deterministic child task id (`<parent>/<agent>/<run_id>-<index>`) and a fresh child `AGENT_ID` (`agent:pi:subagent:<run_id>:<index>`), and self-assigns via `agent-ledger assign --if-absent`. Parallel fan-outs, async dispatch, and multiple `subagent()` calls in one turn all work correctly because every child is independent. |
+| `subagent` execution | Pre (observation-only): record that a dispatch was initiated (parent task id, child agent name, dispatch timestamp) for correlation. The parent extension does not mutate `process.env` and does not call `agent-ledger assign`. Each spawned child detects `PI_SUBAGENT_CHILD=1` at extension load, derives a deterministic child task id (`<parent>/<agent>/<run_id>-<index>`) and a fresh child `AGENT_ID` (`agent:pi:subagent:<run_id>:<index>`), and self-assigns via `agent-ledger assign --if-absent`. Parallel fan-outs, async dispatch, and multiple `subagent()` calls in one turn all work correctly because every child is independent. |
+| Read-only tools and `subagent` management | Nothing: no bootstrap, no claim, no record. These calls never create or require task context. |
 
 ## Subagent inheritance
 
