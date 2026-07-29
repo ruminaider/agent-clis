@@ -1,6 +1,6 @@
 {
   "name": "@ruminaider/slack-cli",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Slack CLI that authenticates as you using your existing Slack desktop session. Read channels, send messages, search, and manage reactions, files, pins, and canvases from the terminal. No app, no OAuth, no admin approval.",
   "type": "module",
   "license": "MIT",

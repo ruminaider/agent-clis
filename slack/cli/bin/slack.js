@@ -107,6 +107,9 @@ Auth (no app, no OAuth; uses your Slack desktop session):
   ${CLI_NAME} auth import --token xoxc-... --cookie xoxd-...
   ${CLI_NAME} auth logout
 
+Anything with a Slack link:
+  ${CLI_NAME} read <slack-url>        Thread for a message link, history for a channel link
+
 Channels:
   ${CLI_NAME} channel list [--types ...] [--limit N] [--include-archived] [--all-teams]
   ${CLI_NAME} channel info <channel>
@@ -139,19 +142,42 @@ Files, pins, canvases:
 
 Global: --team <name|id|host> to target a workspace. Output is JSON.
 Enterprise Grid: channel listings sweep every workspace in your org by default,
-where --limit caps the merged result and `partial` marks an incomplete one.
+where --limit caps the merged result and a partial flag marks an incomplete one.
 Narrow to one workspace with --team, or add --all-teams to sweep every
-signed-in workspace. --cursor and `channel create` need an explicit --team.
+signed-in workspace. --cursor and channel create need an explicit --team.
+A Slack permalink works anywhere a channel is expected, and picks its own
+workspace, so pasting a link never needs an id or a --team.
 Text starting with a dash: put it after a bare '--', e.g. message send C0123 -- "-1 vs baseline".`;
 
-async function creds(values) {
+// A Slack link names the workspace it came from, which beats the stored default
+// when the two disagree. An explicit --team still wins.
+async function creds(values, link = null) {
   return getCredentials({
     token: values.get("--token"),
     cookie: values.get("--cookie"),
     cookieDs: values.get("--cookie-ds"),
     host: values.get("--host"),
-    team: values.get("--team"),
+    team: values.get("--team") || link?.host || undefined,
   });
+}
+
+// Every command that takes a channel takes a Slack link just as well.
+function channelOf(value) {
+  return api.parseSlackLink(value)?.channel ?? value;
+}
+
+// `read <link>` is the one command for "here is a Slack URL, tell me what it
+// says": a message link returns its thread, a channel link returns recent
+// history.
+async function runRead(p, values) {
+  const target = need(p[0] || values.get("--channel"), "link or channel");
+  const link = api.parseSlackLink(target);
+  const c = await creds(values, link);
+  const channel = link?.channel ?? target;
+  const limit = values.get("--limit");
+  const threadTs = link?.threadTs || link?.ts;
+  if (threadTs) return out(await api.threadRead(c, channel, threadTs, { limit }));
+  return out(await api.channelHistory(c, channel, { limit }));
 }
 
 async function runAuth(sub, positionals, values) {
@@ -186,7 +212,7 @@ async function runAuth(sub, positionals, values) {
 }
 
 async function runChannel(sub, p, values) {
-  const c = await creds(values);
+  const c = await creds(values, api.parseSlackLink(p[0]));
   const opts = {
     types: values.get("--types"),
     limit: values.get("--limit"),
@@ -198,20 +224,22 @@ async function runChannel(sub, p, values) {
     private: values.get("--private"),
     allTeams: values.get("--all-teams"),
   };
+  const channel = () => channelOf(need(p[0] || values.get("--channel"), "channel"));
   switch (sub) {
     case "list": return out(await api.channelList(c, opts));
-    case "info": return out(await api.channelInfo(c, need(p[0] || values.get("--channel"), "channel")));
-    case "history": return out(await api.channelHistory(c, need(p[0] || values.get("--channel"), "channel"), opts));
-    case "members": return out(await api.channelMembers(c, need(p[0] || values.get("--channel"), "channel"), opts));
-    case "join": return out(await api.channelJoin(c, need(p[0] || values.get("--channel"), "channel")));
+    case "info": return out(await api.channelInfo(c, channel()));
+    case "history": return out(await api.channelHistory(c, channel(), opts));
+    case "members": return out(await api.channelMembers(c, channel(), opts));
+    case "join": return out(await api.channelJoin(c, channel()));
     case "create": return out(await api.channelCreate(c, need(p[0] || values.get("--name"), "name"), opts));
     default: throw new Error(`Unknown channel subcommand: ${sub}`);
   }
 }
 
 async function runMessage(sub, p, values) {
-  const c = await creds(values);
-  const channel = () => need(p[0] || values.get("--channel"), "channel");
+  const link = api.parseSlackLink(p[0]);
+  const c = await creds(values, link);
+  const channel = () => channelOf(need(p[0] || values.get("--channel"), "channel"));
   switch (sub) {
     case "send":
       return out(await api.messageSend(c, channel(), need(p[1] ?? values.get("--text"), "text"), {
@@ -235,9 +263,12 @@ async function runMessage(sub, p, values) {
 }
 
 async function runThread(sub, p, values) {
-  const c = await creds(values);
+  const link = api.parseSlackLink(p[0]);
+  const c = await creds(values, link);
   if (sub !== "read") throw new Error(`Unknown thread subcommand: ${sub}`);
-  return out(await api.threadRead(c, need(p[0] || values.get("--channel"), "channel"), need(p[1] || values.get("--thread-ts"), "thread-ts"), {
+  // A message link already carries the thread, so the timestamp is optional.
+  const threadTs = link?.threadTs || link?.ts;
+  return out(await api.threadRead(c, channelOf(need(p[0] || values.get("--channel"), "channel")), threadTs || need(p[1] || values.get("--thread-ts"), "thread-ts"), {
     limit: values.get("--limit"),
     cursor: values.get("--cursor"),
   }));
@@ -327,6 +358,7 @@ async function main() {
 
   try {
     switch (command) {
+      case "read": return await runRead(positionals.slice(1), values);
       case "auth": return await runAuth(sub, rest, values);
       case "channel": return await runChannel(sub, rest, values);
       case "message": return await runMessage(sub, rest, values);

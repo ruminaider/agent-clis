@@ -4,6 +4,7 @@ Use Slack from the terminal as yourself. `slack-cli` reuses the session your Sla
 
 ```bash
 slack-cli auth login
+slack-cli read https://acme.slack.com/archives/C0123ABCD/p1785281613144769   # any Slack link
 slack-cli channel list | jq -r '.channels[].name'
 slack-cli message send C0123ABCD "Deploy finished ✅"   # use a channel ID, not #name
 slack-cli search messages "incident in:#ops after:2026-06-01"
@@ -66,7 +67,14 @@ Workspace-scoped writes stay explicit. `channel create` names its target instead
 
 Every command prints JSON to stdout. Target a specific workspace with `--team <name|id|host>` (or `SLACK_TEAM`); the default is the Enterprise Grid org when you have one, otherwise the first signed-in workspace.
 
+Paste a Slack link anywhere a channel is expected. `read` turns a message link into its thread and a channel link into recent history, and the link decides which workspace answers, so nothing has to be resolved by hand.
+
 ```bash
+# Anything you can copy out of Slack
+slack-cli read https://acme.slack.com/archives/C0123ABCD/p1785281613144769
+slack-cli read https://acme.slack.com/archives/C0123ABCD --limit 20
+slack-cli channel history https://acme.slack.com/archives/C0123ABCD
+
 # Channels
 slack-cli channel list --types public_channel,private_channel --limit 50
 slack-cli channel history C0123ABCD --limit 20

@@ -319,6 +319,47 @@ export function threadRead(creds, channel, ts, options = {}) {
 // `message send` accepts a user id as shorthand for "DM this person". Slack's
 // org-level Grid token will not resolve that shorthand (it answers
 // `channel_not_found`), so open the DM first and post to the conversation.
+// A Slack permalink is how a person hands over a message, and it already names
+// the channel, the message, and the workspace it lives in. Accepting one
+// wherever a channel id is expected removes the guesswork that otherwise ends in
+// `channel_not_found`: no id to copy, no workspace to pick.
+export function parseSlackLink(value) {
+  const raw = String(value ?? "");
+  if (!/^(https?|slack):\/\//i.test(raw)) return null;
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (url.protocol === "slack:") {
+    const id = url.searchParams.get("id");
+    return id ? { channel: id, ts: null, threadTs: null, host: null } : null;
+  }
+  const parts = url.pathname.split("/").filter(Boolean);
+
+  // The web client address bar: /client/<TEAM>/<CHANNEL>[/thread/<CHANNEL>-<ts>]
+  const client = parts.indexOf("client");
+  if (client !== -1 && parts[client + 2]) {
+    const thread = parts.indexOf("thread");
+    const threadTs = thread !== -1 ? (parts[thread + 1] || "").split("-")[1] || null : null;
+    return { channel: parts[client + 2], ts: threadTs, threadTs, host: null };
+  }
+
+  const at = parts.findIndex((part) => part === "archives" || part === "messages");
+  if (at === -1) return null;
+  const channel = url.searchParams.get("cid") || parts[at + 1] || null;
+  if (!channel) return null;
+  // The message id in a permalink is the `ts` with the dot removed.
+  const stamp = (parts[at + 2] || "").match(/^p(\d{10})(\d{6})$/);
+  return {
+    channel,
+    ts: stamp ? `${stamp[1]}.${stamp[2]}` : null,
+    threadTs: url.searchParams.get("thread_ts") || null,
+    host: url.host || null,
+  };
+}
+
 async function resolveChannel(creds, channel) {
   // Slack ids are uppercase; matching case-insensitively would swallow ordinary
   // channel names such as `watercooler`, which chat.postMessage accepts as-is.
