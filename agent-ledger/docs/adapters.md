@@ -58,14 +58,21 @@ resolves a task id through this chain (first match wins):
    signal: declare it once in the pointer and every concurrent session
    in that directory shares the same task id without per-session env
    wiring.
-7. **Auto fallback** (last resort, outside any git repo and with no
-   pointer-declared default). `auto/<agent-slug>/<utc-timestamp>`.
-   Marked `TASK_SOURCE=auto`. This is the only path that triggers the
-   adapter's warning toast, because true context-less sessions are
-   rare and worth flagging. The bootstrap also exports
-   `AGENT_LEDGER_TASK_AUTO_REASON` so the toast can name the cheapest
-   fix; current values are `not_in_git_repo`, `git_no_head`, and
-   `pointer_lacks_default`.
+7. **Pi session**. When pi supplies a session id through
+   `--session-id` or `PI_SESSION_ID`, the adapter hashes it with SHA-256
+   and uses `auto/pi-session/<first-24-hex-chars>`. Marked
+   `TASK_SOURCE=pi-session`. The task id is deterministic for that pi
+   session, but remains auto-assigned: it uses the `[auto-assigned ...]`
+   marker, records `metadata.auto_assigned == true`, and verify emits
+   `AUTO_ASSIGNED_TASK`. It does not trigger a routine warning toast.
+8. **Auto fallback** (last resort, outside any git repo, with no
+   pointer-declared default, and without a pi session id).
+   `auto/<agent-slug>/<utc-timestamp>`. Marked `TASK_SOURCE=auto`.
+   This is the only path that triggers the adapter's warning toast,
+   because true context-less sessions are rare and worth flagging. The
+   bootstrap also exports `AGENT_LEDGER_TASK_AUTO_REASON` so the toast
+   can name the cheapest fix; current values are `not_in_git_repo`,
+   `git_no_head`, and `pointer_lacks_default`.
 
 Sources 1 and 2 are explicit. The bootstrap does not write an
 assignment when the orchestrator already created one. If an explicit
@@ -74,10 +81,11 @@ default and tells the operator to run `agent-ledger assign` first. If
 emergency repair is explicitly enabled, the bootstrap writes a repair
 assignment with `metadata.explicit_missing_assignment == true` and the
 operator-supplied `AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW` scope.
-Sources 3-7 are derived; the bootstrap writes an assignment with a
+Sources 3-8 are derived; the bootstrap writes an assignment with a
 marker in the reason text so reviewers can audit how the task id was
 sourced. The pointer source uses the same `[harness-derived ...]`
-marker as sources 3-5.
+marker as sources 3-5. The pi-session and legacy auto sources use the
+existing `[auto-assigned ...]` marker.
 
 ### Source: `subagent` (pi subagent children)
 
@@ -141,7 +149,7 @@ git checkout), `git_no_head` (in a repo but no branch and no
 resolvable HEAD), `pointer_lacks_default` (a local pointer file exists
 but declares no `default_task_id`).
 
-Operators who want strict enforcement set `AGENT_LEDGER_REQUIRE_TASK=1`; the bootstrap then blocks only the auto fallback. PR, branch, detached, and pointer-derived sources still satisfy the requirement.
+Operators who want strict enforcement set `AGENT_LEDGER_REQUIRE_TASK=1`; the bootstrap then blocks both auto-assigned fallbacks, `pi-session` and `auto`. PR, branch, detached, and pointer-derived sources still satisfy the requirement.
 
 ### Source: `pointer` (non-git ambient projects)
 
@@ -225,15 +233,20 @@ choose between:
   `default_task_id` in `.agent-ledger.toml` once. Multiple sessions in
   the same directory share the task id without per-session env
   wiring. Marked `TASK_SOURCE=pointer`.
+- **Pi-session fallback**: deterministic
+  `auto/pi-session/<first-24-hex-chars-of-sha256(session-id)>` when pi
+  supplies a session id and no higher-priority source resolves. It is
+  auto-assigned and verify warns, but it stays silent in the UI because
+  the session retains stable attribution.
 - **Auto-fallback (last resort)**: synthetic
-  `auto/<agent-slug>/<utc-timestamp>` only when no harness context is
-  available (no git repo and no pointer-declared default). This is
-  the only path that surfaces a UI warning, since true context-less
-  sessions are rare and worth flagging.
+  `auto/<agent-slug>/<utc-timestamp>` only when no harness context,
+  pointer default, or pi session id is available. This is the only path
+  that surfaces a UI warning, since true context-less sessions are rare
+  and worth flagging.
 
 The derive-from-harness path is the default because the harness
 almost always knows what the human is working on. Operators who want
-strict enforcement set `AGENT_LEDGER_REQUIRE_TASK=1`; the bootstrap then blocks only the auto fallback. PR, branch, and detached harness-derived sources still satisfy the requirement.
+strict enforcement set `AGENT_LEDGER_REQUIRE_TASK=1`; the bootstrap then blocks both auto-assigned fallbacks. PR, branch, detached, and pointer-derived sources still satisfy the requirement.
 
 ### Audit trail
 
@@ -258,6 +271,12 @@ Adapters write the audit signal in two complementary forms:
 
   ```
   [harness-derived by <by> source=<branch|pr|detached|subagent|pointer> task=<id> agent=<id>] <human reason>
+  ```
+
+- **Pi-session fallback** uses the existing auto-fallback marker, not a harness-derived marker:
+
+  ```
+  [auto-assigned by <by> auto-derived task=<id> agent=<id>] <human reason>
   ```
 
 Assignments without either marker prefix were supplied explicitly
@@ -335,7 +354,7 @@ surface for programmatic readers.
 
 ### Replay idempotency
 
-Bootstrap calls `agent-ledger assign --if-absent` for non-explicit sources (pr, branch, detached, auto, and subagent), so repeated pi launches on the same branch do not create duplicate `task.assigned` events. For the `subagent` source, both the child task id and the child `AGENT_ID` are deterministic functions of `(parent_task, child_agent, run_id, child_index)`, so a respawn of the same logical child is a true no-op on `assign --if-absent`. Dedupe is scoped to `(task_id, assigned_agent_id)`: a genuinely new `AGENT_ID` for the same branch still creates a new assignment, which is correct because the agent is new. Changes to `--allow`, `--forbid`, or `--policy` always create a new assignment, so policy drift remains visible to reviewers. Explicit `--task-id` and `AGENT_LEDGER_TASK_ID` paths first query for an active assignment. They skip assignment when one exists, fail when none exists, and create a repair assignment only when `AGENT_LEDGER_REPAIR_EXPLICIT_ASSIGNMENT=1` and `AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW` are set.
+Bootstrap calls `agent-ledger assign --if-absent` for non-explicit sources (pr, branch, detached, pointer, pi-session, auto, and subagent), so repeated pi launches on the same branch do not create duplicate `task.assigned` events. For the `subagent` source, both the child task id and the child `AGENT_ID` are deterministic functions of `(parent_task, child_agent, run_id, child_index)`, so a respawn of the same logical child is a true no-op on `assign --if-absent`. Dedupe is scoped to `(task_id, assigned_agent_id)`: a genuinely new `AGENT_ID` for the same branch still creates a new assignment, which is correct because the agent is new. Changes to `--allow`, `--forbid`, or `--policy` always create a new assignment, so policy drift remains visible to reviewers. Explicit `--task-id` and `AGENT_LEDGER_TASK_ID` paths first query for an active assignment. They skip assignment when one exists, fail when none exists, and create a repair assignment only when `AGENT_LEDGER_REPAIR_EXPLICIT_ASSIGNMENT=1` and `AGENT_LEDGER_EXPLICIT_REPAIR_ALLOW` are set.
 
 ### Future audit work
 
@@ -359,7 +378,7 @@ Every adapter runs the same bootstrap once per session, idempotent. Adapters cho
 2. Resolve `AGENT_LEDGER_TASK_ID` per the chain in "Task id resolution"
    above. The bootstrap exposes the chosen source via
    `AGENT_LEDGER_TASK_SOURCE`.
-3. For sources `pr`, `branch`, `detached`, and `auto`, write a fresh
+3. For sources `pr`, `branch`, `detached`, `pointer`, `pi-session`, and `auto`, write a fresh
    assignment with `agent-ledger assign --task <id> --orchestrator
    "<adapter>" --agent "$AGENT_ID" --policy
    "$AGENT_LEDGER_AUTO_ASSIGN_POLICY"`, one `--allow` per

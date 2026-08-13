@@ -23,7 +23,9 @@
 #   5. Detached HEAD           => `detached/<short-sha>`
 #   6. Pointer file default    => `<default_task_id>` from the local
 #                                 .agent-ledger.toml when set
-#   7. Auto fallback           => `auto/<agent>/<utc>` (last resort)
+#   7. Pi session              => `auto/pi-session/<sha256-prefix>`
+#                                 when a pi session id is available
+#   8. Auto fallback           => `auto/<agent>/<utc>` (last resort)
 #
 # Sources 1 and 2 are explicit; the bootstrap skips assigning when an
 # active assignment already exists. If none exists, it fails early by
@@ -40,13 +42,18 @@
 # no natural task signal. The bootstrap creates the same kind of
 # harness-derived assignment as sources 3-5.
 #
-# Source 7 is the normal path for the legacy [auto-assigned ...]
-# marker. Opt-in explicit repair assignments also use that marker, with
-# structured metadata distinguishing the repair case. The pi extension
-# reads AGENT_LEDGER_TASK_SOURCE and only surfaces a warning toast for
-# source=auto. When source=auto, the bootstrap also exports
-# AGENT_LEDGER_TASK_AUTO_REASON so the toast can name the cheapest fix
-# (one of: not_in_git_repo, git_no_head, pointer_lacks_default).
+# Sources 7 and 8 use the legacy [auto-assigned ...] marker. Opt-in
+# explicit repair assignments also use that marker, with structured
+# metadata distinguishing the repair case. Strict mode refuses both
+# sources. The pi extension only surfaces a warning toast for source=auto;
+# source=pi-session is deterministic and silent. When source=auto, the
+# bootstrap also exports AGENT_LEDGER_TASK_AUTO_REASON so the toast can
+# name the cheapest fix (one of: not_in_git_repo, git_no_head,
+# pointer_lacks_default).
+#
+# Source 7 is deterministic per pi session but remains auto-assigned, so
+# verify continues to emit AUTO_ASSIGNED_TASK for ambient work. Source 8
+# is the legacy timestamp fallback.
 
 set -euo pipefail
 
@@ -58,6 +65,7 @@ ORCHESTRATOR_LABEL=""
 JSON_OUTPUT=0
 CWD_FLAG=""
 DETECT_PR_FLAG=""
+SESSION_ID_FLAG=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -68,6 +76,7 @@ while [[ $# -gt 0 ]]; do
     --orchestrator)    ORCHESTRATOR_LABEL="$2"; shift 2 ;;
     --cwd)             CWD_FLAG="$2"; shift 2 ;;
     --detect-pr)       DETECT_PR_FLAG="$2"; shift 2 ;;
+    --session-id)      SESSION_ID_FLAG="$2"; shift 2 ;;
     --json)            JSON_OUTPUT=1; shift ;;
     *) echo "session-bootstrap: unknown flag $1" >&2; exit 2 ;;
   esac
@@ -84,6 +93,7 @@ source "$SCRIPT_DIR/marker.sh"
 
 DETECT_PR="${DETECT_PR_FLAG:-${AGENT_LEDGER_DETECT_PR:-0}}"
 DETECT_CWD="${CWD_FLAG:-$PWD}"
+SESSION_ID="${SESSION_ID_FLAG:-${PI_SESSION_ID:-}}"
 
 json_escape() {
   local s="$1"
@@ -408,12 +418,28 @@ if [[ -z "$TASK_ID" ]]; then
   fi
 fi
 
+if [[ -z "$TASK_ID" ]] && [[ "${AGENT_LEDGER_REQUIRE_TASK:-0}" == "1" ]]; then
+  echo "session-bootstrap: no task id resolvable and AGENT_LEDGER_REQUIRE_TASK=1; refusing to fall back" >&2
+  exit 2
+fi
+
+if [[ -z "$TASK_ID" ]] && [[ -n "$SESSION_ID" ]]; then
+  session_hash=""
+  if command -v shasum >/dev/null 2>&1; then
+    session_hash="$(printf '%s' "$SESSION_ID" | shasum -a 256 | awk '{print $1}')"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    session_hash="$(printf '%s' "$SESSION_ID" | sha256sum | awk '{print $1}')"
+  elif command -v openssl >/dev/null 2>&1; then
+    session_hash="$(printf '%s' "$SESSION_ID" | openssl dgst -sha256 | awk '{print $NF}')"
+  fi
+  if [[ "$session_hash" =~ ^[[:xdigit:]]{64}$ ]]; then
+    TASK_ID="auto/pi-session/${session_hash:0:24}"
+    TASK_SOURCE="pi-session"
+  fi
+fi
+
 AUTO_REASON=""
 if [[ -z "$TASK_ID" ]]; then
-  if [[ "${AGENT_LEDGER_REQUIRE_TASK:-0}" == "1" ]]; then
-    echo "session-bootstrap: no task id resolvable and AGENT_LEDGER_REQUIRE_TASK=1; refusing to fall back" >&2
-    exit 2
-  fi
   # Compute an actionable reason for the auto fallback. Priority,
   # most specific to least specific:
   #   1. pointer_unreadable: a pointer file exists but the kernel
@@ -450,6 +476,9 @@ case "$TASK_SOURCE" in
     ;;
   pr|branch|detached|pointer)
     echo "session-bootstrap: harness-derived task id from $TASK_SOURCE: $TASK_ID" >&2
+    ;;
+  pi-session)
+    echo "session-bootstrap: auto-assigned task id from pi-session: $TASK_ID" >&2
     ;;
   auto)
     echo "session-bootstrap: auto-fallback task id (no harness context, reason=$AUTO_REASON): $TASK_ID" >&2
@@ -583,6 +612,7 @@ write_bootstrap_assignment() {
 if [[ "$EXPLICIT" == "0" ]]; then
   case "$TASK_SOURCE" in
     auto) write_bootstrap_assignment "$TASK_SOURCE" "$TASK_SOURCE" true "session bootstrap (no harness context found; see docs/adapters.md)" ;;
+    pi-session) write_bootstrap_assignment "$TASK_SOURCE" auto true "session bootstrap (task id derived from pi session id)" ;;
     pr) write_bootstrap_assignment "$TASK_SOURCE" "$TASK_SOURCE" false "session bootstrap (task id derived from current PR)" ;;
     branch) write_bootstrap_assignment "$TASK_SOURCE" "$TASK_SOURCE" false "session bootstrap (task id derived from current branch)" ;;
     detached) write_bootstrap_assignment "$TASK_SOURCE" "$TASK_SOURCE" false "session bootstrap (task id derived from detached HEAD short sha)" ;;
@@ -617,7 +647,7 @@ if [[ "$JSON_OUTPUT" == "1" ]]; then
     "$(json_escape "$AGENT_ID")" \
     "$(json_escape "$TASK_ID")" \
     "$(json_escape "$TASK_SOURCE")" \
-    "$([[ "$TASK_SOURCE" == "auto" ]] && printf '1' || printf '0')"
+    "$([[ "$TASK_SOURCE" == "auto" || "$TASK_SOURCE" == "pi-session" ]] && printf '1' || printf '0')"
   if [[ "$TASK_SOURCE" == "auto" ]] && [[ -n "$AUTO_REASON" ]]; then
     printf ',"AGENT_LEDGER_TASK_AUTO_REASON":"%s"' "$(json_escape "$AUTO_REASON")"
   fi
@@ -630,7 +660,7 @@ else
   printf 'export AGENT_ID=%q\n' "$AGENT_ID"
   printf 'export AGENT_LEDGER_TASK_ID=%q\n' "$TASK_ID"
   printf 'export AGENT_LEDGER_TASK_SOURCE=%q\n' "$TASK_SOURCE"
-  if [[ "$TASK_SOURCE" == "auto" ]]; then
+  if [[ "$TASK_SOURCE" == "auto" || "$TASK_SOURCE" == "pi-session" ]]; then
     printf 'export AGENT_LEDGER_AUTO_ASSIGNED=1\n'
     if [[ -n "$AUTO_REASON" ]]; then
       printf 'export AGENT_LEDGER_TASK_AUTO_REASON=%q\n' "$AUTO_REASON"

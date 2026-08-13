@@ -29,6 +29,7 @@ const CONTROLLED_ENV = [
   "PI_SUBAGENT_RUN_ID",
   "PI_SUBAGENT_CHILD_INDEX",
   "PI_SUBAGENT_CHILD_AGENT",
+  "AGENT_LEDGER_BOOTSTRAP_ARGS_LOG",
 ];
 
 async function loadExtension() {
@@ -125,6 +126,41 @@ test("a failed eager child bootstrap blocks edits but never read-only tools", as
 
   const laterEdit = await toolCall({ toolName: "edit", toolCallId: "edit-2", input: { path: "README.md" } }, noUiContext);
   assert.equal(laterEdit?.block, true, "edits must remain blocked after eager bootstrap failure");
+});
+
+test("pi session id reaches bootstrap and its deterministic fallback stays silent", async (t) => {
+  const argsLog = join(tmpdir(), `pi-bootstrap-args-${process.pid}-${Date.now()}.log`);
+  const notifications = [];
+  const { toolCallHandler } = await registerToolHandlers(
+    t,
+    { AGENT_LEDGER_BOOTSTRAP_ARGS_LOG: argsLog },
+    (home) => {
+      const bootstrapDir = join(home, ".pi/agent/extensions/agent-ledger");
+      mkdirSync(bootstrapDir, { recursive: true });
+      writeFileSync(
+        join(bootstrapDir, "session-bootstrap.sh"),
+        `#!/usr/bin/env bash
+printf '%s\\n' "$*" > "$AGENT_LEDGER_BOOTSTRAP_ARGS_LOG"
+printf '%s\\n' 'AGENT_LEDGER_BOOTSTRAP_JSON={"AGENT_ID":"test-agent","AGENT_LEDGER_TASK_ID":"auto/pi-session/test","AGENT_LEDGER_TASK_SOURCE":"pi-session","AGENT_LEDGER_AUTO_ASSIGNED":"1"}'
+`,
+        { mode: 0o755 },
+      );
+    },
+  );
+  t.after(() => rmSync(argsLog, { force: true }));
+
+  const result = await toolCallHandler(
+    { toolName: "bash", toolCallId: "bash-session", input: { command: "true" } },
+    {
+      hasUI: true,
+      sessionManager: { getSessionId: () => "ctx-session-id" },
+      ui: { notify: (...args) => notifications.push(args) },
+    },
+  );
+
+  assert.equal(result, undefined);
+  assert.match(readFileSync(argsLog, "utf8"), /--session-id ctx-session-id/);
+  assert.deepEqual(notifications, [], "pi-session fallback must not show the legacy auto toast");
 });
 
 test("Bash retries unavailable pre-scans and resumes attribution when Git becomes available", async (t) => {

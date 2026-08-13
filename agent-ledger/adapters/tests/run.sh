@@ -73,8 +73,8 @@ grep -n "filePath" adapters/pi/agent-ledger.ts >/dev/null
 # not mutate process.env for any subagent dispatch. The child is
 # responsible for its own bootstrap.
 #
-# 1. The TaskSource union and KNOWN_TASK_SOURCES include `subagent`
-#    so parseTaskSource("subagent") returns "subagent".
+# 1. The TaskSource union and KNOWN_TASK_SOURCES include `subagent` and
+#    `pi-session`, so the extension recognizes both bootstrap sources.
 python3 - <<'PYEXT'
 import re
 import sys
@@ -82,11 +82,16 @@ from pathlib import Path
 
 src = Path('adapters/pi/agent-ledger.ts').read_text()
 m = re.search(r'KNOWN_TASK_SOURCES\s*=\s*new Set<TaskSource>\(\[(.*?)\]\)', src, re.S)
-if not m or '"subagent"' not in m.group(1):
-    sys.exit('KNOWN_TASK_SOURCES must include "subagent"')
-m = re.search(r'type\s+TaskSource\s*=\s*([^;]+);', src)
-if not m or '"subagent"' not in m.group(1):
-    sys.exit('TaskSource union must include "subagent"')
+if not m:
+    sys.exit('KNOWN_TASK_SOURCES not found')
+m_union = re.search(r'type\s+TaskSource\s*=\s*([^;]+);', src)
+if not m_union:
+    sys.exit('TaskSource union not found')
+for source in ('subagent', 'pi-session'):
+    if f'"{source}"' not in m.group(1):
+        sys.exit(f'KNOWN_TASK_SOURCES must include "{source}"')
+    if f'"{source}"' not in m_union.group(1):
+        sys.exit(f'TaskSource union must include "{source}"')
 PYEXT
 
 # 2. Eager child bootstrap fires at extension load when
@@ -282,7 +287,7 @@ unset AGENT_ID AGENT_LEDGER_TASK_ID AGENT_LEDGER_PARENT_TASK_ID AGENT_LEDGER_DIR
 # itself runs as a subagent. Clear it so the legacy task-source chain
 # tests below behave as if the script were invoked from a normal
 # (non-subagent) shell.
-unset PI_SUBAGENT_CHILD PI_SUBAGENT_RUN_ID PI_SUBAGENT_CHILD_INDEX PI_SUBAGENT_CHILD_AGENT || true
+unset PI_SUBAGENT_CHILD PI_SUBAGENT_RUN_ID PI_SUBAGENT_CHILD_INDEX PI_SUBAGENT_CHILD_AGENT PI_SESSION_ID || true
 
 # Auto-fallback: outside any git repo, with no env or flag, the bootstrap
 # must produce the timestamp-based id and emit the auto-assigned marker.

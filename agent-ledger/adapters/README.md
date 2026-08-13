@@ -42,11 +42,14 @@ Every adapter implements the same env var contract documented in
 ## Auto-assignment with audit trail
 
 The "orchestrator forgot to assign" failure mode is handled by
-auto-derivation, not fail-closed-by-default. When a worker is
-dispatched without `AGENT_LEDGER_TASK_ID`, the adapter generates
-`auto/<agent-slug>/<utc-timestamp>` and writes an assignment marked
-a leading reason marker of the form `[auto-assigned by <source>
-auto-derived ...]`. The worker proceeds with full attribution;
+auto-derivation, not fail-closed-by-default. When a pi session has no
+higher-priority task source, the adapter first derives deterministic
+`auto/pi-session/<sha256-prefix>` from the pi session id. It remains
+auto-assigned and uses the existing `[auto-assigned by <source>
+auto-derived ...]` marker, so verify emits `AUTO_ASSIGNED_TASK` without
+showing a routine toast. If no pi session id is available, the adapter
+uses the legacy `auto/<agent-slug>/<utc-timestamp>` fallback. The worker
+proceeds with full attribution;
 reviewers find every auto-assigned task by filtering assignment
 reasons that start with `[auto-assigned`, and `verify` emits an
 `AUTO_ASSIGNED_TASK` warning that surfaces in CI without blocking

@@ -42,7 +42,8 @@ set explicitly:
 
 - `AGENT_LEDGER_TASK_ID`: the task you are working on. When
   unset, the extension derives a task from the PR, branch, detached
-  HEAD, or, as a last resort, `auto/<agent>/<utc-timestamp>`. That
+  HEAD, local pointer default, or a deterministic pi-session id. The
+  legacy last resort is `auto/<agent>/<utc-timestamp>`. That
   derivation runs on the first tool call that can change the project,
   so read-only tools and subagent management calls never create task
   context. When set, the extension verifies an active assignment

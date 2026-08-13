@@ -137,7 +137,7 @@ Create a gitignored project pointer file:
 version = 1
 project_id = "github.com/recora-health/shima-enaga"
 ledger_dir = "/Users/albert/.local/state/agent-ledger/repos/recora-health-shima-enaga-4bd6f86196d0f41a76aa1a88"
-# Optional. When set and no harness-derived task id is available
+# Optional. When set and no higher-priority task id is available
 # (no PR, branch, or detached HEAD), adapters use this value as
 # the session task id and mark TASK_SOURCE=pointer. Right answer
 # for non-git ambient projects where multiple concurrent sessions
@@ -1072,6 +1072,27 @@ Requirements:
 
 If pi cannot intercept edit/write at the tool layer, MVP may ship with a pi extension that wraps supported tools plus a documented limitation.
 
+### 21.0 Pi-session fallback
+
+When a non-child pi session exhausts the explicit, Git, and local pointer
+sources, the pi extension passes `ctx.sessionManager.getSessionId()` to the
+shared bootstrap. It falls back to `PI_SESSION_ID` when the session manager
+is unavailable. The bootstrap selects `task_source=pi-session` and derives:
+
+```text
+auto/pi-session/<first-24-hex-chars-of-sha256(session-id)>
+```
+
+The source ranks after the cwd-local `.agent-ledger.toml` `default_task_id`
+and before the legacy timestamp auto fallback. It remains auto-assigned:
+`AGENT_LEDGER_AUTO_ASSIGNED=1`, the assignment metadata records
+`auto_assigned=true` and `task_source=pi-session`, the reason preserves the
+`[auto-assigned ...]` marker, and verify emits `AUTO_ASSIGNED_TASK`. The
+extension intentionally does not show the routine toast because the source
+is deterministic for that session. `AGENT_LEDGER_REQUIRE_TASK=1` rejects it
+just as it rejects the legacy auto fallback. No user-level pointer lookup,
+upward pointer search, or cwd-derived task id is performed.
+
 ### 21.1 Pi subagent child bootstrap invariant
 
 pi-subagents spawns child processes that load the pi extension afresh. Children inherit the parent's environment, including `AGENT_LEDGER_TASK_ID` and `AGENT_ID`, and pi-subagents adds `PI_SUBAGENT_CHILD=1`, `PI_SUBAGENT_CHILD_AGENT`, `PI_SUBAGENT_RUN_ID`, and `PI_SUBAGENT_CHILD_INDEX` to the child's environment. A pi subagent child must self-assign its own task instead of inheriting one from the parent.
@@ -1089,7 +1110,7 @@ This spec resolves the open clause: assignment visibility is required at extensi
 
 The contract has six parts. They are user-approved decisions; see `tasks/option-d-context.md` for the full rationale. The format strings and metadata schema below are byte-for-byte authoritative.
 
-1. **New task source `subagent`.** When the pi extension loads in a child process and `process.env.PI_SUBAGENT_CHILD === "1"`, the bootstrap selects `task_source=subagent`. This source preempts the chain `flag`, `env`, `pr`, `branch`, `detached`, `auto` and short-circuits it. (`tasks/option-d-context.md` decision 1 also defines how `verify` treats this source: `AUTO_ASSIGNED_TASK` is suppressed for assignments whose `metadata.dispatch_origin = "pi-subagent-bootstrap"`. The warning continues to fire for true adapter-derived self-bootstrap such as `branch`, `detached`, `auto`, and explicit-repair.)
+1. **New task source `subagent`.** When the pi extension loads in a child process and `process.env.PI_SUBAGENT_CHILD === "1"`, the bootstrap selects `task_source=subagent`. This source preempts the chain `flag`, `env`, `pr`, `branch`, `detached`, `pointer`, `pi-session`, `auto` and short-circuits it. (`tasks/option-d-context.md` decision 1 also defines how `verify` treats this source: `AUTO_ASSIGNED_TASK` is suppressed for assignments whose `metadata.dispatch_origin = "pi-subagent-bootstrap"`. The warning continues to fire for true adapter-derived self-bootstrap such as `branch`, `detached`, `pi-session`, `auto`, and explicit-repair.)
 
 2. **Eager bootstrap.** The bootstrap runs at extension load, not on the first tool call. The assignment row exists before the child can issue any `claim`, `record`, `heartbeat`, or `close`. This is the "before first child action" half of the invariant. Trade-off: every child pays one `agent-ledger assign --if-absent` round-trip even if it never edits anything. Benefit: audit chronology stays clean (`task.assigned` precedes any later `intent.opened`), and zero-tool children still leave an assignment row. (`tasks/option-d-context.md` decision 2.)
 

@@ -36,6 +36,7 @@ const KNOWN_TASK_SOURCES = new Set<TaskSource>([
   "branch",
   "detached",
   "pointer",
+  "pi-session",
   "auto",
   "subagent",
 ]);
@@ -77,7 +78,7 @@ interface IntentRef {
   paths: string[];
 }
 
-type TaskSource = "flag" | "env" | "pr" | "branch" | "detached" | "pointer" | "auto" | "subagent";
+type TaskSource = "flag" | "env" | "pr" | "branch" | "detached" | "pointer" | "pi-session" | "auto" | "subagent";
 
 interface BootstrapState {
   bootstrapped: boolean;
@@ -164,7 +165,11 @@ function shouldBlockBootstrapFailure(): boolean {
   return process.env.AGENT_LEDGER_REQUIRE_TASK === "1" || Boolean(process.env.AGENT_LEDGER_TASK_ID);
 }
 
-async function bootstrapSession(state: BootstrapState, harness: string, agentKind: string): Promise<void> {
+function resolvePiSessionId(ctx?: any): string | undefined {
+  return ctx?.sessionManager?.getSessionId?.() || process.env.PI_SESSION_ID;
+}
+
+async function bootstrapSession(state: BootstrapState, harness: string, agentKind: string, sessionId?: string): Promise<void> {
   if (state.bootstrapped) return;
   if (state.bootstrapPromise) return state.bootstrapPromise;
 
@@ -193,6 +198,9 @@ async function bootstrapSession(state: BootstrapState, harness: string, agentKin
     ];
     if (process.env.AGENT_LEDGER_DETECT_PR === "1") {
       args.push("--detect-pr", "1");
+    }
+    if (sessionId) {
+      args.push("--session-id", sessionId);
     }
     const r = await exec("bash", [script, ...args], { env: process.env, maxBuffer: 1024 * 1024 });
     const exported = parseBootstrapOutput(r.stdout);
@@ -390,7 +398,7 @@ export default function (pi: ExtensionAPI) {
   // Subsequent `tool_call` hooks see `state.bootstrapped === true` and
   // skip re-bootstrapping. See `tasks/option-d-context.md` decision 2.
   if (process.env.PI_SUBAGENT_CHILD === "1") {
-    void bootstrapSession(state, "pi", "worker").catch((err) => {
+    void bootstrapSession(state, "pi", "worker", resolvePiSessionId()).catch((err) => {
       const message = errorMessage(err);
       console.error(`agent-ledger eager child bootstrap failed: ${message}`);
       // Persist the failure so the first `tool_call` hook can observe
@@ -425,11 +433,12 @@ export default function (pi: ExtensionAPI) {
 
     if (!state.bootstrapped) {
       try {
-        await bootstrapSession(state, "pi", "worker");
-        // Notify only on the auto fallback path (no harness context
-        // found). Branch/PR/detached/explicit sources are normal and
-        // do not need a UI toast; the source is logged to stderr by
-        // the bootstrap script and exposed via AGENT_LEDGER_TASK_SOURCE.
+        await bootstrapSession(state, "pi", "worker", resolvePiSessionId(ctx));
+        // Notify only on the legacy timestamp auto fallback path. The
+        // deterministic pi-session source is still auto-assigned but
+        // intentionally stays silent. Branch/PR/detached/explicit sources
+        // are also normal; every source is logged to stderr by the bootstrap
+        // script and exposed via AGENT_LEDGER_TASK_SOURCE.
         if (state.resolvedTaskSource === "auto" && ctx.hasUI) {
           ctx.ui.notify(buildAutoFallbackToast(state.resolvedTaskId, state.autoReason), "warning");
         }
@@ -547,6 +556,7 @@ export {
   isExecutionSubagentCall,
   requiresBootstrapForTool,
   parseTaskSource,
+  resolvePiSessionId,
   shouldBlockBootstrapFailure,
   splitAllowGlobs,
 };

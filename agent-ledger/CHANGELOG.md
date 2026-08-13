@@ -10,6 +10,16 @@ of the binary version.
 
 ## [Unreleased]
 
+### Added
+
+- **Deterministic pi-session fallback for ambient work.** Pi sessions
+  outside a Git checkout now derive
+  `auto/pi-session/<first-24-hex-chars-of-sha256(session-id)>` after a
+  local pointer default and before the legacy timestamp fallback. The
+  source is `pi-session`, retains the `[auto-assigned ...]` marker and
+  `AUTO_ASSIGNED_TASK` verify warning, and does not show the routine
+  auto-fallback toast. Strict task mode continues to reject it.
+
 ## [0.5.0] - 2026-05-15
 
 ### Added
