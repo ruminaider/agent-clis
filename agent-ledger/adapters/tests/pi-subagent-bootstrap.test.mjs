@@ -7,8 +7,8 @@
  *     `<parent_task>/<child_agent>/<run_id>-<child_index>`
  *   - Decision 6: child AGENT_ID format
  *     `agent:pi:subagent:<run_id>:<child_index>`
- *   - Decision 7: assignment metadata schema (six required fields,
- *     subagent_child_index as a JSON number)
+ *   - Linked and orphan metadata schemas, including
+ *     subagent_child_index as a JSON number
  *
  * Run directly with:
  *   node --test adapters/tests/pi-subagent-bootstrap.test.mjs
@@ -148,6 +148,7 @@ const CHILD_AGENT_ID_INDEX_0 = `agent:pi:subagent:${RUN_ID}:0`;
 // Expected derived values for child index 1.
 const CHILD_TASK_INDEX_1 = `${PARENT_TASK}/${CHILD_AGENT}/${RUN_ID}-1`;
 const CHILD_AGENT_ID_INDEX_1 = `agent:pi:subagent:${RUN_ID}:1`;
+const ORPHAN_TASK_INDEX_0 = `auto/pi-subagent/${RUN_ID}-0`;
 
 // Complete subagent env for child index 0.
 const FULL_SUBAGENT_ENV = {
@@ -157,6 +158,13 @@ const FULL_SUBAGENT_ENV = {
   PI_SUBAGENT_CHILD_AGENT: CHILD_AGENT,
   AGENT_LEDGER_TASK_ID: PARENT_TASK,
   AGENT_ID: PARENT_AGENT,
+};
+
+const ORPHAN_SUBAGENT_ENV = {
+  PI_SUBAGENT_CHILD: "1",
+  PI_SUBAGENT_RUN_ID: RUN_ID,
+  PI_SUBAGENT_CHILD_INDEX: "0",
+  PI_SUBAGENT_CHILD_AGENT: CHILD_AGENT,
 };
 
 // Test 1: happy path.
@@ -239,6 +247,103 @@ test(
     );
   }
 );
+
+test("orphan parent context: deterministic auto-assignment preserves review visibility", (t) => {
+  const { dir, binDir, stubLog, cleanup } = makeTestEnv();
+  t.after(cleanup);
+  const metaLog = join(dir, "orphan-meta.json");
+  const env = makeEnv(binDir, stubLog, {
+    ...ORPHAN_SUBAGENT_ENV,
+    PI_SESSION_ID: "orphan-session-123",
+    AGENT_LEDGER_STUB_METADATA_LOG: metaLog,
+  });
+
+  const first = runBootstrap(env, ["--orchestrator", "pi-extension", "--json"]);
+  assert.equal(first.status, 0, `first orphan bootstrap failed:\n${first.stderr}`);
+  const second = runBootstrap(env, ["--orchestrator", "pi-extension", "--json"]);
+  assert.equal(second.status, 0, `second orphan bootstrap failed:\n${second.stderr}`);
+  const firstOutput = parseBootstrapOutput(first.stdout);
+  const secondOutput = parseBootstrapOutput(second.stdout);
+
+  assert.equal(firstOutput.AGENT_LEDGER_TASK_ID, ORPHAN_TASK_INDEX_0);
+  assert.equal(secondOutput.AGENT_LEDGER_TASK_ID, ORPHAN_TASK_INDEX_0);
+  assert.equal(firstOutput.AGENT_ID, CHILD_AGENT_ID_INDEX_0);
+  assert.equal(secondOutput.AGENT_ID, CHILD_AGENT_ID_INDEX_0);
+  assert.equal(firstOutput.AGENT_LEDGER_TASK_SOURCE, "subagent-orphan");
+  assert.equal(firstOutput.AGENT_LEDGER_AUTO_ASSIGNED, "1");
+  assert.equal("AGENT_LEDGER_PARENT_TASK_ID" in firstOutput, false);
+
+  const warnings = first.stderr
+    .split("\n")
+    .filter((line) => line.includes("WARNING"));
+  assert.equal(warnings.length, 1, `expected one orphan warning:\n${first.stderr}`);
+  assert.match(warnings[0], /AGENT_LEDGER_TASK_ID AGENT_ID/);
+  assert.match(warnings[0], new RegExp(ORPHAN_TASK_INDEX_0));
+
+  const log = readFileSync(stubLog, "utf8");
+  assert.ok(log.includes("--orchestrator pi-extension"), `orphan uses adapter actor:\n${log}`);
+  assert.ok(log.includes("[auto-assigned by pi-adapter auto-derived"), `orphan uses auto marker:\n${log}`);
+
+  const meta = JSON.parse(readFileSync(metaLog, "utf8"));
+  assert.equal(meta.auto_assigned, true);
+  assert.equal(meta.task_source, "subagent-orphan");
+  assert.equal(meta.dispatch_origin, "pi-subagent-orphan-bootstrap");
+  assert.equal(meta.parent_context_missing, true);
+  assert.deepEqual(meta.missing_parent_env, ["AGENT_LEDGER_TASK_ID", "AGENT_ID"]);
+  assert.equal(meta.subagent_run_id, RUN_ID);
+  assert.equal(meta.subagent_child_index, 0);
+  assert.equal(typeof meta.subagent_child_index, "number");
+  assert.equal(meta.subagent_child_agent, CHILD_AGENT);
+  assert.equal(meta.pi_session_id, "orphan-session-123");
+  assert.equal("parent_task" in meta, false);
+  assert.equal("parent_agent_id" in meta, false);
+});
+
+test("orphan parent context: strict mode refuses auto-assignment", (t) => {
+  const { binDir, stubLog, cleanup } = makeTestEnv();
+  t.after(cleanup);
+  const result = runBootstrap(makeEnv(binDir, stubLog, {
+    ...ORPHAN_SUBAGENT_ENV,
+    AGENT_LEDGER_REQUIRE_TASK: "1",
+  }), ["--orchestrator", "pi-extension", "--json"]);
+
+  assert.notEqual(result.status, 0, "strict mode must reject orphan auto-assignment");
+  assert.match(result.stderr, /AGENT_LEDGER_REQUIRE_TASK=1/);
+  assert.equal(readFileSync(stubLog, "utf8").includes("assign "), false);
+});
+
+// Rank guard: a fully linked child is resolved before the strict-mode
+// check is consulted, so AGENT_LEDGER_REQUIRE_TASK=1 must not refuse a
+// child that already has complete inherited parent context. Inverting
+// those two ranks would fail this test.
+test("linked parent context: strict mode still allows the linked source", (t) => {
+  const { binDir, stubLog, cleanup } = makeTestEnv();
+  t.after(cleanup);
+  const result = runBootstrap(makeEnv(binDir, stubLog, {
+    ...FULL_SUBAGENT_ENV,
+    AGENT_LEDGER_REQUIRE_TASK: "1",
+  }), ["--orchestrator", "pi-extension", "--json"]);
+
+  assert.equal(result.status, 0, `strict mode must not refuse a linked child:\n${result.stderr}`);
+  const output = parseBootstrapOutput(result.stdout);
+  assert.equal(output.AGENT_LEDGER_TASK_SOURCE, "subagent");
+  assert.equal(output.AGENT_LEDGER_TASK_ID, CHILD_TASK_INDEX_0);
+  assert.equal(output.AGENT_LEDGER_AUTO_ASSIGNED, "0");
+  assert.equal(output.AGENT_LEDGER_PARENT_TASK_ID, PARENT_TASK);
+});
+
+test("hard-fail: non-numeric PI_SUBAGENT_CHILD_INDEX", (t) => {
+  const { binDir, stubLog, cleanup } = makeTestEnv();
+  t.after(cleanup);
+  const result = runBootstrap(makeEnv(binDir, stubLog, {
+    ...ORPHAN_SUBAGENT_ENV,
+    PI_SUBAGENT_CHILD_INDEX: "not-a-number",
+  }), ["--json"]);
+
+  assert.notEqual(result.status, 0, "expected non-zero exit for a non-numeric child index");
+  assert.match(result.stderr, /PI_SUBAGENT_CHILD_INDEX must be a non-negative decimal integer/);
+  assert.equal(readFileSync(stubLog, "utf8").includes("assign "), false);
+});
 
 // Test 2: hard-fail when PI_SUBAGENT_RUN_ID is missing.
 test("hard-fail: missing PI_SUBAGENT_RUN_ID", (t) => {

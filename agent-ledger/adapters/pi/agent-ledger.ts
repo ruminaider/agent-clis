@@ -39,6 +39,7 @@ const KNOWN_TASK_SOURCES = new Set<TaskSource>([
   "pi-session",
   "auto",
   "subagent",
+  "subagent-orphan",
 ]);
 function parseTaskSource(value: string | undefined): TaskSource | null {
   if (!value) return null;
@@ -78,7 +79,7 @@ interface IntentRef {
   paths: string[];
 }
 
-type TaskSource = "flag" | "env" | "pr" | "branch" | "detached" | "pointer" | "pi-session" | "auto" | "subagent";
+type TaskSource = "flag" | "env" | "pr" | "branch" | "detached" | "pointer" | "pi-session" | "auto" | "subagent" | "subagent-orphan";
 
 interface BootstrapState {
   bootstrapped: boolean;
@@ -205,6 +206,9 @@ async function bootstrapSession(state: BootstrapState, harness: string, agentKin
     const r = await exec("bash", [script, ...args], { env: process.env, maxBuffer: 1024 * 1024 });
     const exported = parseBootstrapOutput(r.stdout);
     for (const [k, v] of Object.entries(exported)) process.env[k] = v;
+    if (exported.AGENT_LEDGER_TASK_SOURCE === "subagent-orphan") {
+      delete process.env.AGENT_LEDGER_PARENT_TASK_ID;
+    }
     state.resolvedAgentId = process.env.AGENT_ID ?? null;
     state.resolvedTaskId = process.env.AGENT_LEDGER_TASK_ID ?? null;
     state.resolvedTaskSource = parseTaskSource(process.env.AGENT_LEDGER_TASK_SOURCE);
@@ -435,10 +439,10 @@ export default function (pi: ExtensionAPI) {
       try {
         await bootstrapSession(state, "pi", "worker", resolvePiSessionId(ctx));
         // Notify only on the legacy timestamp auto fallback path. The
-        // deterministic pi-session source is still auto-assigned but
-        // intentionally stays silent. Branch/PR/detached/explicit sources
-        // are also normal; every source is logged to stderr by the bootstrap
-        // script and exposed via AGENT_LEDGER_TASK_SOURCE.
+        // deterministic pi-session and subagent-orphan sources remain
+        // auto-assigned but intentionally stay silent. Branch, PR, detached,
+        // and explicit sources are also normal; every source is logged to
+        // stderr by the bootstrap script and exposed via AGENT_LEDGER_TASK_SOURCE.
         if (state.resolvedTaskSource === "auto" && ctx.hasUI) {
           ctx.ui.notify(buildAutoFallbackToast(state.resolvedTaskId, state.autoReason), "warning");
         }

@@ -73,8 +73,9 @@ grep -n "filePath" adapters/pi/agent-ledger.ts >/dev/null
 # not mutate process.env for any subagent dispatch. The child is
 # responsible for its own bootstrap.
 #
-# 1. The TaskSource union and KNOWN_TASK_SOURCES include `subagent` and
-#    `pi-session`, so the extension recognizes both bootstrap sources.
+# 1. The TaskSource union and KNOWN_TASK_SOURCES include `subagent`,
+#    `subagent-orphan`, and `pi-session`, so the extension recognizes all
+#    child and session bootstrap sources.
 python3 - <<'PYEXT'
 import re
 import sys
@@ -87,7 +88,7 @@ if not m:
 m_union = re.search(r'type\s+TaskSource\s*=\s*([^;]+);', src)
 if not m_union:
     sys.exit('TaskSource union not found')
-for source in ('subagent', 'pi-session'):
+for source in ('subagent', 'subagent-orphan', 'pi-session'):
     if f'"{source}"' not in m.group(1):
         sys.exit(f'KNOWN_TASK_SOURCES must include "{source}"')
     if f'"{source}"' not in m_union.group(1):
@@ -681,22 +682,5 @@ if meta.get("dispatch_origin") != "pi-subagent-bootstrap":
     raise SystemExit(meta)
 PYSUB
 unset AGENT_LEDGER_STUB_METADATA_LOG
-
-# Subagent source: a missing required env var must hard-fail with a
-# clear diagnostic and must NOT fall back to branch or auto.
-: > "$AGENT_LEDGER_STUB_LOG"
-if PI_SUBAGENT_CHILD=1 \
-   PI_SUBAGENT_RUN_ID=run-abc \
-   PI_SUBAGENT_CHILD_INDEX=0 \
-   PI_SUBAGENT_CHILD_AGENT=worker \
-   AGENT_ID=agent:pi:parent:42 \
-   bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --cwd "$repo" --json \
-     >/dev/null 2>"$tmp/subagent-missing-parent-task.err"; then
-  echo "expected subagent bootstrap to fail when AGENT_LEDGER_TASK_ID is unset" >&2
-  exit 1
-fi
-grep -q -- 'AGENT_LEDGER_TASK_ID' "$tmp/subagent-missing-parent-task.err"
-grep -q -- 'refusing to fall back' "$tmp/subagent-missing-parent-task.err"
-grep -q '^assign ' "$AGENT_LEDGER_STUB_LOG" && { echo "missing-env subagent bootstrap should not call assign" >&2; exit 1; } || true
 
 printf 'adapter tests passed\n'

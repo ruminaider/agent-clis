@@ -643,6 +643,59 @@ func TestVerify_SubagentBootstrap_NoAutoAssignedTask(t *testing.T) {
 	}
 }
 
+// TestVerify_SubagentOrphanBootstrap_AutoAssignedTask confirms that an
+// orphan child remains visible to review. Only the exact linked
+// `pi-subagent-bootstrap` discriminator suppresses AUTO_ASSIGNED_TASK.
+func TestVerify_SubagentOrphanBootstrap_AutoAssignedTask(t *testing.T) {
+	root, ledger := setupProject(t)
+	store := openTestStore(t, ledger)
+	t.Cleanup(func() { store.Close() })
+	d := domain.New(store)
+	ctx := context.Background()
+
+	const childAgent = "agent:pi:subagent:run-orphan:0"
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: childAgent, AgentKind: "worker"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: "pi-extension", AgentKind: "orchestrator"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.InsertAssignment(ctx, domain.Assignment{
+		TaskID:          "SUBAGENT-ORPHAN",
+		OrchestratorID:  "pi-extension",
+		AssignedAgentID: childAgent,
+		AllowedPaths:    []string{"**"},
+		ConflictPolicy:  domain.PolicyWarn,
+		Reason:          "[auto-assigned by pi-adapter auto-derived task=auto/pi-subagent/run-orphan-0] orphan child self-assignment",
+		Metadata: map[string]any{
+			"auto_assigned":          true,
+			"task_source":            "subagent-orphan",
+			"dispatch_origin":        "pi-subagent-orphan-bootstrap",
+			"parent_context_missing": true,
+			"missing_parent_env":     []string{"AGENT_LEDGER_TASK_ID", "AGENT_ID"},
+			"subagent_run_id":        "run-orphan",
+			"subagent_child_index":   float64(0),
+			"subagent_child_agent":   "worker",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rep := runVerify(t, verify.Inputs{
+		Root:                 root,
+		LedgerDirFlag:        ledger,
+		TaskID:               "SUBAGENT-ORPHAN",
+		ChangedPathsOverride: nil,
+	})
+	codes := findingsByCode(rep)
+	if len(codes[verify.CodeAutoAssignedTask]) == 0 {
+		t.Fatalf("AUTO_ASSIGNED_TASK must fire for a subagent-orphan assignment; got %+v", rep.Findings)
+	}
+	if len(codes[verify.CodeMissingAssignment]) != 0 {
+		t.Errorf("MISSING_ASSIGNMENT should not fire when an orphan assignment exists; got %+v", codes[verify.CodeMissingAssignment])
+	}
+}
+
 // TestVerify_SubagentBootstrap_NoAgentMismatch confirms that a
 // subagent child recording changes under its own agent id does NOT
 // trigger AGENT_MISMATCH, even though the child agent differs from

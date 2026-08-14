@@ -23,6 +23,7 @@ const CONTROLLED_ENV = [
   "HOME",
   "AGENT_ID",
   "AGENT_LEDGER_TASK_ID",
+  "AGENT_LEDGER_PARENT_TASK_ID",
   "AGENT_LEDGER_REQUIRE_TASK",
   "AGENT_LEDGER_DETECT_PR",
   "PI_SUBAGENT_CHILD",
@@ -161,6 +162,32 @@ printf '%s\\n' 'AGENT_LEDGER_BOOTSTRAP_JSON={"AGENT_ID":"test-agent","AGENT_LEDG
   assert.equal(result, undefined);
   assert.match(readFileSync(argsLog, "utf8"), /--session-id ctx-session-id/);
   assert.deepEqual(notifications, [], "pi-session fallback must not show the legacy auto toast");
+});
+
+test("subagent-orphan bootstrap stays silent in the pi UI", async (t) => {
+  const notifications = [];
+  const { toolCallHandler } = await registerToolHandlers(
+    t,
+    { AGENT_LEDGER_PARENT_TASK_ID: "stale-parent-task" },
+    (home) => {
+      const bootstrapDir = join(home, ".pi/agent/extensions/agent-ledger");
+      mkdirSync(bootstrapDir, { recursive: true });
+      writeFileSync(
+        join(bootstrapDir, "session-bootstrap.sh"),
+        "#!/usr/bin/env bash\nprintf '%s\\n' 'AGENT_LEDGER_BOOTSTRAP_JSON={\"AGENT_ID\":\"agent:pi:subagent:run-orphan:0\",\"AGENT_LEDGER_TASK_ID\":\"auto/pi-subagent/run-orphan-0\",\"AGENT_LEDGER_TASK_SOURCE\":\"subagent-orphan\",\"AGENT_LEDGER_AUTO_ASSIGNED\":\"1\"}'\n",
+        { mode: 0o755 },
+      );
+    },
+  );
+
+  const result = await toolCallHandler(
+    { toolName: "bash", toolCallId: "bash-orphan", input: { command: "true" } },
+    { hasUI: true, ui: { notify: (...args) => notifications.push(args) } },
+  );
+
+  assert.equal(result, undefined);
+  assert.deepEqual(notifications, [], "subagent-orphan must not show an auto-fallback toast");
+  assert.equal(process.env.AGENT_LEDGER_PARENT_TASK_ID, undefined, "subagent-orphan must clear stale parent task context");
 });
 
 test("Bash retries unavailable pre-scans and resumes attribution when Git becomes available", async (t) => {

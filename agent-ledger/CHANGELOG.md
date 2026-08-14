@@ -20,6 +20,10 @@ of the binary version.
   `AUTO_ASSIGNED_TASK` verify warning, and does not show the routine
   auto-fallback toast. Strict task mode continues to reject it.
 
+### Fixed
+
+- **Pi subagent children recover from missing parent ledger context.** A scheduled or revived pi-subagent run whose spawning process never had `AGENT_LEDGER_TASK_ID` and `AGENT_ID` now creates a deterministic `auto/pi-subagent/<run-id>-<child-index>` assignment instead of wedging before any bash, edit, or execution subagent call. The new `subagent-orphan` source uses the adapter actor as orchestrator, records that both parent variables were absent, emits one stderr warning, and retains the existing `[auto-assigned ...]` marker. Strict task mode and partial or invalid child context still fail closed. Verify intentionally emits `AUTO_ASSIGNED_TASK` for orphan rows, while linked `pi-subagent-bootstrap` rows remain exempt.
+
 ## [0.5.0] - 2026-05-15
 
 ### Added
