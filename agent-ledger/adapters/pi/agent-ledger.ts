@@ -39,6 +39,7 @@ const KNOWN_TASK_SOURCES = new Set<TaskSource>([
   "pi-session",
   "auto",
   "subagent",
+  "subagent-session",
   "subagent-orphan",
 ]);
 function parseTaskSource(value: string | undefined): TaskSource | null {
@@ -79,7 +80,7 @@ interface IntentRef {
   paths: string[];
 }
 
-type TaskSource = "flag" | "env" | "pr" | "branch" | "detached" | "pointer" | "pi-session" | "auto" | "subagent" | "subagent-orphan";
+type TaskSource = "flag" | "env" | "pr" | "branch" | "detached" | "pointer" | "pi-session" | "auto" | "subagent" | "subagent-session" | "subagent-orphan";
 
 interface BootstrapState {
   bootstrapped: boolean;
@@ -167,7 +168,31 @@ function shouldBlockBootstrapFailure(): boolean {
 }
 
 function resolvePiSessionId(ctx?: any): string | undefined {
-  return ctx?.sessionManager?.getSessionId?.() || process.env.PI_SESSION_ID;
+  const fromSession = ctx?.sessionManager?.getSessionId?.();
+  if (fromSession) return fromSession;
+  // A harness that hosts children in-process leaves PI_SESSION_ID
+  // pointing at the host session, which every sibling child would
+  // share. Only the session-scoped id read from this session's own
+  // context can identify such a child, so do not fall back to the
+  // environment there.
+  if (isInProcessSubagentChild()) return undefined;
+  return process.env.PI_SESSION_ID;
+}
+
+/**
+ * True when the harness marked this process as a subagent child host but
+ * exported no run tuple. pi-subagents 0.6x runs children as in-process
+ * sessions built from typed runtime data and sets only
+ * `PI_SUBAGENT_CHILD=1`, so the child's identity has to come from its own
+ * session id instead of `PI_SUBAGENT_RUN_ID`/`_CHILD_INDEX`/`_CHILD_AGENT`.
+ */
+function isInProcessSubagentChild(): boolean {
+  if (process.env.PI_SUBAGENT_CHILD !== "1") return false;
+  return !(
+    process.env.PI_SUBAGENT_RUN_ID &&
+    process.env.PI_SUBAGENT_CHILD_INDEX &&
+    process.env.PI_SUBAGENT_CHILD_AGENT
+  );
 }
 
 async function bootstrapSession(state: BootstrapState, harness: string, agentKind: string, sessionId?: string): Promise<void> {
@@ -401,7 +426,12 @@ export default function (pi: ExtensionAPI) {
   // `intent.opened`) and ensures zero-tool children still leave a row.
   // Subsequent `tool_call` hooks see `state.bootstrapped === true` and
   // skip re-bootstrapping. See `tasks/option-d-context.md` decision 2.
-  if (process.env.PI_SUBAGENT_CHILD === "1") {
+  // An in-process child has no run tuple and no session id at extension
+  // load time, so bootstrapping eagerly would assign from the host
+  // session rather than from this child. Those children bootstrap on
+  // their first enforcement-bound tool call instead, where the hook
+  // context supplies the child's own session id.
+  if (process.env.PI_SUBAGENT_CHILD === "1" && !isInProcessSubagentChild()) {
     void bootstrapSession(state, "pi", "worker", resolvePiSessionId()).catch((err) => {
       const message = errorMessage(err);
       console.error(`agent-ledger eager child bootstrap failed: ${message}`);

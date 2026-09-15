@@ -138,8 +138,10 @@ if 'eagerBootstrapError' not in src:
 m = re.search(r'interface\s+BootstrapState\s*\{(.*?)\n\}', src, re.S)
 if not m or 'eagerBootstrapError' not in m.group(1):
     sys.exit('BootstrapState interface must declare eagerBootstrapError')
-# The eager bootstrap rejection path must assign to it.
-m = re.search(r'PI_SUBAGENT_CHILD === "1"\s*\)\s*\{(.*?)\n  \}', src, re.S)
+# The eager bootstrap rejection path must assign to it. The guard may
+# carry extra conditions (an in-process child with no run tuple defers
+# to the lazy path), so match up to the opening brace of the block.
+m = re.search(r'PI_SUBAGENT_CHILD === "1"[^\n]*\{(.*?)\n  \}', src, re.S)
 if not m or 'state.eagerBootstrapError' not in m.group(1):
     sys.exit('eager bootstrap rejection must persist state.eagerBootstrapError')
 # The tool_call hook must read it and return block: true under
@@ -682,5 +684,87 @@ if meta.get("dispatch_origin") != "pi-subagent-bootstrap":
     raise SystemExit(meta)
 PYSUB
 unset AGENT_LEDGER_STUB_METADATA_LOG
+
+# Subagent session source: a harness that hosts the child in-process
+# (pi-subagents v0.65.0 and later) sets PI_SUBAGENT_CHILD=1 and exports
+# no run tuple. With the child's own session id supplied by --session-id,
+# the bootstrap must stay linked to the parent task, derive a
+# deterministic session-scoped AGENT_ID, and record which run vars were
+# missing instead of refusing to bootstrap.
+: > "$AGENT_LEDGER_STUB_LOG"
+session_metadata="$tmp/subagent-session-metadata.json"
+export AGENT_LEDGER_STUB_METADATA_LOG="$session_metadata"
+expected_hash="$(printf '%s' "child-session-id" | shasum -a 256 | awk '{print $1}')"
+expected_hash="${expected_hash:0:24}"
+session_line="$(
+  PI_SUBAGENT_CHILD=1 \
+  AGENT_LEDGER_TASK_ID=parent/task \
+  AGENT_ID=agent:pi:parent:42 \
+  bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --cwd "$nogit" --session-id child-session-id --json
+)"
+node -e '
+const env = JSON.parse(process.argv[1].slice("AGENT_LEDGER_BOOTSTRAP_JSON=".length));
+const hash = process.argv[2];
+if (env.AGENT_LEDGER_TASK_ID !== `parent/task/pi-subagent/session-${hash}`) throw new Error(`task=${env.AGENT_LEDGER_TASK_ID}`);
+if (env.AGENT_LEDGER_TASK_SOURCE !== "subagent-session") throw new Error(`source=${env.AGENT_LEDGER_TASK_SOURCE}`);
+if (env.AGENT_LEDGER_AUTO_ASSIGNED !== "0") throw new Error(`AUTO_ASSIGNED=${env.AGENT_LEDGER_AUTO_ASSIGNED}`);
+if (env.AGENT_ID !== `agent:pi:subagent:session:${hash}`) throw new Error(`AGENT_ID=${env.AGENT_ID}`);
+if (env.AGENT_LEDGER_PARENT_TASK_ID !== "parent/task") throw new Error(`PARENT_TASK_ID=${env.AGENT_LEDGER_PARENT_TASK_ID}`);
+' "$session_line" "$expected_hash"
+grep -q -- "--orchestrator agent:pi:parent:42" "$AGENT_LEDGER_STUB_LOG"
+grep -q -- "\[harness-derived by pi-adapter source=subagent-session" "$AGENT_LEDGER_STUB_LOG"
+python3 - "$session_metadata" "$expected_hash" <<'PYSESSION'
+import json
+import sys
+with open(sys.argv[1], encoding='utf-8') as fh:
+    meta = json.load(fh)
+if meta.get("parent_task") != "parent/task":
+    raise SystemExit(meta)
+if meta.get("parent_agent_id") != "agent:pi:parent:42":
+    raise SystemExit(meta)
+if meta.get("task_source") != "subagent-session":
+    raise SystemExit(meta)
+if meta.get("subagent_session_hash") != sys.argv[2]:
+    raise SystemExit(meta)
+if meta.get("run_tuple_missing") is not True:
+    raise SystemExit(meta)
+if meta.get("missing_run_env") != ["PI_SUBAGENT_RUN_ID", "PI_SUBAGENT_CHILD_INDEX", "PI_SUBAGENT_CHILD_AGENT"]:
+    raise SystemExit(meta)
+if meta.get("dispatch_origin") != "pi-subagent-session-bootstrap":
+    raise SystemExit(meta)
+PYSESSION
+unset AGENT_LEDGER_STUB_METADATA_LOG
+
+# Two in-process children of the same host must not collide: distinct
+# session ids produce distinct task ids and distinct agent ids.
+sibling_line="$(
+  PI_SUBAGENT_CHILD=1 \
+  AGENT_LEDGER_TASK_ID=parent/task \
+  AGENT_ID=agent:pi:parent:42 \
+  bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --cwd "$nogit" --session-id other-session-id --json
+)"
+node -e '
+const a = JSON.parse(process.argv[1].slice("AGENT_LEDGER_BOOTSTRAP_JSON=".length));
+const b = JSON.parse(process.argv[2].slice("AGENT_LEDGER_BOOTSTRAP_JSON=".length));
+if (a.AGENT_LEDGER_TASK_ID === b.AGENT_LEDGER_TASK_ID) throw new Error("sibling children share a task id");
+if (a.AGENT_ID === b.AGENT_ID) throw new Error("sibling children share an agent id");
+' "$session_line" "$sibling_line"
+
+# The ambient PI_SESSION_ID of the host process must not stand in for a
+# child session id: without --session-id the bootstrap still refuses,
+# because every sibling child would inherit the same host value.
+set +e
+host_env_out="$(
+  PI_SUBAGENT_CHILD=1 \
+  PI_SESSION_ID=host-session-id \
+  AGENT_LEDGER_TASK_ID=parent/task \
+  AGENT_ID=agent:pi:parent:42 \
+  bash adapters/shared/session-bootstrap.sh --harness pi --agent-kind worker --cwd "$nogit" --json 2>&1
+)"
+host_env_code=$?
+set -e
+[[ "$host_env_code" == "4" ]]
+grep -q "required env vars are unset or empty" <<<"$host_env_out"
+grep -q -- "--session-id" <<<"$host_env_out"
 
 printf 'adapter tests passed\n'

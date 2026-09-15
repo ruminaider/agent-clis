@@ -1095,10 +1095,13 @@ func recomputeAssignmentHash(s summary.AssignmentSnapshot) string {
 // pi-subagents child bootstrap. These assignments are orchestrator-
 // initiated: the orchestrator dispatched a subagent, and the child
 // self-assigned on bootstrap. They carry
-// metadata.dispatch_origin == "pi-subagent-bootstrap".
+// metadata.dispatch_origin == "pi-subagent-bootstrap", or
+// "pi-subagent-session-bootstrap" when the harness hosted the child
+// in-process and the child derived its identity from its session id
+// instead of a run tuple. Both are parent-linked dispatches.
 func isSubagentBootstrapAssignment(a domain.Assignment) bool {
 	v, _ := a.Metadata["dispatch_origin"].(string)
-	return v == "pi-subagent-bootstrap"
+	return v == "pi-subagent-bootstrap" || v == "pi-subagent-session-bootstrap"
 }
 
 // assignmentIsAutoDerived reports whether a was created by an

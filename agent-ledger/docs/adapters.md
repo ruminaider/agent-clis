@@ -87,14 +87,15 @@ sourced. The pointer source uses the same `[harness-derived ...]`
 marker as sources 3-5. The pi-session and legacy auto sources use the
 existing `[auto-assigned ...]` marker.
 
-### Sources: `subagent` and `subagent-orphan` (pi subagent children)
+### Sources: `subagent`, `subagent-session`, and `subagent-orphan` (pi subagent children)
 
 Pi subagent children bootstrap eagerly at extension load, so an assignment exists before the child can issue `claim`, `record`, `heartbeat`, or `close`. The child branch preempts the normal task-id resolution chain and ranks inputs as follows:
 
 1. A complete run tuple (`PI_SUBAGENT_RUN_ID`, `PI_SUBAGENT_CHILD_INDEX`, and `PI_SUBAGENT_CHILD_AGENT`) plus both inherited parent variables (`AGENT_LEDGER_TASK_ID` and `AGENT_ID`) retains `TASK_SOURCE=subagent`.
-2. `AGENT_LEDGER_REQUIRE_TASK=1` fails closed when the linked path did not apply, including an otherwise valid orphan.
-3. Both parent variables absent with a complete valid run tuple selects `TASK_SOURCE=subagent-orphan`.
-4. Partial parent context, a missing run tuple value, or a non-decimal child index fails closed rather than falling back to `branch` or `auto`.
+2. No run tuple, both parent variables present, and a caller-supplied `--session-id` selects `TASK_SOURCE=subagent-session`. This is the shape pi-subagents produces from v0.65.0 onward, where a child runs as an in-process pi session built from typed runtime data and the host process exports only `PI_SUBAGENT_CHILD=1`.
+3. `AGENT_LEDGER_REQUIRE_TASK=1` fails closed when neither linked path applied, including an otherwise valid orphan.
+4. Both parent variables absent selects `TASK_SOURCE=subagent-orphan`, from the run tuple when present and otherwise from `--session-id`.
+5. Partial parent context, a non-decimal child index, or a missing run tuple with no `--session-id` fails closed rather than falling back to `branch` or `auto`.
 
 The linked source is unchanged. It derives:
 
@@ -105,6 +106,15 @@ agent:pi:subagent:<run_id>:<child_index>
 
 It captures the inherited parent `AGENT_ID` before deriving the child identity, passes that value as `--orchestrator`, writes the `subagent` harness-derived marker, and exports `AGENT_LEDGER_PARENT_TASK_ID`.
 
+The session source covers an in-process child, which has no run tuple to identify it. The child's own session id supplies a deterministic identity instead:
+
+```
+<parent_task>/pi-subagent/session-<session_hash>
+agent:pi:subagent:session:<session_hash>
+```
+
+`<session_hash>` is the first 24 hex characters of the sha256 of the session id the caller passed through `--session-id`. Only that flag is trusted here: `PI_SESSION_ID` in a child host process names the host session, so every sibling child would share it and collide. Because no session id is available at extension load, the pi adapter skips the eager bootstrap for these children and bootstraps on the first enforcement-bound tool call, where the hook context supplies the child session id. The assignment keeps the real parent link (parent task, parent agent as `--orchestrator`, exported `AGENT_LEDGER_PARENT_TASK_ID`, `AGENT_LEDGER_AUTO_ASSIGNED=0`), writes the `subagent-session` harness-derived marker, and records `run_tuple_missing` plus `missing_run_env` so a reviewer can see why the identity is session-scoped. `verify` treats its `dispatch_origin` of `pi-subagent-session-bootstrap` the same way it treats `pi-subagent-bootstrap`, so `AUTO_ASSIGNED_TASK` stays quiet for a healthy child.
+
 The orphan source handles scheduled or revived pi-subagent runs whose spawning process never had the parent ledger environment. It derives:
 
 ```
@@ -112,9 +122,9 @@ auto/pi-subagent/<run_id>-<child_index>
 agent:pi:subagent:<run_id>:<child_index>
 ```
 
-`<child_index>` is a normalized decimal integer. The orphan assignment passes the adapter actor supplied through `--orchestrator` (for pi, `pi-extension`), not a fabricated parent agent id. It uses the existing `[auto-assigned ...]` marker, exports `AGENT_LEDGER_AUTO_ASSIGNED=1`, and does not export a parent task id. One stderr warning names `AGENT_LEDGER_TASK_ID`, `AGENT_ID`, and the orphan task id. The extension intentionally shows no UI toast for this source.
+`<child_index>` is a normalized decimal integer. An orphan child with no run tuple uses `auto/pi-subagent/session-<session_hash>` and the same session-scoped agent id. The orphan assignment passes the adapter actor supplied through `--orchestrator` (for pi, `pi-extension`), not a fabricated parent agent id. It uses the existing `[auto-assigned ...]` marker, exports `AGENT_LEDGER_AUTO_ASSIGNED=1`, and does not export a parent task id. One stderr warning names `AGENT_LEDGER_TASK_ID`, `AGENT_ID`, and the orphan task id. The extension intentionally shows no UI toast for this source.
 
-Both sources use `agent-ledger assign --if-absent`. Replaying the same run id and child index therefore reuses the same task and agent identities.
+All three sources use `agent-ledger assign --if-absent`. Replaying the same run id and child index, or the same child session id, therefore reuses the same task and agent identities.
 
 ### Source: `pointer` (non-git ambient projects)
 
@@ -287,13 +297,14 @@ repaired tasks so CI can surface them without blocking the merge.
 `MISSING_ASSIGNMENT` remains reserved for the true no-assignment-row
 case. Linked `subagent` rows are orchestrator-initiated even though the
 child writes the row, so verify suppresses the warning only when
-`metadata.dispatch_origin` is exactly `"pi-subagent-bootstrap"`.
-`subagent-orphan` rows intentionally retain the warning because their
-spawning process lacked parent ledger context.
+`metadata.dispatch_origin` is exactly `"pi-subagent-bootstrap"` or
+`"pi-subagent-session-bootstrap"`. `subagent-orphan` rows intentionally
+retain the warning because their spawning process lacked parent ledger
+context.
 
 ### Subagent child metadata schema
 
-Linked and orphan pi subagent rows use distinct metadata contracts so audit tooling can distinguish a normal dispatch from a missing parent context without parsing reason text.
+Linked, session-linked, and orphan pi subagent rows use distinct metadata contracts so audit tooling can distinguish a normal dispatch, an in-process dispatch with no run tuple, and a missing parent context without parsing reason text.
 
 Linked `subagent` rows include:
 
@@ -304,6 +315,18 @@ Linked `subagent` rows include:
 - `subagent_child_agent`: string. `PI_SUBAGENT_CHILD_AGENT` verbatim.
 - `dispatch_origin`: the literal `"pi-subagent-bootstrap"`.
 
+Session-linked `subagent-session` rows include:
+
+- `parent_task`: string. The inherited parent task id.
+- `parent_agent_id`: string. The inherited parent `AGENT_ID`, also passed to `assign --orchestrator`.
+- `task_source`: the literal `"subagent-session"`.
+- `subagent_session_hash`: string. The first 24 hex characters of the sha256 of the child session id.
+- `run_tuple_missing`: boolean `true`.
+- `missing_run_env`: the run tuple names the harness did not export.
+- `dispatch_origin`: the literal `"pi-subagent-session-bootstrap"`.
+
+These rows carry no `subagent_run_id`, `subagent_child_index`, or `subagent_child_agent`, because the harness never produced them.
+
 Orphan `subagent-orphan` rows include:
 
 - `auto_assigned`: boolean `true`.
@@ -311,10 +334,10 @@ Orphan `subagent-orphan` rows include:
 - `dispatch_origin`: the literal `"pi-subagent-orphan-bootstrap"`.
 - `parent_context_missing`: boolean `true`.
 - `missing_parent_env`: the absent names, `AGENT_LEDGER_TASK_ID` and `AGENT_ID`.
-- `subagent_run_id`, numeric `subagent_child_index`, and `subagent_child_agent`.
-- `pi_session_id` only when a session id is available.
+- `subagent_run_id`, numeric `subagent_child_index`, and `subagent_child_agent` when the harness exported a run tuple.
+- `subagent_session_hash`, `run_tuple_missing`, and `pi_session_id` when the identity came from the child session id instead.
 
-Orphan rows never include fabricated `parent_task` or `parent_agent_id`. Verify suppresses `AUTO_ASSIGNED_TASK` only for the linked discriminator, so orphan rows are intentionally flagged for review.
+Orphan rows never include fabricated `parent_task` or `parent_agent_id`. Verify suppresses `AUTO_ASSIGNED_TASK` only for the two linked discriminators, so orphan rows are intentionally flagged for review.
 
 ### Replay idempotency
 

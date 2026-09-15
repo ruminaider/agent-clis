@@ -124,6 +124,27 @@ sanitize_task_token() {
   printf '%s' "$1" | tr -c 'A-Za-z0-9._:@/-' '-'
 }
 
+# session_id_hash
+#
+# Deterministic 24-hex-character projection of a pi session id. Used by
+# the pi-session task source and by the session-scoped subagent modes.
+# Prints nothing when no digest tool is available or the digest is not a
+# full sha256, so a caller can treat an empty result as "no usable id".
+session_id_hash() {
+  local value="$1"
+  local digest=""
+  [[ -z "$value" ]] && return 0
+  if command -v shasum >/dev/null 2>&1; then
+    digest="$(printf '%s' "$value" | shasum -a 256 | awk '{print $1}')"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    digest="$(printf '%s' "$value" | sha256sum | awk '{print $1}')"
+  elif command -v openssl >/dev/null 2>&1; then
+    digest="$(printf '%s' "$value" | openssl dgst -sha256 | awk '{print $NF}')"
+  fi
+  [[ "$digest" =~ ^[[:xdigit:]]{64}$ ]] || return 0
+  printf '%s' "${digest:0:24}"
+}
+
 git_in() {
   command git -C "$DETECT_CWD" "$@" 2>/dev/null
 }
@@ -137,6 +158,12 @@ git_in() {
 #     agent:pi:subagent:<PI_SUBAGENT_RUN_ID>:<child_index>
 #     where <child_index> is PI_SUBAGENT_CHILD_INDEX normalized as a
 #     base-10 integer. Deterministic. No randomness, no sanitization.
+#
+#   subagent session mode (PI_SUBAGENT_CHILD=1 with a session hash in
+#   $2, used when the harness hosts the child in-process and therefore
+#   exports no run tuple):
+#     agent:pi:subagent:session:<session_hash>
+#     Deterministic per child session.
 #
 #   legacy mode (otherwise):
 #     agent:<harness>:<utc>:<nonce>             (default)
@@ -161,8 +188,11 @@ git_in() {
 # Prints the derived AGENT_ID to stdout. No side effects on caller env.
 agent_ledger_derive_agent_id() {
   local harness="${1:-unknown}"
+  local session_hash="${2:-}"
   local agent_id=""
-  if [[ "${PI_SUBAGENT_CHILD:-}" == "1" ]]; then
+  if [[ "${PI_SUBAGENT_CHILD:-}" == "1" ]] && [[ -n "$session_hash" ]]; then
+    agent_id="agent:pi:subagent:session:${session_hash}"
+  elif [[ "${PI_SUBAGENT_CHILD:-}" == "1" ]]; then
     local child_index
     child_index="$((10#${PI_SUBAGENT_CHILD_INDEX}))"
     agent_id="agent:pi:subagent:${PI_SUBAGENT_RUN_ID}:${child_index}"
@@ -197,6 +227,18 @@ if [[ "${PI_SUBAGENT_CHILD:-}" == "1" ]]; then
   subagent_parent_agent_present=0
   [[ -n "${AGENT_LEDGER_TASK_ID:-}" ]] && subagent_parent_task_present=1
   [[ -n "${AGENT_ID:-}" ]] && subagent_parent_agent_present=1
+  # A harness that hosts children as in-process sessions (pi-subagents
+  # 0.6x and later) builds the child's runtime from typed data and
+  # exports no run tuple, so PI_SUBAGENT_CHILD=1 is the only inherited
+  # signal. The child session id still distinguishes concurrent children
+  # in one host process, so it supplies a deterministic identity instead
+  # of the run tuple. Only a caller-supplied session id is trusted here:
+  # the ambient PI_SESSION_ID in a child host process belongs to the
+  # parent and would collide across siblings.
+  subagent_session_hash=""
+  if [[ -n "$SESSION_ID_FLAG" ]]; then
+    subagent_session_hash="$(session_id_hash "$SESSION_ID_FLAG")"
+  fi
   subagent_mode=""
 
   if [[ ${#subagent_run_missing[@]} -eq 0 ]] && [[ "$subagent_parent_task_present" == "1" ]] && [[ "$subagent_parent_agent_present" == "1" ]]; then
@@ -205,15 +247,20 @@ if [[ "${PI_SUBAGENT_CHILD:-}" == "1" ]]; then
       exit 4
     fi
     subagent_mode="linked"
+  elif [[ ${#subagent_run_missing[@]} -gt 0 ]] && [[ "$subagent_parent_task_present" == "1" ]] && [[ "$subagent_parent_agent_present" == "1" ]] && [[ -n "$subagent_session_hash" ]]; then
+    subagent_mode="linked-session"
   elif [[ "${AGENT_LEDGER_REQUIRE_TASK:-0}" == "1" ]]; then
     echo "session-bootstrap: PI_SUBAGENT_CHILD=1 has no complete inherited parent context and AGENT_LEDGER_REQUIRE_TASK=1; refusing to auto-assign an orphan task" >&2
     exit 4
+  elif [[ ${#subagent_run_missing[@]} -gt 0 ]] && [[ "$subagent_parent_task_present" == "0" ]] && [[ "$subagent_parent_agent_present" == "0" ]] && [[ -n "$subagent_session_hash" ]]; then
+    subagent_mode="orphan-session"
   elif [[ ${#subagent_run_missing[@]} -gt 0 ]]; then
     subagent_missing=( "${subagent_run_missing[@]}" )
     [[ "$subagent_parent_task_present" == "0" ]] && subagent_missing+=( "AGENT_LEDGER_TASK_ID" )
     [[ "$subagent_parent_agent_present" == "0" ]] && subagent_missing+=( "AGENT_ID" )
     echo "session-bootstrap: PI_SUBAGENT_CHILD=1 but required env vars are unset or empty: ${subagent_missing[*]}" >&2
     echo "session-bootstrap: a pi subagent child cannot self-assign without an inherited parent task and run identifiers; refusing to fall back." >&2
+    echo "session-bootstrap: an in-process child with no run tuple needs --session-id <child session id> to derive a session-scoped identity." >&2
     exit 4
   elif [[ ! "${PI_SUBAGENT_CHILD_INDEX}" =~ ^[0-9]+$ ]]; then
     echo "session-bootstrap: PI_SUBAGENT_CHILD_INDEX must be a non-negative decimal integer (got '${PI_SUBAGENT_CHILD_INDEX}')" >&2
@@ -229,28 +276,56 @@ if [[ "${PI_SUBAGENT_CHILD:-}" == "1" ]]; then
     subagent_mode="orphan"
   fi
 
-  if [[ "$subagent_mode" == "linked" ]]; then
+  if [[ "$subagent_mode" == "linked" ]] || [[ "$subagent_mode" == "linked-session" ]]; then
     subagent_parent_agent_id="$AGENT_ID"
     subagent_parent_task_id="$AGENT_LEDGER_TASK_ID"
   fi
-  subagent_child_index="$((10#${PI_SUBAGENT_CHILD_INDEX}))"
-  AGENT_ID="$(agent_ledger_derive_agent_id "$HARNESS")"
+  subagent_child_index=""
+  if [[ ${#subagent_run_missing[@]} -eq 0 ]]; then
+    subagent_child_index="$((10#${PI_SUBAGENT_CHILD_INDEX}))"
+  fi
+  case "$subagent_mode" in
+    linked-session|orphan-session)
+      AGENT_ID="$(agent_ledger_derive_agent_id "$HARNESS" "$subagent_session_hash")"
+      ;;
+    *)
+      AGENT_ID="$(agent_ledger_derive_agent_id "$HARNESS")"
+      ;;
+  esac
   export AGENT_ID
 
-  if [[ "$subagent_mode" == "linked" ]]; then
-    TASK_ID="${subagent_parent_task_id}/${PI_SUBAGENT_CHILD_AGENT}/${PI_SUBAGENT_RUN_ID}-${subagent_child_index}"
-    TASK_SOURCE="subagent"
-    subagent_assignment_orchestrator="$subagent_parent_agent_id"
-    subagent_auto_assigned=0
-    echo "session-bootstrap: harness-derived task id from subagent: $TASK_ID (parent_task=$subagent_parent_task_id parent_agent=$subagent_parent_agent_id child_agent=$AGENT_ID)" >&2
-  else
-    unset AGENT_LEDGER_PARENT_TASK_ID
-    TASK_ID="auto/pi-subagent/${PI_SUBAGENT_RUN_ID}-${subagent_child_index}"
-    TASK_SOURCE="subagent-orphan"
-    subagent_assignment_orchestrator="${ORCHESTRATOR_LABEL:-${HARNESS}-adapter}"
-    subagent_auto_assigned=1
-    echo "session-bootstrap: WARNING: PI subagent child is missing parent env AGENT_LEDGER_TASK_ID AGENT_ID; auto-assigned orphan task id $TASK_ID" >&2
-  fi
+  case "$subagent_mode" in
+    linked)
+      TASK_ID="${subagent_parent_task_id}/${PI_SUBAGENT_CHILD_AGENT}/${PI_SUBAGENT_RUN_ID}-${subagent_child_index}"
+      TASK_SOURCE="subagent"
+      subagent_assignment_orchestrator="$subagent_parent_agent_id"
+      subagent_auto_assigned=0
+      echo "session-bootstrap: harness-derived task id from subagent: $TASK_ID (parent_task=$subagent_parent_task_id parent_agent=$subagent_parent_agent_id child_agent=$AGENT_ID)" >&2
+      ;;
+    linked-session)
+      TASK_ID="${subagent_parent_task_id}/pi-subagent/session-${subagent_session_hash}"
+      TASK_SOURCE="subagent-session"
+      subagent_assignment_orchestrator="$subagent_parent_agent_id"
+      subagent_auto_assigned=0
+      echo "session-bootstrap: harness-derived task id from subagent-session: $TASK_ID (parent_task=$subagent_parent_task_id parent_agent=$subagent_parent_agent_id child_agent=$AGENT_ID); harness exported no run tuple, identity derived from the child session id" >&2
+      ;;
+    orphan-session)
+      unset AGENT_LEDGER_PARENT_TASK_ID
+      TASK_ID="auto/pi-subagent/session-${subagent_session_hash}"
+      TASK_SOURCE="subagent-orphan"
+      subagent_assignment_orchestrator="${ORCHESTRATOR_LABEL:-${HARNESS}-adapter}"
+      subagent_auto_assigned=1
+      echo "session-bootstrap: WARNING: PI subagent child is missing parent env AGENT_LEDGER_TASK_ID AGENT_ID and the harness run tuple; auto-assigned orphan task id $TASK_ID from the child session id" >&2
+      ;;
+    *)
+      unset AGENT_LEDGER_PARENT_TASK_ID
+      TASK_ID="auto/pi-subagent/${PI_SUBAGENT_RUN_ID}-${subagent_child_index}"
+      TASK_SOURCE="subagent-orphan"
+      subagent_assignment_orchestrator="${ORCHESTRATOR_LABEL:-${HARNESS}-adapter}"
+      subagent_auto_assigned=1
+      echo "session-bootstrap: WARNING: PI subagent child is missing parent env AGENT_LEDGER_TASK_ID AGENT_ID; auto-assigned orphan task id $TASK_ID" >&2
+      ;;
+  esac
 
   agent-ledger identify --agent-kind "$AGENT_KIND" --harness "$HARNESS" >/dev/null 2>&1 || true
 
@@ -280,6 +355,50 @@ if [[ "${PI_SUBAGENT_CHILD:-}" == "1" ]]; then
     subagent_metadata_json="${subagent_metadata_json},\"subagent_child_index\":${subagent_child_index}"
     subagent_metadata_json="${subagent_metadata_json},\"subagent_child_agent\":\"$(json_escape "$PI_SUBAGENT_CHILD_AGENT")\""
     subagent_metadata_json="${subagent_metadata_json},\"dispatch_origin\":\"pi-subagent-bootstrap\""
+    subagent_metadata_json="${subagent_metadata_json}}"
+  elif [[ "$subagent_mode" == "linked-session" ]]; then
+    # In-process child: the parent link is real, but the run tuple does
+    # not exist, so the child session id carries the identity. Readers
+    # get the same parent fields plus the session discriminator and an
+    # explicit record of which run vars the harness did not export.
+    subagent_marker="$(agent_ledger_auto_assigned_marker \
+      --by "${HARNESS}-adapter" \
+      --source subagent-session \
+      --parent "$subagent_parent_task_id" \
+      --task "$TASK_ID" \
+      --agent "$AGENT_ID")"
+    subagent_reason="${subagent_marker} session bootstrap (pi subagent child self-assignment from session id)"
+    subagent_metadata_json="{\"parent_task\":\"$(json_escape "$subagent_parent_task_id")\""
+    subagent_metadata_json="${subagent_metadata_json},\"parent_agent_id\":\"$(json_escape "$subagent_parent_agent_id")\""
+    subagent_metadata_json="${subagent_metadata_json},\"task_source\":\"subagent-session\""
+    subagent_metadata_json="${subagent_metadata_json},\"subagent_session_hash\":\"$(json_escape "$subagent_session_hash")\""
+    subagent_metadata_json="${subagent_metadata_json},\"run_tuple_missing\":true"
+    subagent_metadata_json="${subagent_metadata_json},\"missing_run_env\":["
+    subagent_missing_json=""
+    for subagent_missing_var in "${subagent_run_missing[@]}"; do
+      [[ -n "$subagent_missing_json" ]] && subagent_missing_json="${subagent_missing_json},"
+      subagent_missing_json="${subagent_missing_json}\"$(json_escape "$subagent_missing_var")\""
+    done
+    subagent_metadata_json="${subagent_metadata_json}${subagent_missing_json}]"
+    subagent_metadata_json="${subagent_metadata_json},\"dispatch_origin\":\"pi-subagent-session-bootstrap\""
+    subagent_metadata_json="${subagent_metadata_json}}"
+  elif [[ "$subagent_mode" == "orphan-session" ]]; then
+    subagent_marker="$(agent_ledger_auto_assigned_marker \
+      --by "${HARNESS}-adapter" \
+      --source subagent-orphan \
+      --task "$TASK_ID" \
+      --agent "$AGENT_ID")"
+    subagent_reason="${subagent_marker} session bootstrap (pi subagent orphan self-assignment from session id)"
+    subagent_metadata_json="{\"auto_assigned\":true"
+    subagent_metadata_json="${subagent_metadata_json},\"task_source\":\"subagent-orphan\""
+    subagent_metadata_json="${subagent_metadata_json},\"dispatch_origin\":\"pi-subagent-orphan-bootstrap\""
+    subagent_metadata_json="${subagent_metadata_json},\"parent_context_missing\":true"
+    subagent_metadata_json="${subagent_metadata_json},\"missing_parent_env\":[\"AGENT_LEDGER_TASK_ID\",\"AGENT_ID\"]"
+    subagent_metadata_json="${subagent_metadata_json},\"subagent_session_hash\":\"$(json_escape "$subagent_session_hash")\""
+    subagent_metadata_json="${subagent_metadata_json},\"run_tuple_missing\":true"
+    if [[ -n "$SESSION_ID_FLAG" ]]; then
+      subagent_metadata_json="${subagent_metadata_json},\"pi_session_id\":\"$(json_escape "$SESSION_ID_FLAG")\""
+    fi
     subagent_metadata_json="${subagent_metadata_json}}"
   else
     subagent_marker="$(agent_ledger_auto_assigned_marker \
@@ -334,7 +453,7 @@ if [[ "${PI_SUBAGENT_CHILD:-}" == "1" ]]; then
       "$(json_escape "$TASK_ID")" \
       "$(json_escape "$TASK_SOURCE")" \
       "$subagent_auto_assigned"
-    if [[ "$subagent_mode" == "linked" ]]; then
+    if [[ "$subagent_mode" == "linked" ]] || [[ "$subagent_mode" == "linked-session" ]]; then
       printf ',"AGENT_LEDGER_PARENT_TASK_ID":"%s"' "$(json_escape "$subagent_parent_task_id")"
     fi
     printf '}\n'
@@ -343,7 +462,7 @@ if [[ "${PI_SUBAGENT_CHILD:-}" == "1" ]]; then
     printf 'export AGENT_LEDGER_TASK_ID=%q\n' "$TASK_ID"
     printf 'export AGENT_LEDGER_TASK_SOURCE=%q\n' "$TASK_SOURCE"
     printf 'export AGENT_LEDGER_AUTO_ASSIGNED=%q\n' "$subagent_auto_assigned"
-    if [[ "$subagent_mode" == "linked" ]]; then
+    if [[ "$subagent_mode" == "linked" ]] || [[ "$subagent_mode" == "linked-session" ]]; then
       printf 'export AGENT_LEDGER_PARENT_TASK_ID=%q\n' "$subagent_parent_task_id"
     else
       printf 'unset AGENT_LEDGER_PARENT_TASK_ID\n'

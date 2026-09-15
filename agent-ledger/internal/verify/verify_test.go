@@ -643,6 +643,59 @@ func TestVerify_SubagentBootstrap_NoAutoAssignedTask(t *testing.T) {
 	}
 }
 
+// TestVerify_SubagentSessionBootstrap_NoAutoAssignedTask confirms that a
+// child hosted in-process by the harness, which derives its identity from
+// its own session id because no run tuple exists, is still recognized as
+// an orchestrator-dispatched subagent rather than an adapter invention.
+func TestVerify_SubagentSessionBootstrap_NoAutoAssignedTask(t *testing.T) {
+	root, ledger := setupProject(t)
+	store := openTestStore(t, ledger)
+	t.Cleanup(func() { store.Close() })
+	d := domain.New(store)
+	ctx := context.Background()
+
+	const childAgent = "agent:pi:subagent:session:74beb68855b95fce41599d72"
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: childAgent, AgentKind: "worker"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpsertAgent(ctx, domain.Agent{AgentID: "agent:pi:parent:42", AgentKind: "orchestrator"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.InsertAssignment(ctx, domain.Assignment{
+		TaskID:          "SUBAGENT-SESSION",
+		OrchestratorID:  "agent:pi:parent:42",
+		AssignedAgentID: childAgent,
+		AllowedPaths:    []string{"**"},
+		ConflictPolicy:  domain.PolicyWarn,
+		Reason:          "[harness-derived by pi-adapter source=subagent-session parent=parent-task task=parent-task/pi-subagent/session-74beb68855b95fce41599d72] child self-assignment from session id",
+		Metadata: map[string]any{
+			"parent_task":           "parent-task",
+			"parent_agent_id":       "agent:pi:parent:42",
+			"task_source":           "subagent-session",
+			"subagent_session_hash": "74beb68855b95fce41599d72",
+			"run_tuple_missing":     true,
+			"missing_run_env":       []string{"PI_SUBAGENT_RUN_ID", "PI_SUBAGENT_CHILD_INDEX", "PI_SUBAGENT_CHILD_AGENT"},
+			"dispatch_origin":       "pi-subagent-session-bootstrap",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rep := runVerify(t, verify.Inputs{
+		Root:                 root,
+		LedgerDirFlag:        ledger,
+		TaskID:               "SUBAGENT-SESSION",
+		ChangedPathsOverride: nil,
+	})
+	codes := findingsByCode(rep)
+	if len(codes[verify.CodeAutoAssignedTask]) != 0 {
+		t.Errorf("AUTO_ASSIGNED_TASK must not fire for a session-scoped subagent assignment; got %+v", codes[verify.CodeAutoAssignedTask])
+	}
+	if len(codes[verify.CodeMissingAssignment]) != 0 {
+		t.Errorf("MISSING_ASSIGNMENT must not fire when an assignment row exists; got %+v", codes[verify.CodeMissingAssignment])
+	}
+}
+
 // TestVerify_SubagentOrphanBootstrap_AutoAssignedTask confirms that an
 // orphan child remains visible to review. Only the exact linked
 // `pi-subagent-bootstrap` discriminator suppresses AUTO_ASSIGNED_TASK.
