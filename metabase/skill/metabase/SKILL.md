@@ -10,6 +10,8 @@ compatibility: Requires Node.js 18+ and a Metabase instance URL plus an API key 
 `metabase-cli` drives a Metabase instance from the terminal: cards (saved questions), dashboards, databases, tables, fields, queries, collections, search, and revision history. It mirrors the `metabase-mcp-server` (46 operations) and shares its environment variables, so it is a drop-in swap. Output is optimized JSON that strips metadata and flattens query results, staying cheap for agents to consume.
 
 ## Core Philosophy
+**CLI, not the web UI.** Run SQL and explore through `metabase-cli`. Never drive the Metabase web SQL editor in the browser.
+
 **Explore before querying.** Metabase APIs take numeric IDs. Resolve them with `database list`, `database metadata`, `table list`, or `search` before writing SQL or building cards.
 
 **Read before write.** Fetch a card, dashboard, or collection first, then change only the fields you intend. Update commands take specific flags plus a generic `--set '<json>'` for any other field.
