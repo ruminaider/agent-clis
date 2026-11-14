@@ -36,3 +36,6 @@ jobs:
           for bin in $(git ls-files '*/cli/bin/*.js'); do
             node "$bin" help > /dev/null
           done
+
+      - name: CLI tests pass
+        run: node --test $(git ls-files '*/cli/test/*.test.mjs')

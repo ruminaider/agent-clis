@@ -6,12 +6,16 @@
 //   - the xoxd `d` cookie, stored encrypted in the app's Chromium SQLite cookie
 //     store and decrypted with a per-platform key
 //
-// The LevelDB data blocks are Snappy-compressed, so the surrounding JSON is not
-// readable by a plain scan. The xoxc tokens, however, are unique random strings
-// that Snappy always stores as verbatim literals, so we regex them straight out
-// of the raw bytes and enrich each one over the network with auth.test rather
-// than parsing the compressed structure. Everything uses Node built-ins only
-// (node:sqlite, node:crypto, node:child_process, node:fs); no npm dependencies.
+// LevelDB keeps every version of `localConfig_v2` until it compacts, and it
+// Snappy-compresses its table files. Snappy replaces the `xoxc-` prefix of
+// every token after the first in a block with a reference to the first one,
+// so a scan of the raw bytes finds one token per block and misses the rest:
+// on Enterprise Grid that lost the org token about a minute after sign-in,
+// when LevelDB moved the value from its log into a table. So the tokens are
+// read from the current value of the key (lib/leveldb.js), and each one is
+// enriched over the network with auth.test. Everything uses Node built-ins
+// only (node:sqlite, node:crypto, node:child_process, node:fs); no npm
+// dependencies.
 
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -19,6 +23,7 @@ import { platform } from "node:os";
 import { execFileSync } from "node:child_process";
 import { pbkdf2Sync, createDecipheriv, createHash } from "node:crypto";
 import { createRequire } from "node:module";
+import { currentValues } from "./leveldb.js";
 import {
   SLACK_LEVELDB_DIR,
   SLACK_COOKIE_CANDIDATES,
@@ -29,33 +34,52 @@ import {
 
 // xoxc tokens look like `xoxc-<digits>-<digits>-<digits>-<hex>`; the trailing
 // segment is long, so a 40-char minimum avoids matching a truncated fragment
-// left at a Snappy block boundary.
+// in the raw-scan fallback.
 const TOKEN_RE = /xoxc-[A-Za-z0-9-]{40,}/g;
 
-// Regex every xoxc token out of the raw LevelDB files and dedupe. Tokens are
-// unique literals that survive Snappy compression intact; we do not try to
-// parse the surrounding JSON. Any valid token wins after auth.test enrichment,
-// so order here does not matter.
-export function extractTokens() {
-  if (!SLACK_LEVELDB_DIR || !existsSync(SLACK_LEVELDB_DIR)) {
+// The localStorage key that holds the signed-in workspaces and their tokens.
+const LOCAL_CONFIG_KEY = "localConfig_v2";
+const LOCAL_CONFIG_KEY_UTF16 = Buffer.from(LOCAL_CONFIG_KEY, "utf16le");
+
+// Chromium stores a localStorage string with a one-byte prefix: 0 for
+// UTF-16LE, 1 for Latin-1.
+function storageText(value) {
+  return value[0] === 0 ? value.subarray(1).toString("utf16le") : value.toString("latin1");
+}
+
+// Read the xoxc tokens of the workspaces the desktop app is signed in to now:
+// the ones in the current value of `localConfig_v2`. Older versions of the
+// value still sit in the files and hold tokens Slack has since revoked, so
+// they are left out. A file that does not read as LevelDB, or a database
+// with no such key, falls back to a scan of the raw bytes; auth.test drops
+// whatever that scan picks up that is not a live token.
+export function extractTokens(dir = SLACK_LEVELDB_DIR) {
+  if (!dir || !existsSync(dir)) {
     throw new Error(
       "Slack desktop app data not found. Open the Slack app and sign in, or import credentials manually with `slack-cli auth import`.",
     );
   }
 
-  const files = readdirSync(SLACK_LEVELDB_DIR)
-    .filter((name) => name.endsWith(".ldb") || name.endsWith(".log"))
-    .map((name) => join(SLACK_LEVELDB_DIR, name));
-
-  const tokens = new Set();
-  for (const file of files) {
-    let text;
+  const files = [];
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith(".ldb") && !name.endsWith(".log")) continue;
     try {
-      text = readFileSync(file).toString("latin1");
+      files.push({ name, data: readFileSync(join(dir, name)) });
     } catch {
       continue;
     }
-    for (const match of text.matchAll(TOKEN_RE)) tokens.add(match[0]);
+  }
+
+  const { values, unreadable } = currentValues(
+    files,
+    (key) => key.includes(LOCAL_CONFIG_KEY) || key.includes(LOCAL_CONFIG_KEY_UTF16),
+  );
+  const tokens = new Set();
+  for (const value of values) {
+    for (const match of storageText(value).matchAll(TOKEN_RE)) tokens.add(match[0]);
+  }
+  for (const file of values.length ? unreadable : files) {
+    for (const match of file.data.toString("latin1").matchAll(TOKEN_RE)) tokens.add(match[0]);
   }
 
   const list = [...tokens];

@@ -103,7 +103,8 @@ Run `slack-cli help` for the complete command list.
 ## Architecture
 
 - `cli/bin/slack.js` parses arguments and dispatches commands; all output is JSON.
-- `cli/lib/extract.js` reads the `xoxc` tokens from the Slack app's LevelDB (the JSON is Snappy-compressed, so tokens are regexed out as verbatim literals and verified over the network) and decrypts the `xoxd` cookie from the Chromium SQLite store using the platform key (macOS Keychain `Slack Safe Storage`, PBKDF2-HMAC-SHA1 + AES-128-CBC).
+- `cli/lib/extract.js` reads the `xoxc` tokens from the current value of `localConfig_v2` in the Slack app's LevelDB, verifies each one over the network, and decrypts the `xoxd` cookie from the Chromium SQLite store using the platform key (macOS Keychain `Slack Safe Storage`, PBKDF2-HMAC-SHA1 + AES-128-CBC).
+- `cli/lib/leveldb.js` reads LevelDB table and log files, Snappy-compressed blocks included, without opening or locking the database. A scan of the raw bytes is not enough: Snappy keeps only the first token of a block whole.
 - `cli/lib/auth.js` resolves credentials (explicit → env → persisted), enriches tokens via `auth.test`, and stores the result.
 - `cli/lib/grid.js` completes an Enterprise Grid login: it asks the org token which workspaces you belong to and mints the missing per-workspace tokens from each workspace's web boot page.
 - `cli/lib/api.js` calls the Slack web API, sending the token in the form body and the `d` cookie in the `Cookie` header against the workspace host. Calls Slack refuses on an org-level token retry against the workspace tokens, and channel listings sweep the org.
